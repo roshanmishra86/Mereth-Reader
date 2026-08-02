@@ -2,6 +2,8 @@ name: Build Windows installer
 
 on:
   push:
+    branches:
+      - release
   workflow_dispatch:
 
 permissions:
