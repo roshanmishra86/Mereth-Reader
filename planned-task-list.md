@@ -15,6 +15,7 @@ A task is complete only when its acceptance criteria are demonstrated. Writing c
 - Local-first: no cloud service, account, telemetry, or remote dependency for reading, annotation, notes, review, or export.
 - **AI is out of v1 scope.** PRD §18.1 recommends releasing through R4, not R5. This plan adopts that: the release candidate is the complete non-AI product. AI work does not begin until the completion gate below is met, and it then starts with its own evaluation-corpus gate. The existing AI *surfaces* in the UI are placeholders that must correctly represent the off state; they are not a feature commitment.
 - Windows is the primary target; Linux is validated locally. macOS is out of scope (PRD R7).
+- [pdf-inspector](https://github.com/firecrawl/pdf-inspector)library for PDF inspection, classification, and text extraction. Intelligently detects scanned vs text-based PDFs - to be used while working on `4. Notes, review, and export (PRD R3–R4)` tasks
 
 ## Research log
 
@@ -72,6 +73,8 @@ Every claim below was checked against the working tree on the audit date.
 - **C6 — The Rust crate has never compiled, and there are two reasons, not one.** After the `installMode` fix, `cargo check` still failed: `tauri::generate_context!()` panics with `failed to open icon src-tauri/icons/icon.png: No such file or directory`. There is no `src-tauri/icons/` directory and no `bundle.icon` key in `tauri.conf.json`, so Tauri falls back to the default icon path and finds nothing. Every prior claim that the Tauri side was configured rested on a crate that could not build. A placeholder icon set was generated during this audit via `pnpm tauri icon`, after which `cargo check` exits 0 — the crate compiles for the first time in the project's history. See task 1.5.
   - Side effect, resolved: `pnpm tauri icon` also emitted `src-tauri/icons/android/` and `src-tauri/icons/ios/`. Neither platform is on the roadmap — the PRD stops at Linux (R8) and §4.2 lists mobile clients as an explicit non-goal — so both directories were deleted. 17 desktop icon files remain. If `pnpm tauri icon` is ever re-run, it will regenerate them; delete them again.
 - **C5 — "GitHub Actions Windows build automation" was marked `[x]`.** The workflow file is written but has never run, because the repository has no commits. It also would have failed on C3. The file is a draft until a run produces an artifact.
+  - Resolved 2026-08-02: after C7, run 30732218214 produced a real NSIS installer. See task 1.3.
+- **C7 — CI had a second, independent blocker that no prior audit caught.** Once commits existed (0.2), the Windows workflow ran twice on `master` and failed both times in **16 seconds** — at step 2, long before any Tauri or Rust code was reached. `pnpm/action-setup@v4` was passed `version: 11` while `package.json` pins `"packageManager": "pnpm@11.18.0"`; the action treats two declared versions as a hard error (`Multiple versions of pnpm specified … ERR_PNPM_BAD_PM_VERSION`) and aborts. This means the C3 NSIS fix was never actually exercised by CI — the run died first. Fixed by deleting the `with:` block so the action reads `packageManager` as the single source of truth. Lesson worth keeping: a workflow file that exists and a workflow that runs are different claims, and "would have failed on C3" was itself an unverified inference about a run that never got that far.
 
 ### Package-manager cleanup (done 2026-08-01)
 
@@ -92,7 +95,7 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
   - Verification note (2026-08-01): PRD is now Draft v0.2 with an amendment note at the head. §1.6 specifies Tauri 2 + Rust and records the OS-webview consequence (smaller footprint; **rendering is not identical across platforms**, so the §8.1 corpus gate is per-platform). §2.3 replaces the working-name policy with the resolved name. §14.2 uses `mereth://`. §15.2 lists Tauri 2, a Rust privileged layer, and Rust-side SQLite. §15.3 is fully rewritten as a Tauri posture — itemised capability allowlist, no broad `fs` scope, verified CSP with `dangerousDisableAssetCspModification` barred, scoped asset protocol over `file://`, narrow typed IPC with no caller-supplied paths or SQL, external navigation denied, PDF JS disabled, sidecar payload limits, document-text-as-data. §18 R0, RK-11, RK-12, OQ-1, and OQ-4 restated; Appendix B swaps the Electron checklist for Tauri security, capabilities, and CSP references. A grep confirms no Electron-only control survives as a requirement.
   - New risk added during the amendment: **RK-18 — OS webview differences cause per-platform rendering, selection, or CSP divergence.** This did not exist under Electron's bundled Chromium and directly affects the R7/R8 port estimates.
 
-- [ ] **0.2 — Make the first commit and push.**
+- [x] **0.2 — Make the first commit and push.**
   - Acceptance: the tree is committed on a branch and a push triggers CI.
   - Note: `.gitignore` excluding `mock-up/`, `.codex/`, and `.agents/` is **intentional** — the mockups are deliberately kept out of the pushed repository. Consequence to accept knowingly: the design source of truth lives only on this machine, so it is not backed up by the remote and is invisible to CI. Keep a local copy safe.
 
@@ -114,16 +117,19 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
 - [x] **1.2 — Minimal native capability surface.**
   - Verification note: `capabilities/default.json` grants `core:default` and `dialog:allow-open` only. This will need deliberate, itemised extension for tasks 2.2 and 3.1 — each added permission is a reviewable change.
 
-- [ ] **1.3 — NSIS Windows bundle target.**
+- [x] **1.3 — NSIS Windows bundle target.**
   - Acceptance: `bundle.targets` contains `nsis` with a per-user `installMode`, **and** `cargo check --manifest-path src-tauri/Cargo.toml` exits 0, **and** a Windows build produces a setup `.exe`.
-  - Status: the invalid `installerMode` key was corrected to `installMode`, and the missing icon set was generated (C6). `cargo check --manifest-path src-tauri/Cargo.toml` now exits 0 — the crate compiles for the first time. Stays `[ ]` until a real Windows build emits an installer (task 6.4).
+  - Verification note (2026-08-02): all three clauses now demonstrated. `tauri.conf.json` has `bundle.targets: ["nsis"]` with `windows.nsis.installMode: "currentUser"`; `cargo check --manifest-path src-tauri/Cargo.toml` exits 0 locally and in CI; and GitHub Actions run **30732218214** on `windows-latest` completed `pnpm tauri build --bundles nsis` successfully, with makensis emitting `src-tauri\target\release\bundle\nsis\Mereth Reader_0.1.0_x64-setup.exe` ("Finished 1 bundle at:"). The uploaded `MerethReader-Windows-NSIS` artifact is 1,948,778 bytes. This is the first installer the project has ever produced.
+  - Still open downstream: the `.exe` has not been *installed* anywhere. Clean-machine install and launch is task 6.4.
 
-- [ ] **1.5 — Replace the placeholder application icon.**
-  - Status: `src-tauri/icons/` was generated during this audit from a placeholder mark (a ground-colour square on the accent field, following the Modernist system) purely so the crate could compile. It is not branding and must not ship.
-  - Acceptance: a real Mereth Reader icon set at every size Tauri bundles, plus the Windows `.ico` and NSIS installer imagery. No longer blocked — the name is decided; this now needs artwork, not a decision.
-
-- [ ] **1.4 — Add a fast CI quality job.**
+- [x] **1.4 — Add a fast CI quality job.**
   - Acceptance: a job on `ubuntu-latest` runs `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm test`, and `cargo check` on every push. The Windows NSIS build is separated so a type error fails in ~2 minutes instead of ~20.
+  - Verification note (2026-08-02): `.github/workflows/quality.yml` added — triggers on push to every branch, on pull requests, and on manual dispatch, with a `quality-${{ github.ref }}` concurrency group that cancels superseded runs. Run **30732211388** on `master` was green on its first execution, every step passing: Tauri system dependencies, pnpm setup, Node 24, Rust stable, `Swatinem/rust-cache@v2` (`src-tauri -> target`), `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm test`, `cargo check --manifest-path src-tauri/Cargo.toml`. Wall clock **2m 03s** (04:20:46Z → 04:22:49Z) against the Windows bundle job's ~6m, so the separation delivers the intended fast-fail margin and will widen further once the Rust cache is warm.
+  - Linux note: the job installs `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`, `libxdo-dev`, `libssl-dev`, and `build-essential`. `ubuntu-latest` is Ubuntu 24.04, where `libappindicator3-dev` no longer exists — use the Ayatana fork or the job fails at apt.
+
+- [ ] **1.5 — Replace the placeholder application icon.** *(decision made; artwork deferred — moved to task 6.7)*
+  - Status: `src-tauri/icons/` holds a placeholder mark (a ground-colour square on the accent field, following the Modernist system), generated purely so the crate could compile. It is not branding.
+  - Decision (2026-08-02): **keep the placeholder for now.** Commissioning the real mark is not worth blocking foundations on, and nothing downstream depends on it — the icon set is already complete enough for Tauri to bundle every size, as run 30732218214 proves. The task is therefore not *done*; it is deliberately deferred and re-filed as **6.7**, a release blocker. Foundations close without it because it gates shipping, not building.
 
 ### 2. Reader experience (PRD R1)
 
@@ -229,14 +235,14 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
 
 - [ ] **6.1 — GitHub Actions Windows build automation using pnpm.**
   - Acceptance: a push runs on `windows-latest`, installs with the frozen lockfile, runs `pnpm tauri build --bundles nsis`, and uploads the setup `.exe`.
-  - Status: the workflow file exists but has never run — the repository has no commits, and it would have failed on the NSIS config error (C3). Blocked on task 0.2.
+  - Status (2026-08-02): every clause is proven **except the trigger**. Run 30732218214 did all of it — frozen-lockfile install, `pnpm tauri build --bundles nsis`, artifact upload — but it was a manual `workflow_dispatch`, because the workflow's `push` trigger is scoped to the `release` branch, which does not exist yet. Stays `[ ]` until a push to `release` produces the artifact without human intervention. Nothing is broken; the path is simply untested end to end.
 
 - [x] **6.2 — Generate and commit `pnpm-lock.yaml`.**
   - Verification note: regenerated after the bun removal and vitest addition. `pnpm install --frozen-lockfile` succeeded from an empty `node_modules` on Linux with pnpm 11.18.0 (2026-08-01). Windows verification comes with the first CI run.
 
 - [ ] **6.3 — Local and CI verification green.**
   - Acceptance: `pnpm build`, `pnpm test`, `cargo check --manifest-path src-tauri/Cargo.toml`, and `pnpm tauri:build` all exit 0.
-  - Status (2026-08-01): `pnpm build` exits 0, `pnpm test` passes 11/11, and `cargo check --manifest-path src-tauri/Cargo.toml` exits 0. `pnpm tauri:build` remains unverified on every platform — it needs the full system toolchain (WebView2 on Windows, WebKitGTK on Linux) and has never been run here.
+  - Status (2026-08-02): `pnpm build`, `pnpm test` (11/11), and `cargo check --manifest-path src-tauri/Cargo.toml` exit 0 both locally and on CI. `tauri build --bundles nsis` now exits 0 on `windows-latest` (run 30732218214). Two gaps remain: an unfiltered `pnpm tauri:build` has never been run, and no `tauri build` of any kind has been run on Linux — the Quality job stops at `cargo check` and does not link or bundle.
 
 - [ ] **6.4 — Validate the Windows workflow end to end.**
   - Acceptance: a push produces a downloadable `MerethReader-Windows-NSIS` artifact containing a setup `.exe` that installs and launches on a clean Windows 11 x64 machine.
@@ -247,6 +253,11 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
 - [ ] **6.6 — Release signing.**
   - Acceptance: certificate secrets are held in GitHub secrets, the installer is signed in CI, and verification steps are documented.
   - Blocked: requires an organization-owned signing certificate and explicit authorization. Do not attempt without both.
+
+- [ ] **6.7 — Ship the real application icon** *(re-filed from 1.4-era task 1.5)*.
+  - Acceptance: a real Mereth Reader icon set at every size Tauri bundles, plus the Windows `.ico` and the NSIS installer imagery, replacing the placeholder mark currently in `src-tauri/icons/`.
+  - Why it sits in §6: it blocks *releasing*, not *building*. Development builds are unaffected. Needs artwork, not a decision — the name and identifier are settled (0.3, 0.4).
+  - Reminder: if `pnpm tauri icon` is re-run it will regenerate `src-tauri/icons/android/` and `ios/`. Delete both — neither platform is on the roadmap (C6).
 
 ### 7. Deferred — not v1
 
