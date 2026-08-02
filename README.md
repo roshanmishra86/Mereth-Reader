@@ -1,5 +1,7 @@
 # Mereth Reader
 
+> **Work in progress — not ready for day-to-day use.** This is an early scaffold, not a usable reader. It cannot open a PDF, store an annotation, or persist anything yet. Do not adopt it for real reading or note-taking. See [Status](#status) for what actually works.
+
 A calm, local-first desktop PDF reader where annotations become source-linked notes, selected ideas become user-approved retrieval prompts, and nothing leaves your machine.
 
 The product loop is: open a source → read and annotate → write notes in your own words → choose what is worth remembering → attempt recall before revealing the source → review at a useful interval → export in open formats.
