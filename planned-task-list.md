@@ -13,9 +13,9 @@ A task is complete only when its acceptance criteria are demonstrated. Writing c
 - The package manager is **pnpm only**. No npm, no yarn, no bun — no lockfiles, scripts, CI steps, or test imports from any of them.
 - The Windows artifact is an **NSIS setup executable (`.exe`)**, per-user install mode. MSI is a later decision.
 - Local-first: no cloud service, account, telemetry, or remote dependency for reading, annotation, notes, review, or export.
-- **AI is out of v1 scope.** PRD §18.1 recommends releasing through R4, not R5. This plan adopts that: the release candidate is the complete non-AI product. AI work does not begin until the completion gate below is met, and it then starts with its own evaluation-corpus gate. The existing AI *surfaces* in the UI are placeholders that must correctly represent the off state; they are not a feature commitment.
+- **AI is out of v1 scope.** PRD §4.1 and §18.1 now define v1 as the complete R0–R4 non-AI product. AI work does not begin until the completion gate below is met, and it then starts with its own evaluation-corpus gate. AI surfaces in `mock-up/` are R5 design references, not v1 navigation or disabled feature placeholders. The v1 interface must not imply that a missing AI runtime makes the product incomplete.
 - Windows is the primary target; Linux is validated locally. macOS is out of scope (PRD R7).
-- [pdf-inspector](https://github.com/firecrawl/pdf-inspector)library for PDF inspection, classification, and text extraction. Intelligently detects scanned vs text-based PDFs - to be used while working on `4. Notes, review, and export (PRD R3–R4)` tasks
+- [pdf-inspector](https://github.com/firecrawl/pdf-inspector) library for PDF inspection, classification, and text extraction. Intelligently detects scanned vs text-based PDFs; evaluate it during the R0 corpus work before relying on it in later tasks.
 
 ## Research log
 
@@ -97,7 +97,7 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
 
 - [x] **0.2 — Make the first commit and push.**
   - Acceptance: the tree is committed on a branch and a push triggers CI.
-  - Note: `.gitignore` excluding `mock-up/`, `.codex/`, and `.agents/` is **intentional** — the mockups are deliberately kept out of the pushed repository. Consequence to accept knowingly: the design source of truth lives only on this machine, so it is not backed up by the remote and is invisible to CI. Keep a local copy safe.
+  - Note: `.gitignore` excluding `mock-up/`, `.codex/`, and `.agents/` is **intentional**. The ignored mockup cannot remain the only copy of a design source of truth; task 0.5 adds the required preservation and traceability path.
 
 - [x] **0.3 — Resolve the product name (PRD OQ-1).**
   - Decision: the product is **Mereth Reader**; the repository is `mereth-reader`. PRD OQ-1 moves from Open to Resolved.
@@ -108,6 +108,9 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
   - PRD §14.2 now uses `mereth://`; the placeholder is gone.
   - Identifier decision: **`dev.mereth.reader`**, replacing `io.reader.local`. Chosen while no installs exist, since it fixes the application data directory (`%APPDATA%\dev.mereth.reader\` on Windows) and changing it post-release would strand user data.
   - Deep-link scheme decision: **`mereth://`**, replacing the PRD §14.2 `reader://` placeholder — `mereth://document/{id}?page=&annotation=`, `mereth://note/{id}`, `mereth://review/{id}`.
+
+- [ ] **0.5 — Preserve and expose the design source of truth.**
+  - Acceptance: the complete ignored `mock-up/` directory is stored in a backed-up location with a recorded recovery path; the repository contains a stable, reviewable design package with representative screenshots at 1440×900 and 1024×640, the Modernist token source, interaction/state inventory, mockup version or fingerprint, and a note identifying which R5-only AI surfaces must not ship in v1. CI and reviewers can verify UI conformance without access to one developer machine.
 
 ### 1. Project foundation
 
@@ -127,50 +130,90 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
   - Verification note (2026-08-02): `.github/workflows/quality.yml` added — triggers on push to every branch, on pull requests, and on manual dispatch, with a `quality-${{ github.ref }}` concurrency group that cancels superseded runs. Run **30732211388** on `master` was green on its first execution, every step passing: Tauri system dependencies, pnpm setup, Node 24, Rust stable, `Swatinem/rust-cache@v2` (`src-tauri -> target`), `pnpm install --frozen-lockfile`, `pnpm build`, `pnpm test`, `cargo check --manifest-path src-tauri/Cargo.toml`. Wall clock **2m 03s** (04:20:46Z → 04:22:49Z) against the Windows bundle job's ~6m, so the separation delivers the intended fast-fail margin and will widen further once the Rust cache is warm.
   - Linux note: the job installs `libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev`, `patchelf`, `libxdo-dev`, `libssl-dev`, and `build-essential`. `ubuntu-latest` is Ubuntu 24.04, where `libappindicator3-dev` no longer exists — use the Ayatana fork or the job fails at apt.
 
-- [ ] **1.5 — Replace the placeholder application icon.** *(decision made; artwork deferred — moved to task 6.7)*
-  - Status: `src-tauri/icons/` holds a placeholder mark (a ground-colour square on the accent field, following the Modernist system), generated purely so the crate could compile. It is not branding.
-  - Decision (2026-08-02): **keep the placeholder for now.** Commissioning the real mark is not worth blocking foundations on, and nothing downstream depends on it — the icon set is already complete enough for Tauri to bundle every size, as run 30732218214 proves. The task is therefore not *done*; it is deliberately deferred and re-filed as **6.7**, a release blocker. Foundations close without it because it gates shipping, not building.
+**Superseded foundation item — application icon.** `src-tauri/icons/` holds a placeholder mark generated so the crate can compile. The real artwork is tracked only once, as release-blocking task **6.7**; this note is deliberately not a second checkbox.
+
+### 1A. R0 feasibility and architecture gates
+
+No production R1–R4 feature work begins until R0.1–R0.8 pass. A gate may produce disposable code; it exists to force an early renderer, security, storage, or scope decision before the corresponding architecture becomes expensive to change.
+
+- [ ] **R0.1 — Build and version the legal PDF regression corpus.**
+  - Acceptance: a manifest records source/licence, SHA-256 fingerprint, page count, expected capability or failure mode, and permitted variance for simple text, multi-column, equations/ligatures, CJK, RTL, scanned pages, large image/vector pages, embedded annotations, forms/links, malformed objects, encrypted/password documents, a 400+ page book, and changed document versions. Applicable visual, text, selection, anchor, memory, and security checks are repeatable; every renderer upgrade is required to run them.
+
+- [ ] **R0.2 — Make the renderer go/no-go decision.**
+  - Depends on R0.1.
+  - Acceptance: a PDF.js spike measures cold first-page time, long-scroll memory, cached navigation, link/outline extraction, text-layer accessibility, single- and multi-column selection order, annotation overlay alignment through zoom/rotation, and hostile-document behaviour. The decision record fixes the PDF.js version and local worker/CSP strategy or records why PDFium replaces it. Production reader implementation does not begin on an unpassed renderer.
+
+- [ ] **R0.3 — Establish the core SQLite and job foundation before library work.**
+  - Acceptance: Rust owns database access behind narrow typed commands; WAL and FTS5 are verified; the migration framework is forward-only and backs up before migration; initial migrations cover `documents`, `document_versions`, `pages`, `jobs`, `settings`, and migration metadata; every text-bearing core record has a constrained §16.1 provenance value from its first migration; atomic writes and app-data paths are tested; corrupt indexes are rebuildable without deleting document records. Annotation, note, review, and export tables arrive in feature-specific migrations rather than one big-bang schema.
+
+- [ ] **R0.4 — Prove durable annotation-overlay persistence.**
+  - Depends on R0.2 and R0.3.
+  - Acceptance: a text highlight and an area rectangle survive restart, zoom, resize, rotation, and a renderer reload on representative corpus files; the spike records normalized geometry, quote context, checksum, and failure behaviour for an incompatible document version.
+
+- [ ] **R0.5 — Prove annotated-PDF copy export without touching the original.**
+  - Depends on R0.2 and R0.4.
+  - Acceptance: a spike embeds each supported v1 annotation type into a new PDF, verifies the original fingerprint is unchanged, opens the result in at least two independent PDF viewers, and records which Reader-only metadata must remain in a sidecar manifest. Failure leaves no partial destination file.
+
+- [ ] **R0.6 — Prove Windows file association and launch routing.**
+  - Acceptance: a development or test build receives a PDF through Windows “Open with” and command-line launch without granting a broad filesystem scope; paths are normalized and validated in Rust; repeated launch behaviour follows the OQ-18 decision.
+
+- [ ] **R0.7 — Exercise the hostile-document security boundary.**
+  - Depends on R0.1 and R0.2.
+  - Acceptance: corpus samples demonstrate that PDF JavaScript, automatic actions, embedded executables, external navigation, and document-initiated network requests do not execute; the CSP and asset protocol work with a real PDF; no unused capability remains; failures are visible and recoverable rather than blank or silent.
+
+- [ ] **R0.8 — Resolve reader-scope and onboarding decisions before dependent UI.**
+  - Acceptance: record decisions for PRD OQ-9, OQ-10, and OQ-16–OQ-19: recommended ownership default, freehand boundary, Windows architectures, printing, single/multiple-document model, and password-protected PDFs. Each decision names the usability or corpus evidence, the v1 behaviour, and any explicit post-v1 deferral. Tasks 2.2, 2.3, and 2.8 may not invent these answers during implementation.
 
 ### 2. Reader experience (PRD R1)
 
-- [ ] **2.1 — PDF rendering with PDF.js.**
-  - Research before coding: run the R0 spike against the PRD §17.5 corpus — text-heavy, multi-column, equations/ligatures, CJK and RTL, graphics-heavy, malformed, encrypted/password, and a 400+ page book. Assess selection fidelity, memory during long scroll, links, outline extraction, and text-layer accessibility. Compare PDFium if the corpus gate fails (PRD RK-1).
-  - Acceptance: first page of a 400-page born-digital PDF visible within 2 s from local SSD (PRD §17.2); zoom, navigation, search, outline, and text selection all work with no AI; the PDF.js version and worker/CSP strategy are recorded in this file.
+- [ ] **2.1 — Production PDF rendering with the R0-selected renderer.**
+  - Depends on R0.1 and the renderer decision in R0.2.
+  - Acceptance: first page of a 400-page born-digital PDF is visible before full indexing and within 2 s from local SSD (PRD §7.1, §17.2); visible-page rendering and prefetching keep the long-scroll working set within the R0 cap; zoom, navigation, search, outline, links, and accessible text selection all work with no AI; copy preserves reading order where the source permits and warns before copying low-confidence multi-column extraction (FR-8.4). The selected renderer version and worker/CSP strategy match the R0 decision record.
   - Note: `src/utils/pdfUtils.ts` is speculative scaffolding written before any renderer exists. Treat it as disposable; do not let it dictate the viewer's design.
 
 - [ ] **2.2 — Real PDF import and document ownership modes.**
-  - Research before coding: identify the least-privileged Tauri dialog/fs/asset-protocol permissions needed on Windows and Linux, and add them individually.
-  - Acceptance: native picker and drag-drop both work; the user explicitly chooses open-in-place or managed-library copy; the original is never moved or modified; a moved in-place file produces a recoverable locate-file flow (PRD §7.2).
+  - Depends on R0.3 and the ownership-default decision in R0.8. Research before coding: identify the least-privileged Tauri dialog/fs/asset-protocol permissions needed on Windows and Linux, and add them individually.
+  - Acceptance: native picker and drag-drop both work; the evidence-backed recommended ownership mode is explained without preselecting a destructive outcome; the user explicitly confirms open-in-place or managed-library copy; the original is never moved or modified; duplicate and permission states are explained; a moved in-place file produces a recoverable locate-file flow (FR-7.2, PRD §7.2).
 
 - [ ] **2.3 — Windows OS integration.**
-  - Acceptance: file association, "Open with", and command-line open all launch the app on the given PDF (PRD FR-7.1). Appendix A step 2 requires this, and it is absent from the current build.
+  - Depends on R0.6 and the document-window decision in R0.8.
+  - Acceptance: file association, "Open with", and command-line open all launch or route to the app with the given PDF according to the recorded single/multiple-document model (PRD FR-7.1). Appendix A step 2 requires this, and it is absent from the current build.
 
 - [ ] **2.4 — View modes, navigation, and search depth.**
-  - Acceptance: single page, continuous vertical, facing pages, fit width, fit page, custom zoom, rotate, and presentation/fullscreen (FR-8.2); outline, thumbnails, page labels, history back/forward, named destinations, internal links (FR-8.1); search with case-sensitive and whole-word options, diacritic-tolerant default, result count, snippets, keyboard traversal (FR-8.3), running on deterministic extracted text.
+  - Acceptance: single page, continuous vertical, facing pages, fit width, fit page, custom zoom, rotate, and presentation/fullscreen (FR-8.2); outline, thumbnails, page labels, history back/forward, named destinations, internal links (FR-8.1); search with case-sensitive and whole-word options, diacritic-tolerant default, result count, snippets, keyboard traversal (FR-8.3), running on deterministic extracted text; navigation, search, pane toggle, zoom, highlight colours, note, Remember, and reading-only shortcuts are documented in Settings and relevant tooltips (FR-8.7). Disabled commands explain their unavailable state.
 
 - [ ] **2.5 — Library, metadata, and background jobs.**
-  - Acceptance: recents, favourites, collections, tags, archive (FR-7.5); embedded metadata extracted and editable with no network call (FR-7.4); fingerprint-duplicate handling with confirmation (FR-7.7); extraction/thumbnail/index jobs are visible, cancellable, and restartable, and reading stays available while they run (FR-7.6); cancelling indexing never corrupts a document record.
+  - Depends on R0.3.
+  - Acceptance: recents, favourites, collections, tags, archive (FR-7.5); embedded metadata extracted and editable with no network call (FR-7.4); fingerprint-duplicate handling with confirmation (FR-7.7); extraction/thumbnail/index jobs are visible, cancellable, and restartable, and reading stays available while they run (FR-7.6); cancelling indexing never corrupts a document record; page and thumbnail work is prioritized around the active reading position instead of eagerly processing an entire large document.
 
 - [ ] **2.6 — Session restore.**
-  - Acceptance: reopening a document restores exact page, zoom mode, and scroll position (PRD §7.2, Appendix A step 7).
+  - Depends on R0.3.
+  - Acceptance: reopening a document restores exact page, zoom mode, scroll position, pane visibility, and safe user-adjusted pane widths without making the canvas or primary controls unreachable (PRD §7.2, §17.6, Appendix A step 7).
 
 - [ ] **2.7 — Appearance and reading comfort.**
-  - Acceptance: light and dark application chrome plus page-dimming, with **no** default colour inversion of page content (FR-8.6); application text size adjustable independently of PDF zoom; reduced-motion support (§17.4); calm chrome that appears on intent rather than on pointer movement (FR-8.5).
+  - Acceptance: light and dark application chrome plus page-dimming, with **no** default colour inversion of page content (FR-8.6); application text size adjustable independently of PDF zoom; reduced-motion support (§17.4); calm chrome that appears on intent rather than on pointer movement (FR-8.5); the 1024×640 layout follows a documented pane-collapse order; all reader actions remain reachable at 100%, 125%, 150%, and 200% Windows display scaling.
+
+- [ ] **2.8 — Intentional document, empty, loading, and recovery states.**
+  - Depends on R0.8.
+  - Acceptance: empty Library/search/outline/annotation states, initial loading, indexing, scanned-PDF limitations, password-protected PDFs, malformed/unsupported files, permission denial, moved files, duplicate import, version mismatch, and renderer failure each produce a truthful state with the next safe action. No case ends in a blank canvas, infinite spinner, invented sample count, or silent partial import. Printing and multiple-document behaviour match the recorded v1 decisions.
+
+- [ ] **2.9 — Pass the R1 performance and usability gate.**
+  - Acceptance: on recorded Windows reference hardware, cold first page is under 2 s; cached navigation responds within 100 ms; indexed search begins returning results within 300 ms; long scrolling respects the R0 working-set cap; job cancellation completes without corrupting state; reading remains responsive during extraction and indexing. Record corpus version, cold/warm state, method, median, and worst observed result. Failures block R2 work.
 
 ### 3. Local data and annotations (PRD R2)
 
-- [ ] **3.1 — Local SQLite data layer.**
-  - Research before coding: choose the Tauri-compatible SQLite strategy (Rust-side `rusqlite`/`sqlx` behind narrow commands is preferred over exposing SQL to the webview).
-  - Acceptance: **WAL enabled and FTS5 available** (PRD §15.2); tables for the PRD §16 entity list including `document_versions`, `pages`, `annotation_assets`, `note_revisions`, `evidence_blocks`, `review_events`, `review_schedule`, `jobs`, and `exports`; forward-only versioned migrations that back up before running; atomic write boundaries; everything under the app data directory laid out per §15.4.
+- [ ] **3.1 — Incremental feature migrations and typed persistence.**
+  - Depends on the core Rust-side database and migration framework from R0.3.
+  - Acceptance: feature-specific forward-only migrations add `annotations`, `annotation_assets`, `notes`, `note_revisions`, `note_links`, `evidence_blocks`, `review_prompts`, `review_events`, `review_schedule`, and `exports` as their owning features begin; migrations back up before running and preserve atomic write boundaries; everything remains under the app data layout in §15.4. SQL is never exposed to the webview. Do not create speculative columns for deferred AI/OCR behaviour when a later additive migration is sufficient.
 
 - [ ] **3.2 — Provenance on every text-bearing record.**
-  - Acceptance: each stores exactly one of `source_extracted`, `source_ocr`, `user_authored`, `ai_draft`, `user_adopted_ai`, `deterministic_transform` (§16.1). Adoption never erases the original provenance. This is schema-level, not presentation-level.
+  - Acceptance: preserve the R0.3 core constraint and extend it to each new text-bearing feature record: exactly one of `source_extracted`, `source_ocr`, `user_authored`, `ai_draft`, `user_adopted_ai`, `deterministic_transform` (§16.1). Adoption never erases the original provenance. This is schema-level, not presentation-level.
 
 - [ ] **3.3 — Document fingerprinting and version handling.**
   - Acceptance: each import stores a cryptographic fingerprint, page count, and page geometry; different bytes at a known path are treated as a new version and **offer re-anchoring** rather than reusing old coordinates (FR-7.3, RK-2).
 
 - [ ] **3.4 — Annotation types and durable anchors.**
-  - Acceptance: text highlight, underline, **area/image capture**, anchored comment without a highlight, and bookmark (FR-9.1). Each text annotation stores document version, zero-based page and visible label, normalized rectangles, exact quote, prefix/suffix context, text-layer checksum, and timestamps (FR-9.4). Area captures store the crop as an asset plus fingerprint, page, rectangle, and optional caption — never an orphaned bitmap (FR-9.7). Annotations survive zoom, resize, rotation, and restart.
+  - Acceptance: text highlight, underline, **area/image capture**, anchored comment without a highlight, and bookmark (FR-9.1); selecting text opens a compact colour/comment popover, locked highlight/underline mode supports repeated capture until explicitly exited, and area capture is one drag plus an optional caption (FR-9.2). Each text annotation stores document version, zero-based page and visible label, normalized rectangles, exact quote, prefix/suffix context, text-layer checksum, and timestamps (FR-9.4). Area captures store the crop as an asset plus fingerprint, page, rectangle, and optional caption — never an orphaned bitmap (FR-9.7). Annotations survive zoom, resize, rotation, renderer reload, and restart.
 
 - [ ] **3.5 — Quote/comment separation, palette, undo, and trash.**
   - Acceptance: the extracted passage is read-only inside the annotation and the user comment is a separate field, with no copy/export style able to present a comment as a quotation (FR-9.5); a configurable semantic colour palette carries both colour and user label (FR-9.3); create/edit/delete are undoable in-session and deletion goes to a recoverable trash before purge (FR-9.8).
@@ -179,25 +222,33 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
   - Acceptance: standards-compliant embedded annotations render; importing them into editable Reader records is an explicit action that previews duplicates and provenance (FR-9.9).
 
 - [ ] **3.7 — Annotation search and filters.**
-  - Acceptance: filter by type, semantic colour label, tag, page range, note status, and Remember status; search quote and comment text; **filtering 10,000 annotations stays interactive on reference hardware** (§9.3) — this needs a measured benchmark, not an assertion.
+  - Acceptance: filter by type, semantic colour label, tag, page range, note status, and Remember status; search quote and comment text (FR-9.6); **filtering 10,000 annotations stays interactive on reference hardware** (§9.3) — this needs a measured benchmark, not an assertion.
+
+- [ ] **3.8 — Pass the R2 performance and recovery gate.**
+  - Acceptance: annotation creation is visible within 100 ms and durable within 500 ms; 10,000-item filtering stays interactive; create/edit/delete undo works through pointer and keyboard paths; zoom, rotation, restart, and a compatible renderer reload preserve anchors; incompatible document replacement enters an explicit re-anchoring review without attaching old coordinates silently. Record corpus and hardware details; failures block R3 work.
 
 ### 4. Notes, review, and export (PRD R3–R4)
 
+- [ ] **4.0 — Resolve note-template and citation-output decisions before R3 implementation.**
+  - Acceptance: PRD OQ-11 and OQ-12 are resolved with representative exported files: required Markdown front matter, default source/concept/annotation templates, and whether v1 includes CSL rendering or only editable metadata plus page/source references. The decision fixes compatibility and portability expectations without expanding into full citation management.
+
 - [ ] **4.1 — Source, concept, and scratch notes.**
-  - Acceptance: the three roles are distinct; scratch notes must be promoted, archived, or discarded and are not exported as polished knowledge by default; autosave with bounded local revisions loses no more than the current small edit buffer on crash (FR-10.8); revision restore never duplicates annotation blocks or assets.
+  - Depends on 4.0.
+  - Acceptance: the three note roles are distinct; evidence/source text and user prose have different visual, semantic, clipboard, and export roles even with AI absent (FR-10.3); concept-note onboarding encourages a complete claim or question as the title without blocking save (FR-10.4); scratch notes must be promoted, archived, or discarded and are not exported as polished knowledge by default; autosave with bounded local revisions loses no more than the current small edit buffer on crash (FR-10.8); revision restore never duplicates annotation blocks or assets.
 
 - [ ] **4.2 — Evidence blocks and in-context return.**
   - Acceptance: "Add to note" inserts an immutable source excerpt or area image with document title/author, page label, annotation deep link, colour label/tags, and the separate user comment (FR-10.1); activating a source link opens the document, centres the annotation, briefly emphasizes it, and navigation history returns to the note (FR-10.2).
 
 - [ ] **4.3 — Links, backlinks, templates, and note search.**
-  - Acceptance: note-to-note, document, and annotation links plus backlinks, all keyed on stable IDs so renaming preserves every link (FR-10.5); user-editable, previewable, versioned templates (FR-10.7); split-with-link-preservation and non-blocking atomicity warnings (FR-10.6); full-text search across titles, prose, comments, tags, and excerpts that identifies each result's text role (FR-10.9); Markdown semantics per FR-10.10.
+  - Depends on 4.0.
+  - Acceptance: note-to-note, document, and annotation links plus backlinks, all keyed on stable IDs so renaming preserves every link (FR-10.5); user-editable, previewable, versioned templates matching the 4.0 decision (FR-10.7); split-with-link-preservation and non-blocking atomicity warnings (FR-10.6); full-text search across titles, prose, comments, tags, and excerpts that identifies each result's text role (FR-10.9); Markdown semantics per FR-10.10.
 
 - [ ] **4.4 — Remember action and prompt editor.**
   - Acceptance: marking a highlight, evidence block, or note "Remember" opens the prompt editor and **never silently creates a card** (FR-11.1); prompt types cover focused Q&A, explanation, application, contrast, and cloze — cloze not the default (FR-11.2); every prompt links to at least one source annotation or user-authored note (FR-11.3); advisory, always-overridable quality lint per FR-11.4; the answer stays Draft until the user explicitly adopts it (FR-11.5).
 
 - [ ] **4.5 — FSRS scheduling and review sessions.**
   - Research before coding: select an FSRS implementation with deterministic, exportable scheduling events; record its version and licence (PRD OQ-13).
-  - Acceptance: default desired retention 90%, transparent next-review dates, configurable daily time/card budget (FR-11.10); source excerpt, answer, thumbnail, and nearby context stay hidden until reveal or explicit skip (FR-11.6); reveal shows adopted answer and exact source evidence side by side (FR-11.7); outcomes are Again/Hard/Good/Easy with the UI stating that Hard is still a successful recall (FR-11.8); **no AI grades the user** (FR-11.9); FSRS event history is exportable and reproducible.
+  - Acceptance: default desired retention 90%, transparent next-review dates, configurable daily time/card budget (FR-11.10); source excerpt, answer, thumbnail, and nearby context stay hidden until reveal or explicit skip (FR-11.6); reveal shows the user's optional typed response, adopted answer, and exact source evidence together (FR-11.7); the optional response is preserved with its review event and export; outcomes are Again/Hard/Good/Easy with the UI stating that Hard is still a successful recall (FR-11.8); **no AI grades the user** (FR-11.9); FSRS event history is exportable and reproducible.
 
 - [ ] **4.6 — Queue controls and prompt repair.**
   - Acceptance: daily budget, pause, priority, reschedule, and stop-reviewing all present; over-budget reviews stay due without punishment or streak pressure (FR-11.11, Principle 10); repeated failure offers add-a-cue, split, narrow, or retire rather than shrinking the interval forever (FR-11.12); a backlog never blocks reading or note-taking.
@@ -206,10 +257,12 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
   - Acceptance: at session end, offer — never force — the four source-hidden recall questions of PRD §11.4, revealing that session's annotations only after the attempt.
 
 - [ ] **4.8 — Export: Quick Copy, Markdown, JSON backup.**
-  - Acceptance: Quick Copy emits a selected annotation, evidence block, note, or prompt as Markdown or plain text with its page/source reference, visibly distinguishing quotation from user comment (FR-14.1); the Markdown package uses the `export/{notes,sources,assets,reviews}/manifest.json` layout with stable IDs, front matter, and relative asset paths, readable in a plain text editor without Reader (FR-14.2); a versioned JSON/asset archive covers documents, annotations, notes, links, prompts, review history, settings, and provenance (FR-14.4).
+  - Depends on 4.0.
+  - Acceptance: Quick Copy emits a selected annotation, evidence block, note, or prompt as Markdown or plain text with its page/source reference, visibly distinguishing quotation from user comment (FR-14.1); the Markdown package uses the `export/{notes,sources,assets,reviews}/manifest.json` layout with stable IDs, the decided front matter, and relative asset paths, readable in a plain text editor without Reader (FR-14.2); a versioned JSON/asset archive covers documents, annotations, notes, links, prompts, review history including optional typed responses, settings, and provenance (FR-14.4).
 
 - [ ] **4.9 — Annotated PDF copy export.**
-  - Acceptance: exports a **new** PDF with supported annotations embedded; the managed or in-place original is never modified (FR-14.3, RK-3); Reader-only metadata goes to a sidecar manifest rather than being dropped silently. Feasibility is a PDF.js/pdf-lib spike, gated with task 2.1.
+  - Depends on the successful R0.5 export proof.
+  - Acceptance: exports a **new** PDF with supported annotations embedded; the managed or in-place original is never modified (FR-14.3, RK-3); Reader-only metadata goes to a sidecar manifest rather than being dropped silently; a failed export leaves no partial destination file.
 
 - [ ] **4.10 — Review export and destination safety.**
   - Acceptance: prompts and source references export as CSV/TSV (FR-14.5); the user chooses the destination, existing files are never overwritten without a diff or confirmation, and repeat exports are idempotent where the format allows (FR-14.6).
@@ -217,19 +270,25 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
 - [ ] **4.11 — Deep links.**
   - Acceptance: `mereth://document/{id}?page=&annotation=`, `mereth://note/{id}`, and `mereth://review/{id}` resolve; exports also carry human-readable page/source text so they never depend on the scheme alone (§14.2).
 
-- [ ] **4.12 — Backup restore drill.**
-  - Acceptance: restoring a backup into a clean profile reproduces note links and review due state (Appendix A step 13, RK-17). An untested backup is not a backup.
+- [ ] **4.12 — Backup restore and recurring restore drill.**
+  - Acceptance: restoring a backup into a clean profile reproduces documents or their ownership references, annotations and assets, provenance, note links, optional review responses, and review due state (Appendix A step 13, RK-17). An automated clean-profile drill produces a machine-readable result on a quarterly schedule; release validation repeats it but does not replace it. An untested backup is not a backup.
+
+- [ ] **4.13 — Pass the R3/R4 responsiveness and recovery gate.**
+  - Acceptance: autosave, revision restore, full-text note search, export, backup, and FSRS scheduling run without blocking reading or losing current edits; cancellation and disk-full/permission/export-conflict failures leave atomic prior state and a concrete retry or recovery path. Record corpus, dataset size, hardware, method, median, and worst observed result before the release phase.
 
 ### 5. Security and accessibility
 
 - [ ] **5.1 — Lock down PDF and webview security.**
-  - Depends on task 0.1.
-  - Acceptance: PDF JavaScript, automatic launches, embedded executables, and network fetches from document content do not execute (FR-8.8); external links disclose the destination and require an explicit OS-browser handoff; the CSP is verified against a hostile sample, not just declared in config; the capability allowlist contains no permission that no feature uses; document text is never treated as instructions (FR-12.14 — applies now, since it constrains the architecture even with AI absent).
+  - Depends on task 0.1 and preserves the proven R0.7 boundary as features add capabilities.
+  - Acceptance: PDF JavaScript, automatic launches, embedded executables, and network fetches from document content do not execute (FR-8.8); external links disclose the destination and require an explicit OS-browser handoff; the CSP is verified against hostile samples, not just declared in config; the capability allowlist contains no permission that no feature uses; document text is never treated as instructions (FR-12.14 — applies now, since it constrains the architecture even with AI absent); each new import, export, deep-link, and file-association path reruns the relevant security regression.
   - Verification: run the malformed/hostile subset of the §17.5 corpus and record results.
 
 - [ ] **5.2 — Accessibility and keyboard coverage.**
-  - Acceptance: every core workflow is completable without a mouse (§8.3); focus order is logical with visible `:focus-visible` state and no keyboard traps; screen-reader names and roles on annotation tools, panes, pages, and review controls; WCAG AA contrast in application chrome; colour is never the only annotation-category signal; the app stays readable at the 1024×640 minimum window.
+  - Acceptance: every core workflow is completable without a mouse (§8.3); the full shortcut map is discoverable in Settings and contextual tooltips; focus order is logical with visible `:focus-visible` state and no keyboard traps; screen-reader names and roles exist on annotation tools, panes, pages, jobs, dialogs, and review controls; WCAG AA contrast holds in light and dark chrome; colour is never the only annotation-category signal; the deterministic pane-collapse order keeps primary actions reachable at 1024×640 and Windows scaling from 100% through 200%; application text scaling and reduced motion preserve meaning and task completion.
   - Known defects in the current prototype: the Settings section list uses `<b>` elements instead of buttons; highlights are click-only `<mark>` elements with no keyboard path; modals have no focus trap or focus restoration; rail buttons carry no `aria-current`.
+
+- [ ] **5.3 — Complete the resilient-state matrix.**
+  - Acceptance: automated or documented interaction tests cover first-run, empty, loading, success, cancellation, no-results, permission denial, moved file, duplicate, version mismatch/re-anchoring, malformed/encrypted/scanned PDF, disk-full autosave, migration failure, export conflict/failure, corrupt cache rebuild, and backup restore failure. Every state reports real data, preserves prior work, identifies what remains usable, and offers the next safe action; focus enters and returns correctly for every dialog.
 
 ### 6. Packaging and release
 
@@ -248,7 +307,7 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
   - Acceptance: a push produces a downloadable `MerethReader-Windows-NSIS` artifact containing a setup `.exe` that installs and launches on a clean Windows 11 x64 machine.
 
 - [ ] **6.5 — Performance benchmark against reference hardware.**
-  - Acceptance: measured numbers recorded for PRD §17.2 — first page under 2 s, cached page navigation under 100 ms, annotation visible under 100 ms and durable under 500 ms, search first results under 300 ms, and a measured AI-off working-set cap. Targets that are never measured are decoration.
+  - Acceptance: repeat and compare the already-passed R0, R1, R2, and R3/R4 measurements on recorded Windows reference hardware — first page under 2 s, cached page navigation under 100 ms, annotation visible under 100 ms and durable under 500 ms, search first results under 300 ms, responsive background work, and the measured AI-off working-set cap. Record corpus version, build, cold/warm state, method, median, worst observed result, and any regression. This is final confirmation, not the first time performance is measured.
 
 - [ ] **6.6 — Release signing.**
   - Acceptance: certificate secrets are held in GitHub secrets, the installer is signed in CI, and verification steps are documented.
@@ -259,11 +318,14 @@ Phases map to the PRD roadmap (§18). Each phase must be fully usable with no AI
   - Why it sits in §6: it blocks *releasing*, not *building*. Development builds are unaffected. Needs artwork, not a decision — the name and identifier are settled (0.3, 0.4).
   - Reminder: if `pnpm tauri icon` is re-run it will regenerate `src-tauri/icons/android/` and `ios/`. Delete both — neither platform is on the roadmap (C6).
 
+- [ ] **6.8 — Establish a success-measurement path without telemetry.**
+  - Acceptance: each PRD §19 metric identifies whether it comes from automated corpus tests, local benchmark reports, or a consented usability study; any diagnostic export is explicit, inspectable, and user-initiated; no document, note, annotation, prompt, review response, or behavioural event is silently transmitted or retained for product analytics.
+
 ### 7. Deferred — not v1
 
 - [ ] **7.1 — Optional local AI (PRD R5).**
   - Gate: do not begin until the completion gate below is fully met. Then evaluate binary size, model licence, hardware requirements, sandboxing, and local-only runtime before any code.
-  - Acceptance if later included: global off unloads every app-managed process and index and cancels queued work (FR-12.1); per-document exclusion is enforced across every action (FR-12.2); each action declares its scope with no implicit library-wide scope (FR-12.3); every document-grounded answer exposes its retrieved evidence (FR-12.11); generated text is visibly and structurally distinct until adopted (FR-12.12); the model never assigns mastery or correctness (FR-12.10); prompt-injection and citation-accuracy evaluation gates pass before shipping.
+  - Acceptance if later included: global off unloads every app-managed process and index and cancels queued work (FR-12.1); per-document exclusion is enforced across every action (FR-12.2); each action declares its scope with no implicit library-wide scope (FR-12.3); selection explanation, document Q&A, scoped summaries, note transformations, prompt drafts, and link/tag suggestions obey FR-12.4–FR-12.9; every document-grounded answer exposes adjacent retrieved evidence (FR-12.11); generated text is visibly and structurally distinct until adopted (FR-12.12); no draft silently repairs source text or anchors (FR-12.13); the model never assigns mastery or correctness (FR-12.10); operational logs exclude prompt/response bodies by default (FR-12.15); crash, cancellation, citation-accuracy, source-preservation, licence, memory, and prompt-injection gates pass before shipping.
 - [ ] **7.2 — OCR (PRD R6).** v1 boundary stands: scanned PDFs can be viewed and area-annotated, but text search and text highlights are unavailable, and that limitation is stated in the UI rather than silently degraded.
 - [ ] **7.3 — macOS (R7), Linux packaging (R8), EPUB/DjVu (R9).**
 
@@ -290,18 +352,28 @@ The current `src/main.tsx` is a static sketch. These are conformance gaps agains
 - [ ] **U10 — Settings**: only the AI & privacy page exists. Appearance, Reading, Annotations, Review, Storage, Export, and Shortcuts are inert labels. The Models table and Boundaries/Excluded-documents surfaces belong with task 7.1, not v1.
 - [ ] **U11 — Import dialog**: show the computed fingerprint, the source path for open-in-place, and the destination path for managed copy.
 - [ ] **U12 — Prompt editor**: add the prompt-type selector (Explanation / Application / Contrast / Cloze) and the "Add a cue" / "Keep anyway" affordances on lint warnings.
-- [ ] **U13 — In-margin source note and AI margin note** with Adopt / Discard and the "Autosaved · N revisions kept" state.
+- [ ] **U13 — In-margin source note** with a truthful "Autosaved · N revisions kept" state. The AI margin-note variant is R5-only and must not appear as a disabled or empty v1 feature.
 - [ ] **U14 — Reader toolbar**: fit-width and view-mode controls, and the continuous-scroll/spread indicator.
+- [ ] **U16 — Fast annotation creation and management**: compact selection popover, keyboard-operable semantic colour/comment controls, locked highlight/underline mode with a persistent exit affordance, one-drag area capture, bookmark/comment creation, undo, and recoverable trash (FR-9.1–FR-9.2, FR-9.8).
+- [ ] **U17 — Full search experience**: query editing, case/whole-word options, snippets, counts, previous/next traversal, keyboard focus, indexing-in-progress behaviour, low-confidence extraction disclosure, and no-results/error states (FR-8.3–FR-8.4).
+- [ ] **U18 — Note authoring rather than note viewing**: new-note and template choice, source/concept/scratch type, concept-title guidance, formatting and link insertion, autosave/revision state, revision restore, split-with-links preview, scratch promotion/archive/discard, and source/user semantic roles (FR-10.3–FR-10.10).
+- [ ] **U19 — Review queue, history, and synthesis**: due overview, daily budget/start controls, pause/priority/reschedule/retire, review history, empty and over-budget states, and the optional four-question reading-session synthesis flow. The active review card alone is insufficient.
+- [ ] **U20 — Document lifecycle and recovery**: drag-drop target; first-page/loading/indexing states; duplicate confirmation; locate moved file; password, malformed, unsupported, scanned, and permission-denied outcomes; changed-version and re-anchoring review; corrupt-cache rebuild; and renderer failure with a safe retry/close path.
+- [ ] **U21 — Export, backup, and restore**: Quick Copy feedback, Markdown/JSON/review/PDF export choices, destination conflict and diff/confirmation, progress/cancellation, atomic failure, backup contents, clean-profile restore progress, and restore verification results.
+- [ ] **U22 — Empty and zero-data states**: Library, collections, Notes, annotations, search, Review, jobs, and Settings use real zero counts and a useful next action. No sample content or invented activity appears outside an unmistakably labelled prototype.
+- [ ] **U23 — Adaptive reader layouts**: light/dark chrome and page dimming; 1024×640 deterministic pane collapse; user-resizable pane limits and restore; 100%–200% Windows scaling; long titles, CJK/RTL metadata, text scaling, and reduced-motion alternatives. The page canvas and primary controls must never become unreachable.
+- [ ] **U24 — Shortcut discovery and semantic controls**: Settings → Shortcuts, contextual shortcut tooltips, unavailable-command explanations, logical focus movement, dialog focus trap/return, and native buttons/inputs/links instead of copying the mockup's clickable `div`/`span` markup.
 
 ### Prototype honesty
 
 - [ ] **U15 — The prototype currently asserts things that are not true.** The footer reads "41 annotations · 6 notes · Autosaved just now", the search box shows "7 / 41", and the review header claims "12 due · FSRS · desired retention 90%" — with no annotations, no notes, no autosave, no search index, and no scheduler behind any of it. Either wire these to real state or mark the build unmistakably as a mockup. Shipping invented counts makes it impossible to tell working features from placeholders during testing.
+- [ ] **U25 — The mockup contradicts its own AI-off copy.** It says "Everything here is off by default" but its component property defaults `aiOn` to `true`. Set the reference state to off. For v1, remove R5-only AI navigation, model tables, generated drafts, and active AI chips from the implementation rather than presenting non-functional controls; retain them only in the separately identified R5 design reference.
 
 ---
 
 ## Completion gate
 
-The product is not complete until every task in phases 0–6 is checked and verified, and the PRD Appendix A journey passes end to end **with the network disabled and no AI models installed**:
+The product is not complete until every checkbox in phases 0–6, the R0 gate, and the applicable v1 UI/UX conformance backlog is checked and verified, and the PRD Appendix A journey passes end to end **with the network disabled and no AI models installed**:
 
 install on a clean Windows machine → open a 400-page PDF via "Open with" → navigate by outline, search, and page number → highlight, label, and comment → capture a figure and add both to a source note → write a linked concept note → restart and restore the exact reading position → return from the note to each page annotation → mark one idea Remember and approve a prompt → complete a source-hidden review and self-rate → Quick Copy evidence with its page reference → export Markdown, review CSV/TSV, full backup, and an annotated PDF copy → restore that backup into a clean profile and repeat the note and review steps.
 

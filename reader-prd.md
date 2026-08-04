@@ -1,14 +1,14 @@
 # Mereth Reader PRD
 
-**Document status:** Draft v0.2  
-**Date:** 28 July 2026; amended 1 August 2026  
+**Document status:** Draft v0.3
+**Date:** 28 July 2026; amended 1 and 4 August 2026
 **Product name:** Mereth Reader (resolved — see §21 OQ-1)  
 **Initial platform:** Windows desktop  
 **Later platforms:** macOS, then Linux  
-**Scope:** Clean PDF reading, source-grounded notes, internal review, and optional local AI  
-**Relationship to Cabin:** Separate product; see `future-prd.md` §0
+**Scope:** Clean PDF reading, source-grounded notes, and internal review in v1; optional local AI in R5
 
-> **Amendment note (1 August 2026).** Two decisions in this document changed after drafting and are reflected throughout: the desktop shell is **Tauri 2 + Rust**, not Electron (§1.6, §15.2, §15.3, §18, RK-11, RK-12, OQ-4), and the product name is resolved as **Mereth Reader** with the `mereth://` deep-link scheme (§2.3, §14.2, OQ-1). A further scope decision lives in the implementation plan rather than here: **optional local AI (§12, R5) is out of v1**, consistent with the release cut this document already recommends in §18.1.
+
+> **Amendment note (1 and 4 August 2026).** The desktop shell is **Tauri 2 + Rust**, not Electron (§1.6, §15.2, §15.3, §18, RK-11, RK-12, OQ-4), and the product name is **Mereth Reader** with the `mereth://` deep-link scheme (§2.3, §14.2, OQ-1). The release scope is also explicit throughout this document: **v1 ends at R4 and contains no AI runtime or AI-dependent feature**. Optional local AI is R5 work and begins only after the non-AI completion journey passes. The 4 August amendment also adds staged performance validation, versioned corpus expectations, resilient-state requirements, and explicit product decisions that must be resolved before their dependent work begins.
 
 ---
 
@@ -20,7 +20,7 @@ The first complete product is:
 
 > A calm Windows PDF reader where annotations become high-quality notes, selected ideas become user-approved retrieval prompts, and every AI feature can be turned off without weakening reading, notes, review, search, or export.
 
-The application is not a Cabin module. It has its own executable, repository, database, data directory, installer, and roadmap.
+The application has its own executable, repository, database, data directory, installer, and roadmap.
 
 ### 0.1 Core product loop
 
@@ -44,7 +44,7 @@ AI can assist at several arrows. It never owns the loop.
 
 ### 0.2 Corrected name
 
-The note and memory ideas in the request refer to **Andy Matuschak**, not “Matusatch.” His work is a useful design reference for retrieval prompts, mnemonic media, and evergreen notes. It is not a product specification and should not be treated as settled cognitive science.
+The note and memory ideas in the request refer to **Andy Matuschak**. His work is a useful design reference for retrieval prompts, mnemonic media, and evergreen notes. It is not a product specification and should not be treated as settled cognitive science.
 
 ---
 
@@ -198,8 +198,9 @@ The first release is for one local user. It is not designed for a lab, class, or
 - Internal retrieval prompts and scheduled reviews.
 - Markdown/clipboard/JSON export.
 - Exported PDF copy with embedded annotations, subject to the rendering spike.
-- Optional local AI for bounded, source-grounded actions.
 - Secure, local, single-user storage.
+
+Optional local AI for bounded, source-grounded actions is **R5, after v1**. Its absence must not leave disabled primary actions, empty navigation destinations, or a degraded core workflow.
 
 ### 4.2 Explicit non-goals for v1
 
@@ -216,6 +217,7 @@ The first release is for one local user. It is not designed for a lab, class, or
 - Mobile or tablet clients.
 - Handwriting recognition.
 - Editing PDF page content, rearranging pages, or filling complex forms.
+- Any AI runtime, model download, semantic index, or AI-authored feature surface. These begin in R5 after the v1 completion gate.
 
 ### 4.3 Later candidates
 
@@ -259,7 +261,7 @@ The application has five top-level destinations:
 | **Reader** | Document canvas with optional outline, annotation, and note panes |
 | **Notes** | Source notes and concept notes across documents |
 | **Review** | Due retrieval prompts, prompt editing, review history |
-| **Settings** | Appearance, data, export, AI, models, privacy, shortcuts |
+| **Settings** | Appearance, reading, annotations, review, storage, export, privacy, shortcuts; R5 adds AI and models |
 
 There is no Tasks, Calendar, Focus, Music, or Chat destination.
 
@@ -269,7 +271,7 @@ The reading surface uses a restrained three-zone layout:
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
-│ document title     page / search      view controls     AI state │
+│ document title     page / search      view controls        status │
 ├──────────────┬───────────────────────────────────┬───────────────┤
 │ outline or   │                                   │ annotations   │
 │ thumbnails   │          page canvas              │ or note       │
@@ -277,7 +279,7 @@ The reading surface uses a restrained three-zone layout:
 └──────────────┴───────────────────────────────────┴───────────────┘
 ```
 
-Both side panes collapse independently. A reading-only command hides all chrome except a transient page indicator. Opening AI must never shrink the page into a narrow strip; it temporarily reuses the right pane.
+Both side panes collapse independently. A reading-only command hides all chrome except a transient page indicator. In R5, opening AI must never shrink the page into a narrow strip; it temporarily reuses the right pane rather than adding a sixth top-level destination.
 
 ### 6.2 Review is not mixed into Library
 
@@ -351,6 +353,8 @@ If it fails the agreed corpus, compare PDFium before implementation proceeds. Mu
 
 **FR-8.7 — Keyboard first.** Navigation, search, pane toggle, zoom, highlight colours, note, Remember action, and reading-only mode have documented shortcuts.
 
+The complete shortcut map is discoverable from Settings and from relevant control tooltips. A shortcut that is unavailable because of the current document or view explains why rather than failing silently.
+
 **FR-8.8 — Link safety.** External links show the target and require an explicit OS-browser handoff. PDF JavaScript, automatic launches, network fetches, and embedded executables are disabled.
 
 ### 8.3 Acceptance criteria
@@ -360,6 +364,8 @@ If it fails the agreed corpus, compare PDFium before implementation proceeds. Mu
 - Search remains usable before optional AI is installed.
 - Rotating or zooming the view does not displace annotations.
 - The page stays comfortably readable at the minimum supported window size.
+- Copying from representative single- and multi-column corpus documents preserves reading order where the source permits it; low-confidence extraction is visibly disclosed before copy.
+- Core reader actions remain reachable at 100%, 125%, 150%, and 200% Windows display scaling without clipped controls or inaccessible panes.
 
 ---
 
@@ -416,6 +422,9 @@ Coordinates render the annotation; quote context supports re-anchoring after a c
 - Editing a comment cannot alter the stored source excerpt.
 - Filtering 10,000 annotations remains interactive on reference hardware.
 - Export never overwrites the original PDF.
+- The compact creation popover appears without perceptible delay after selection; annotation creation is visible within 100 ms and durable within 500 ms on reference hardware.
+- Locked highlight/underline mode supports repeated creation until explicitly exited, and area capture completes with one drag plus an optional caption.
+- Create, edit, and delete can be undone from both pointer and keyboard workflows during the current session.
 
 ---
 
@@ -469,6 +478,8 @@ This adapts the strongest part of Zotero’s workflow.
 - Export never labels AI text as user-authored text.
 - A source note can be built completely without AI.
 - Revision restore does not duplicate annotation blocks or assets.
+- Evidence blocks and user prose remain distinct visually, semantically, in clipboard output, and in export even when no AI feature exists.
+- Creating a concept note offers non-blocking guidance toward a complete claim or question as its title; dismissing the guidance never blocks saving.
 
 ---
 
@@ -549,6 +560,7 @@ After the attempt, reveal that session’s annotations. This is a lightweight re
 - Every due prompt can return to its evidence.
 - FSRS event history is exportable and reproducible.
 - A backlog never blocks reading or note-taking.
+- If the user types an optional response before reveal, it remains visible during source comparison and is preserved with that review event and its export.
 
 ---
 
@@ -878,6 +890,16 @@ AI Standard testing uses a separate 16 GB+ profile. Hardware models are recorded
 - Reader remains responsive while extraction, export, or model inference runs.
 - Core AI-off working set is measured and capped through the R0/R1 benchmark; no target is invented before the corpus test.
 
+Validation is staged rather than postponed until release:
+
+- **R0:** renderer viability, cold first-page time, long-scroll memory behaviour, selection fidelity, and security corpus;
+- **R1:** cached navigation, page/thumbnail virtualization, search latency, background-job cancellation, and working-set cap;
+- **R2:** annotation creation, persistence, 10,000-annotation filtering, and re-anchoring responsiveness;
+- **R3/R4:** note autosave, revision restore, export, backup, and review scheduling while the reader remains responsive;
+- **release:** repeat the complete benchmark on recorded Windows reference hardware and compare it with the earlier baselines.
+
+Each stage records hardware, corpus version, cold/warm state, measurement method, median, and worst observed result. A failed gate blocks dependent work until the design changes or the target is explicitly amended in this PRD.
+
 ### 17.3 Reliability
 
 - Autosave and WAL-backed recovery.
@@ -886,6 +908,8 @@ AI Standard testing uses a separate 16 GB+ profile. Hardware models are recorded
 - Restartable background jobs.
 - Corrupt cache/index can be rebuilt without losing user work.
 - Quarterly automated restore drill against a representative backup.
+
+The quarterly restore drill runs from a clean profile, validates note links, annotation assets, provenance, and review due state, and produces a machine-readable result. Release validation does not replace this recurring test.
 
 ### 17.4 Accessibility
 
@@ -914,7 +938,16 @@ Maintain a legal, redistributable corpus covering:
 - 400+ page book;
 - changed/replaced document versions.
 
-Every renderer upgrade runs visual, selection, text, annotation-anchor, memory, and security regression tests against it.
+The corpus has a versioned manifest recording licence/source, fingerprint, expected page count, expected capability or failure mode, and any permitted variance. Every renderer upgrade runs visual, selection, text, annotation-anchor, memory, and security regression tests against it. Password-protected, malformed, scanned, and unsupported documents must produce an intentional result or recoverable explanation; a blank canvas, infinite spinner, or silent partial import is a failure.
+
+### 17.6 Resilient states and adaptive operation
+
+- Empty Library, Notes, Review, annotation, search, and job states explain the next useful action without invented counts or sample records.
+- Loading and indexing states disclose what remains usable, expose cancellation where safe, and never block reading unnecessarily.
+- Permission denial, moved files, version mismatch, duplicate import, malformed/encrypted PDF, disk-full autosave, migration failure, export conflict, and restore failure preserve existing user work and offer a concrete recovery path.
+- The 1024×640 minimum layout defines a deterministic pane-collapse order. Pane state and user-adjusted widths restore without allowing the page canvas or primary controls to become unreachable.
+- Windows display scaling from 100% through 200%, keyboard-only operation, reduced motion, and application text scaling are part of the release matrix.
+- Status text and progress indicators report real application state; mock values are permitted only in a build unmistakably labelled as a prototype.
 
 ---
 
@@ -944,6 +977,8 @@ That cut proves the product’s real thesis—reader, notes, and durable review�
 ---
 
 ## 19. Success metrics
+
+These metrics do not authorize telemetry. Before release, they are measured through the versioned corpus, automated tests, and consented usability sessions. Any future local diagnostic or metric export is explicit, inspectable, and user-initiated; document text, notes, annotations, prompts, and review responses are never silently collected.
 
 ### 19.1 Reader quality
 
@@ -1023,6 +1058,9 @@ High AI usage is not a success metric. Low usage may mean the manual product is 
 | OQ-14 | **Open** | Should app-managed `llama.cpp` ship before support for existing Ollama/LM Studio installations, or together? | R5 |
 | OQ-15 | **Open** | What reference PDFs and user-authored tasks make up the local AI citation evaluation corpus? | R5 |
 | OQ-16 | **Open** | Is Windows 11 x64 sufficient for the first installer, or is Windows on ARM required at launch? | R0 |
+| OQ-17 | **Open** | Does v1 print PDFs through the OS print dialog, or is printing an explicit post-v1 capability? | R0 scope gate |
+| OQ-18 | **Open** | Does v1 support one active document window, multiple tabs, or multiple application windows? | R0 architecture gate |
+| OQ-19 | **Open** | Does v1 open password-protected PDFs after an in-app password prompt, or reject them with a clear recoverable explanation? Passwords must never be persisted without a separate security decision. | R0 corpus gate |
 
 ---
 
