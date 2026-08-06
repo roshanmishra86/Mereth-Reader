@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useMemo, useState } from "react";
+import { StrictMode, useEffect, useMemo, useState, memo } from "react";
 import { createRoot } from "react-dom/client";
 import { open } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
@@ -37,9 +37,10 @@ const nav = [
   ["review", "Review", "↻"],
 ] as const;
 
-function Glyph({ children }: { children: string }) {
+// ⚡ Bolt: Memoize Glyph to prevent unnecessary re-renders for purely static icons
+const Glyph = memo(function Glyph({ children }: { children: string }) {
   return <span className="glyph" aria-hidden="true">{children}</span>;
-}
+});
 
 function App() {
   const [destination, setDestination] = useState<Destination>("reader");
@@ -173,7 +174,8 @@ type ReaderProps = {
   setRightTab: (value: "annotations" | "note" | "ai") => void; setSelected: (value: string) => void;
 };
 
-function Reader(props: ReaderProps) {
+// ⚡ Bolt: Memoize Reader to avoid re-rendering the entire reading view when top-level App state changes
+const Reader = memo(function Reader(props: ReaderProps) {
   return <>
     {!props.readingOnly && <div className="reader-toolbar">
       <button className="outline-button" onClick={() => props.setLeftOpen(!props.leftOpen)}><Glyph>☰</Glyph> Outline</button>
@@ -197,15 +199,17 @@ function Reader(props: ReaderProps) {
       {props.rightOpen && !props.readingOnly && <RightPane {...props} />}
     </div>
   </>;
-}
+});
 
-function Outline() {
+// ⚡ Bolt: Memoize Outline since it represents a completely static structure
+const Outline = memo(function Outline() {
   return <aside className="outline-pane"><div className="pane-tabs"><b>Outline</b><span>Pages</span></div><nav>
     <button>Abstract <small>249</small></button><button className="outline-active">Introduction <small>250</small></button><button>Experiment 1 <small>251</small></button><button>Experiment 2 <small>252</small></button><button>General discussion <small>257</small></button><button>References <small>260</small></button>
   </nav><div className="outline-note"><Glyph>☷</Glyph> Document outline</div></aside>;
-}
+});
 
-function DocumentPage({ setSelected }: { setSelected: (value: string) => void }) {
+// ⚡ Bolt: Memoize DocumentPage to prevent expensive DOM re-renders when parent state (like right pane tabs) changes
+const DocumentPage = memo(function DocumentPage({ setSelected }: { setSelected: (value: string) => void }) {
   return <div className="page-sheet"><div className="paper-running"><span>Psychological Science · Vol. 17 · No. 3</span><span>249</span></div><p className="paper-kicker">Research article</p><h1>Test-Enhanced Learning: Taking Memory Tests Improves Long-Term Retention</h1><p className="authors">Henry L. Roediger III and Jeffrey D. Karpicke</p><div className="paper-rule" /><div className="paper-columns">
     <p><b>Abstract—</b> Taking a test on studied material is commonly treated as a neutral measurement of what a learner already knows. Two experiments examined whether the act of retrieval itself changes later retention. Students read short prose passages and then either restudied the passage or took a free-recall test. <mark className="highlight yellow" onClick={() => setSelected("testing")}>Repeated studying produced better performance on an immediate test, but repeated testing produced substantially better performance after a delay of one week.</mark> The advantage of restudy reversed over time.</p>
     <p>Educational practice treats assessment as an instrument of measurement. The instrument metaphor is convenient for administration, but it is a poor description of what happens in memory. Retrieving information is itself a learning event, and the size of that event depends on the conditions under which retrieval occurs.</p>
@@ -214,7 +218,7 @@ function DocumentPage({ setSelected }: { setSelected: (value: string) => void })
     <p><mark className="highlight blue" onClick={() => setSelected("route")}>We interpret the effect as a consequence of the retrieval route being strengthened rather than the representation being enriched.</mark> On this account, the difficulty of the retrieval attempt is not incidental; it is the mechanism.</p>
     <p>Experiment 2 replicated the pattern with a different set of passages and added a feedback manipulation. Providing the correct answer after an unsuccessful attempt raised delayed recall further.</p>
   </div></div>;
-}
+});
 
 function RightPane(props: ReaderProps) {
   const tabs: Array<[typeof props.rightTab, string]> = [["annotations", "Annotations"], ["note", "Note"], ["ai", "AI"]];
