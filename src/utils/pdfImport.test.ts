@@ -64,7 +64,7 @@ describe('pdfImport utilities', () => {
     });
 
     expect(inPlace.ownership_mode).toBe('open_in_place');
-    expect(inPlace.provenance).toBe('open_in_place');
+    expect(inPlace.provenance).toBe('source_extracted');
     expect(inPlace.original_filepath).toBeUndefined();
 
     const managed = createDocumentRecord({
@@ -77,8 +77,31 @@ describe('pdfImport utilities', () => {
     });
 
     expect(managed.ownership_mode).toBe('managed_library');
-    expect(managed.provenance).toBe('managed_library');
+    expect(managed.provenance).toBe('source_extracted');
     expect(managed.original_filepath).toBe('/original/user_doc.pdf');
+  });
+
+  it('createDocumentRecord always sets provenance to a valid database value', () => {
+    const VALID_PROVENANCES = [
+      'source_extracted', 'source_ocr', 'user_authored',
+      'ai_draft', 'user_adopted_ai', 'deterministic_transform',
+    ];
+
+    const openInPlace = createDocumentRecord({
+      filepath: '/docs/test.pdf',
+      sha256_hash: 'testhash',
+      page_count: 1,
+      ownership_mode: 'open_in_place',
+    });
+    expect(VALID_PROVENANCES).toContain(openInPlace.provenance);
+
+    const managed = createDocumentRecord({
+      filepath: '/docs/managed.pdf',
+      sha256_hash: 'managehash',
+      page_count: 3,
+      ownership_mode: 'managed_library',
+    });
+    expect(VALID_PROVENANCES).toContain(managed.provenance);
   });
 
   it('verifyInPlaceFileStatus delegates to file existence function', () => {

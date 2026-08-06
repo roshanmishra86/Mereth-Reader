@@ -20,14 +20,41 @@ fn is_pdf_name_char(b: u8) -> bool {
   matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_' | b'.')
 }
 
-/// Counts PDF page objects by scanning for `/Type /Page` declarations.
+fn extract_pages_count_from_count_keyword(bytes: &[u8]) -> u32 {
+  const NEEDLE: &[u8] = b"/Count";
+  let mut max_count = 0u32;
+  let mut i = 0;
+  while i + NEEDLE.len() <= bytes.len() {
+    if &bytes[i..i + NEEDLE.len()] == NEEDLE {
+      let mut j = i + NEEDLE.len();
+      while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\r' | b'\n' | b'/') {
+        j += 1;
+      }
+      let start_num = j;
+      while j < bytes.len() && bytes[j].is_ascii_digit() {
+        j += 1;
+      }
+      if j > start_num {
+        if let Ok(val) = std::str::from_utf8(&bytes[start_num..j]).unwrap_or("0").parse::<u32>() {
+          if val > max_count {
+            max_count = val;
+          }
+        }
+      }
+      i = j;
+      continue;
+    }
+    i += 1;
+  }
+  max_count
+}
+
+/// Counts PDF page objects by scanning for `/Type /Page` declarations and `/Count` attributes.
 ///
-/// Each page object in a born-digital PDF carries `/Type /Page`; the trailing
-/// boundary check excludes `/Type /Pages` (the page-tree root) and other
-/// `/Page*` names. This is a heuristic — page objects live in the uncompressed
-/// body for the v1 corpus, so it is reliable there; compressed object streams
-/// could in principle hide them. Returns 1 when no page objects are detected so
-/// callers always get a usable (non-zero) page count.
+/// Handles both born-digital PDFs with uncompressed page objects and compressed
+/// object stream PDFs where page objects live in `/ObjStm` streams but the root
+/// `/Pages` dictionary exposes `/Count N`. Returns 1 when no page objects are
+/// detected so callers always get a usable (non-zero) page count.
 fn count_pdf_pages(bytes: &[u8]) -> u32 {
   const NEEDLE: &[u8] = b"/Type";
   let mut count = 0u32;
@@ -51,7 +78,9 @@ fn count_pdf_pages(bytes: &[u8]) -> u32 {
     }
     i += 1;
   }
-  if count == 0 { 1 } else { count }
+  let count_attr = extract_pages_count_from_count_keyword(bytes);
+  let final_count = count.max(count_attr);
+  if final_count == 0 { 1 } else { final_count }
 }
 
 /// Computes SHA-256 hash and metadata (including page count) for a file at `filepath`.
@@ -242,6 +271,15 @@ mod tests {
     // /PageLabels and /PageMode must not be counted as pages.
     let tricky = b"<< /Type /Catalog /PageLabels 5 0 R /PageMode /UseOutlines >>";
     assert_eq!(count_pdf_pages(tricky), 1);
+  }
+
+  #[test]
+  fn test_count_pdf_pages_detects_count_attribute_for_compressed_streams() {
+    // Simulated PDF 1.5+ compressed stream PDF where page objects are inside
+    // object streams (/ObjStm), but the page tree root contains /Count 42.
+    let compressed_pdf = b"%PDF-1.5\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+2 0 obj << /Type /Pages /Count 42 >> endobj\n";
+    assert_eq!(count_pdf_pages(compressed_pdf), 42);
   }
 
   #[test]

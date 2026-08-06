@@ -388,6 +388,17 @@ impl Database {
     Ok(())
   }
 
+  pub fn delete_document(&self, id: &str) -> Result<(), String> {
+    let conn = self.conn.lock().unwrap();
+    let rows_affected = conn
+      .execute("DELETE FROM documents WHERE id = ?1", params![id])
+      .map_err(|e| e.to_string())?;
+    if rows_affected == 0 {
+      return Err(format!("Document not found: {}", id));
+    }
+    Ok(())
+  }
+
 
   pub fn get_pages(&self, document_id: &str) -> Result<Vec<Page>, String> {
     let conn = self.conn.lock().unwrap();
@@ -1093,6 +1104,81 @@ mod tests {
     let fetched_updated = db.get_reading_session(&doc_id).unwrap().unwrap();
     assert_eq!(fetched_updated.current_page, 12);
     assert_eq!(fetched_updated.scroll_top_px, 512.0);
+  }
+
+  #[test]
+  fn test_delete_document_removes_record_and_cascades() {
+    let db = Database::in_memory().unwrap();
+    let doc_id = Uuid::new_v4().to_string();
+
+    let doc = Document {
+      id: doc_id.clone(),
+      title: "Delete Test".into(),
+      filepath: "/docs/delete_test.pdf".into(),
+      sha256_hash: "f".repeat(64),
+      page_count: 2,
+      created_at: "2026-08-06T12:00:00Z".into(),
+      updated_at: "2026-08-06T12:00:00Z".into(),
+      provenance: "source_extracted".into(),
+      author: None,
+      subject: None,
+      keywords: None,
+      creation_date: None,
+      doi: None,
+      isbn: None,
+      is_favourite: false,
+      is_archived: false,
+      last_opened_at: None,
+      tags: vec![],
+      collections: vec![],
+    };
+    db.add_document(doc).unwrap();
+
+    // Add a page so we can verify CASCADE delete
+    let page = Page {
+      id: Uuid::new_v4().to_string(),
+      document_id: doc_id.clone(),
+      page_number: 1,
+      width: 612.0,
+      height: 792.0,
+      text_content: "Deletable page content".into(),
+      created_at: "2026-08-06T12:00:00Z".into(),
+      provenance: "source_extracted".into(),
+    };
+    db.add_page(page).unwrap();
+
+    // Save a reading session so we can verify CASCADE delete
+    let session = ReadingSession {
+      document_id: doc_id.clone(),
+      current_page: 1,
+      zoom_mode: "fit-width".into(),
+      zoom_scale: 100.0,
+      scroll_top_px: 0.0,
+      left_pane_open: true,
+      left_pane_width_px: 260.0,
+      right_pane_open: false,
+      right_pane_width_px: 300.0,
+      view_mode: "single".into(),
+      rotation: 0,
+      updated_at: "2026-08-06T12:00:00Z".into(),
+    };
+    db.save_reading_session(&session).unwrap();
+
+    // Verify document exists
+    assert!(db.get_document_by_id(&doc_id).unwrap().is_some());
+    assert_eq!(db.get_pages(&doc_id).unwrap().len(), 1);
+    assert!(db.get_reading_session(&doc_id).unwrap().is_some());
+
+    // Delete document
+    db.delete_document(&doc_id).unwrap();
+
+    // Verify document and cascaded children are gone
+    assert!(db.get_document_by_id(&doc_id).unwrap().is_none());
+    assert_eq!(db.get_pages(&doc_id).unwrap().len(), 0);
+    assert!(db.get_reading_session(&doc_id).unwrap().is_none());
+
+    // Deleting a non-existent document should error
+    assert!(db.delete_document(&doc_id).is_err());
   }
 }
 

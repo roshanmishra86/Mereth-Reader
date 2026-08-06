@@ -14,6 +14,7 @@ import {
   OutlineItem,
 } from "./utils/pdfUtils";
 import { DocumentRecord, createDocumentRecord } from "./utils/pdfImport";
+import { loadPdfDocument, renderPdfPageToCanvas, LoadedPdfInfo } from "./utils/pdfViewer";
 import { ImportModal } from "./components/ImportModal";
 import { MissingFileBanner } from "./components/MissingFileBanner";
 import { DeepLinkRoute } from "./utils/launchRouting";
@@ -655,7 +656,12 @@ function App() {
     setActiveDocument(updatedDoc);
   }
 
-  function handleDeleteRecord(docId: string) {
+  async function handleDeleteRecord(docId: string) {
+    try {
+      await invoke('db_delete_document', { id: docId });
+    } catch {
+      // Dev preview environment fallback — proceed with UI removal
+    }
     setDocuments((prev) => prev.filter((d) => d.id !== docId));
     if (activeDocument.id === docId && documents.length > 1) {
       setActiveDocument(documents.find((d) => d.id !== docId) || documents[0]);
@@ -882,7 +888,7 @@ function Reader(props: ReaderProps) {
   const [isResizingLeft, setIsResizingLeft] = useState(false);
   const [isResizingRight, setIsResizingRight] = useState(false);
   const canvasRef = useRef<HTMLElement | null>(null);
-  const totalPages = props.totalPages || 12;
+  const totalPages = props.totalPages || 1;
 
   const [historyState, setHistoryState] = useState(() => createNavigationHistory(currentPage));
   const [copyWarning, setCopyWarning] = useState<string | null>(null);
@@ -983,13 +989,41 @@ function Reader(props: ReaderProps) {
     totalPages,
   ]);
 
+  const isDemoDocument = props.activeDocument.id === 'doc-sample-1';
+  const [loadedPdfInfo, setLoadedPdfInfo] = useState<LoadedPdfInfo | null>(null);
+
+  useEffect(() => {
+    if (isDemoDocument || !props.activeDocument) {
+      setLoadedPdfInfo(null);
+      return;
+    }
+    let isMounted = true;
+
+    loadPdfDocument(props.activeDocument.filepath).then((info) => {
+      if (isMounted && info) {
+        setLoadedPdfInfo(info);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [props.activeDocument, isDemoDocument]);
+
   const searchMatches = useMemo(() => {
-    return performAdvancedSearch(samplePageTexts, searchQuery, searchOptions);
-  }, [searchQuery, searchOptions]);
+    const pageTexts = isDemoDocument
+      ? samplePageTexts
+      : loadedPdfInfo?.extractedTexts || [];
+    return performAdvancedSearch(pageTexts, searchQuery, searchOptions);
+  }, [searchQuery, searchOptions, isDemoDocument, loadedPdfInfo]);
 
   const outlineNodes = useMemo(() => {
-    return parseOutlineTree(sampleRawOutline);
-  }, []);
+    if (isDemoDocument) return parseOutlineTree(sampleRawOutline);
+    if (loadedPdfInfo?.outline && loadedPdfInfo.outline.length > 0) {
+      return parseOutlineTree(loadedPdfInfo.outline);
+    }
+    return [];
+  }, [isDemoDocument, loadedPdfInfo]);
 
   useEffect(() => {
     if (props.targetPage && props.targetPage > 0) {
@@ -1308,13 +1342,13 @@ function Reader(props: ReaderProps) {
               >
                 {layoutMode === "facing" ? (
                   <div className="facing-page-container">
-                    <DocumentPage setSelected={props.setSelected} zoomScale={zoomScale} pageNumber={currentPage} />
+                    <DocumentPage setSelected={props.setSelected} zoomScale={zoomScale} pageNumber={currentPage} activeDocument={props.activeDocument} totalPages={totalPages} />
                     {currentPage + 1 <= totalPages && (
-                      <DocumentPage setSelected={props.setSelected} zoomScale={zoomScale} pageNumber={currentPage + 1} />
+                      <DocumentPage setSelected={props.setSelected} zoomScale={zoomScale} pageNumber={currentPage + 1} activeDocument={props.activeDocument} totalPages={totalPages} />
                     )}
                   </div>
                 ) : (
-                  <DocumentPage setSelected={props.setSelected} zoomScale={zoomScale} pageNumber={currentPage} />
+                  <DocumentPage setSelected={props.setSelected} zoomScale={zoomScale} pageNumber={currentPage} activeDocument={props.activeDocument} totalPages={totalPages} />
                 )}
               </div>
             </article>
@@ -1340,14 +1374,112 @@ function DocumentPage({
   setSelected,
   zoomScale,
   pageNumber,
+  activeDocument,
+  totalPages,
 }: {
   setSelected: (value: string) => void;
   zoomScale?: number;
   pageNumber?: number;
+  activeDocument?: DocumentRecord;
+  totalPages?: number;
 }) {
   const scale = zoomScale ?? 1.0;
-  const pageLabelInfo = formatExtendedPageLabel(pageNumber || 4, 12);
+  const effectiveTotalPages = totalPages ?? activeDocument?.page_count ?? 12;
+  const pageLabelInfo = formatExtendedPageLabel(pageNumber || 1, effectiveTotalPages);
+  const isDemoDocument = !activeDocument || activeDocument.id === 'doc-sample-1';
 
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [pdfRendered, setPdfRendered] = useState(false);
+  const [pdfLoading, setPdfLoading] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isDemoDocument || !activeDocument || !activeDocument.filepath) return;
+    let isMounted = true;
+
+    async function renderPage() {
+      setPdfLoading(true);
+      setRenderError(null);
+      try {
+        const info = await loadPdfDocument(activeDocument!.filepath);
+        if (!isMounted) return;
+
+        if (info && canvasRef.current) {
+          const res = await renderPdfPageToCanvas({
+            pdfDoc: info.doc,
+            pageNumber: pageNumber || 1,
+            canvas: canvasRef.current,
+            scale,
+          });
+          if (isMounted) {
+            setPdfRendered(res !== null);
+          }
+        } else if (isMounted) {
+          setPdfRendered(false);
+        }
+      } catch (err) {
+        if (isMounted) {
+          setRenderError(err instanceof Error ? err.message : String(err));
+          setPdfRendered(false);
+        }
+      } finally {
+        if (isMounted) setPdfLoading(false);
+      }
+    }
+
+    renderPage();
+    return () => {
+      isMounted = false;
+    };
+  }, [activeDocument, pageNumber, scale, isDemoDocument]);
+
+  if (!isDemoDocument && activeDocument) {
+    return (
+      <div
+        className="page-sheet"
+        style={{
+          transform: `scale(${scale})`,
+          transformOrigin: "top center",
+          transition: "transform 0.15s ease-out",
+        }}
+      >
+        <div className="paper-running">
+          <span>{activeDocument.title}</span>
+          <span>{pageLabelInfo.displayLabel}</span>
+        </div>
+
+        <div className="pdf-page-container" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '100%', position: 'relative' }}>
+          <canvas
+            ref={canvasRef}
+            style={{
+              display: pdfRendered ? 'block' : 'none',
+              maxWidth: '100%',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+              borderRadius: '2px',
+            }}
+          />
+
+          {(!pdfRendered || pdfLoading) && (
+            <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+              {pdfLoading ? (
+                <p>Rendering PDF page {pageNumber || 1} via PDF.js...</p>
+              ) : renderError ? (
+                <p style={{ color: 'var(--text-error)' }}>Failed to render PDF page: {renderError}</p>
+              ) : (
+                <div>
+                  <h2 style={{ fontSize: '1.2rem', marginBottom: '0.5rem' }}>{activeDocument.title}</h2>
+                  <p style={{ fontStyle: 'italic' }}>Page {pageNumber || 1} of {effectiveTotalPages}</p>
+                  <p style={{ fontSize: '0.85rem', marginTop: '0.5rem', opacity: 0.8 }}>File: {activeDocument.filepath}</p>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Demo / sample document: render the hard-coded article for development.
   return (
     <div
       className="page-sheet"

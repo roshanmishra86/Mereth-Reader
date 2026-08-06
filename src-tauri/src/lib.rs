@@ -135,6 +135,13 @@ fn db_update_document_filepath(
 }
 
 #[tauri::command]
+fn db_delete_document(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.delete_document(&id)
+}
+
+#[tauri::command]
 fn db_get_pages(document_id: String, state: State<'_, AppState>) -> Result<Vec<Page>, String> {
   let lock = state.db.lock().unwrap();
   let db = lock.as_ref().ok_or("Database not initialized")?;
@@ -250,6 +257,16 @@ fn verify_document_file_exists(document_id: String, state: State<'_, AppState>) 
   Ok(Path::new(&doc.filepath).exists())
 }
 
+#[tauri::command]
+fn db_get_pdf_bytes(filepath: String) -> Result<Vec<u8>, String> {
+  validate_pdf_filepath_basic(&filepath)?;
+  let p = Path::new(&filepath);
+  if !p.exists() {
+    return Err(format!("File not found: {filepath}"));
+  }
+  std::fs::read(p).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut builder = tauri::Builder::default()
@@ -271,6 +288,7 @@ pub fn run() {
       db_rename_collection,
       db_delete_collection,
       db_update_document_filepath,
+      db_delete_document,
       db_get_pages,
       db_add_job,
       db_get_jobs,
@@ -285,6 +303,7 @@ pub fn run() {
       import_compute_file_metadata,
       import_copy_to_managed_library,
       verify_document_file_exists,
+      db_get_pdf_bytes,
     ]);
 
   // OQ-18 (single-instance window): enforce one application instance and route

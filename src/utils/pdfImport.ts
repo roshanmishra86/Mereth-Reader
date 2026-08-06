@@ -129,7 +129,7 @@ export function createDocumentRecord(params: {
     page_count: params.page_count,
     created_at: now,
     updated_at: now,
-    provenance: params.ownership_mode,
+    provenance: 'source_extracted',
     ownership_mode: params.ownership_mode,
     is_missing: false,
   };

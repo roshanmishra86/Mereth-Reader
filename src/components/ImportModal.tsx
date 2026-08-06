@@ -12,6 +12,8 @@ import {
   createDocumentRecord,
 } from '../utils/pdfImport';
 
+import { loadPdfDocument } from '../utils/pdfViewer';
+
 interface ImportModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -78,12 +80,23 @@ export function ImportModal({
         return;
       }
 
+      // Authoritative PDF.js page count detection for compressed PDFs
+      let authoritativePageCount = metadata.page_count;
+      try {
+        const pdfInfo = await loadPdfDocument(metadata.filepath);
+        if (pdfInfo && pdfInfo.numPages > 0) {
+          authoritativePageCount = pdfInfo.numPages;
+        }
+      } catch {
+        // Fall back to backend metadata page count
+      }
+
       setCandidate({
         filepath: metadata.filepath,
         filename: metadata.filename,
         sha256_hash: metadata.sha256_hash,
         file_size_bytes: metadata.file_size_bytes,
-        page_count: metadata.page_count,
+        page_count: authoritativePageCount,
         exists: metadata.exists,
       });
 
@@ -169,11 +182,7 @@ export function ImportModal({
         ownership_mode: effectiveOwnership,
       });
 
-      try {
-        await invoke('db_add_document', { doc: docRecord });
-      } catch {
-        // Dev fallback
-      }
+      await invoke('db_add_document', { doc: docRecord });
 
       onImportComplete(docRecord);
       onClose();
