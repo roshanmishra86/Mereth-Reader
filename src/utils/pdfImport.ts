@@ -67,7 +67,11 @@ export function validatePdfFilePath(filepath: string): { valid: boolean; error?:
   }
   const cleanPath = filepath.trim().replace(/\\/g, '/');
   const filename = cleanPath.split('/').pop() ?? '';
-  const ext = filename.split('.').pop()?.toLowerCase();
+  // Require an explicit `.pdf` extension. Using `filename.split('.').pop()`
+  // treated an extensionless file literally named "pdf" as a valid PDF, because
+  // `"pdf".split('.')` yields `['pdf']` and `pop()` returns `'pdf'`.
+  const extMatch = filename.match(/\.([^./]+)$/);
+  const ext = extMatch ? extMatch[1].toLowerCase() : undefined;
 
   if (ext !== 'pdf') {
     return { valid: false, error: `Invalid file format '.${ext ?? ''}'. Only PDF documents are supported.` };

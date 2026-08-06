@@ -3,8 +3,11 @@ pub mod import;
 pub mod launch;
 
 use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
-use import::{compute_file_metadata, copy_to_managed_documents, FileMetadata};
-use launch::{normalize_and_validate_launch_path, route_launch_args, LaunchValidationResult, SingleInstanceRoute};
+use import::{
+  compute_file_metadata, copy_to_managed_documents, ensure_external_pdf_source,
+  validate_pdf_filepath_basic, validate_pdf_path_for_record, FileMetadata,
+};
+use launch::{route_launch_args, SingleInstanceRoute};
 use std::path::Path;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
@@ -42,6 +45,9 @@ fn db_get_document_by_hash(sha256_hash: String, state: State<'_, AppState>) -> R
 
 #[tauri::command]
 fn db_add_document(doc: Document, state: State<'_, AppState>) -> Result<(), String> {
+  // Confine the stored filepath to absolute .pdf paths (PRD §15.3 / RK-11): a
+  // compromised webview must not seed the library with arbitrary on-disk paths.
+  validate_pdf_filepath_basic(&doc.filepath)?;
   let lock = state.db.lock().unwrap();
   let db = lock.as_ref().ok_or("Database not initialized")?;
   db.add_document(doc)
@@ -110,9 +116,22 @@ fn db_update_document_filepath(
   new_hash: Option<String>,
   state: State<'_, AppState>,
 ) -> Result<(), String> {
+  // Validate and canonicalize the relocated path (PRD §15.3 / RK-11).
+  let canonical = validate_pdf_path_for_record(&new_filepath)?;
+  let canonical_str = canonical.to_string_lossy().to_string();
+
+  // Recompute the hash from the file itself so a compromised webview cannot
+  // poison the dedup table with a fabricated `new_hash`. The webview-supplied
+  // hash is only used as a fallback if the file can no longer be read.
+  let recomputed = compute_file_metadata(&canonical_str)
+    .ok()
+    .filter(|m| m.exists)
+    .map(|m| m.sha256_hash);
+  let final_hash = recomputed.or(new_hash);
+
   let lock = state.db.lock().unwrap();
   let db = lock.as_ref().ok_or("Database not initialized")?;
-  db.update_document_filepath(&id, &new_filepath, new_hash.as_deref())
+  db.update_document_filepath(&id, &canonical_str, final_hash.as_deref())
 }
 
 #[tauri::command]
@@ -172,19 +191,24 @@ fn db_rebuild_index(state: State<'_, AppState>) -> Result<usize, String> {
 }
 
 #[tauri::command]
-fn cmd_normalize_and_validate_launch_path(input_path: String) -> LaunchValidationResult {
-  normalize_and_validate_launch_path(&input_path)
-}
-
-#[tauri::command]
 fn cmd_get_initial_launch_route() -> SingleInstanceRoute {
   let args: Vec<String> = std::env::args().collect();
   route_launch_args(&args)
 }
 
 #[tauri::command]
-fn import_compute_file_metadata(filepath: String) -> Result<FileMetadata, String> {
-  compute_file_metadata(&filepath)
+fn import_compute_file_metadata(
+  app_handle: tauri::AppHandle,
+  filepath: String,
+) -> Result<FileMetadata, String> {
+  // Confine the inspected path to an external .pdf file (PRD §15.3 / RK-11):
+  // a compromised webview must not be able to hash or probe arbitrary files.
+  let app_dir = app_handle
+    .path()
+    .app_data_dir()
+    .map_err(|e| e.to_string())?;
+  let safe_path = ensure_external_pdf_source(&app_dir, &filepath)?;
+  compute_file_metadata(&safe_path)
 }
 
 #[tauri::command]
@@ -193,7 +217,10 @@ fn import_copy_to_managed_library(app_handle: tauri::AppHandle, source_path: Str
     .path()
     .app_data_dir()
     .map_err(|e| e.to_string())?;
-  copy_to_managed_documents(&app_dir, &source_path)
+  // Validate + canonicalize the source and ensure it is not already inside the
+  // managed documents directory (PRD §15.3 / RK-11).
+  let safe_path = ensure_external_pdf_source(&app_dir, &source_path)?;
+  copy_to_managed_documents(&app_dir, &safe_path)
 }
 
 #[tauri::command]
@@ -211,8 +238,16 @@ fn db_get_reading_session(document_id: String, state: State<'_, AppState>) -> Re
 }
 
 #[tauri::command]
-fn check_file_exists(filepath: String) -> bool {
-  Path::new(&filepath).exists()
+fn verify_document_file_exists(document_id: String, state: State<'_, AppState>) -> Result<bool, String> {
+  // Resolve the filepath server-side from the document id rather than accepting
+  // a caller-supplied path (PRD §15.3 / RK-11): this cannot be used as an
+  // arbitrary filesystem-existence oracle.
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  let doc = db
+    .get_document_by_id(&document_id)?
+    .ok_or("Document not found")?;
+  Ok(Path::new(&doc.filepath).exists())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -246,11 +281,10 @@ pub fn run() {
       db_rebuild_index,
       db_save_reading_session,
       db_get_reading_session,
-      cmd_normalize_and_validate_launch_path,
       cmd_get_initial_launch_route,
       import_compute_file_metadata,
       import_copy_to_managed_library,
-      check_file_exists,
+      verify_document_file_exists,
     ]);
 
   // OQ-18 (single-instance window): enforce one application instance and route

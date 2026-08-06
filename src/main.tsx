@@ -57,7 +57,7 @@ import { VersionMismatchBanner } from "./components/VersionMismatchBanner";
 import { RendererErrorBoundary } from "./components/RendererErrorBoundary";
 import { MalformedDocumentView } from "./components/MalformedDocumentView";
 import { EmptyState } from "./components/EmptyState";
-import { validatePdfPassword, detectScannedPdf } from "./utils/recoveryUtils";
+import { validatePdfPassword } from "./utils/recoveryUtils";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
 type Highlight = { id: string; color: string; label: string; quote: string; page: string };
@@ -216,12 +216,12 @@ function App() {
   const [versionMismatchBannerVisible, setVersionMismatchBannerVisible] = useState(false);
 
   // Prototype Honesty (U15) state driven by real records
-  const [annotationsList, setAnnotationsList] = useState<Highlight[]>(annotations);
-  const [notesList, setNotesList] = useState<Array<{ id: string; title: string; type: string }>>([
+  const [annotationsList] = useState<Highlight[]>(annotations);
+  const [notesList] = useState<Array<{ id: string; title: string; type: string }>>([
     { id: "note-1", title: "Testing strengthens the route to recall", type: "Source note" },
     { id: "note-2", title: "Retrieval is an event, not a check", type: "Concept note" },
   ]);
-  const [reviewPromptsList, setReviewPromptsList] = useState<Array<{ id: string; prompt: string }>>([
+  const [reviewPromptsList] = useState<Array<{ id: string; prompt: string }>>([
     { id: "prompt-1", prompt: "Why can repeated restudy produce higher confidence but weaker retention?" },
   ]);
 
@@ -446,16 +446,31 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  // Monotonic id for in-flight openDocument calls so a stale async open can
+  // detect that a newer one superseded it and bail out before mutating state.
+  const openDocumentRequestId = useRef(0);
+
   async function openDocument(doc: DocumentRecord) {
+    // Guard against interleaved opens (rapid library clicks or a launch-route
+    // arriving mid-open): only the latest open request is allowed to mutate
+    // active-document/session state, so a slower stale read cannot overwrite a
+    // newer document's session and the debounced save effect cannot persist one
+    // document's page/zoom into another's session row.
+    const openRequestId = ++openDocumentRequestId.current;
+
     let fileExists = true;
     try {
-      fileExists = await invoke<boolean>("check_file_exists", { filepath: doc.filepath });
+      fileExists = await invoke<boolean>("verify_document_file_exists", { documentId: doc.id });
     } catch {
       // Dev preview fallback: check path pattern
       if (doc.filepath.includes("missing")) {
         fileExists = false;
       }
     }
+
+    // A newer openDocument call superseded this one while we were awaiting the
+    // file-exists check — abandon without touching any state.
+    if (openRequestId !== openDocumentRequestId.current) return;
 
     const nowIso = new Date().toISOString();
     const updatedDoc: DocumentRecord = { ...doc, is_missing: !fileExists, last_opened_at: nowIso };
@@ -466,12 +481,16 @@ function App() {
       // Dev fallback
     }
 
+    if (openRequestId !== openDocumentRequestId.current) return;
+
     setDocuments((prev) => prev.map((d) => (d.id === doc.id ? updatedDoc : d)));
     setActiveDocument(updatedDoc);
 
     // Restore saved reading session from Rust SQLite database (Task 2.6)
     try {
       const rawSession = await invoke<ReadingSessionState | null>("db_get_reading_session", { documentId: doc.id });
+      // Stale session read: a newer document is now active — drop this result.
+      if (openRequestId !== openDocumentRequestId.current) return;
       if (rawSession) {
         const sanitized = validateAndSanitizeReadingSession(rawSession, DEFAULT_LAYOUT_BOUNDS, doc.page_count);
         setActiveSession(sanitized);
@@ -484,9 +503,12 @@ function App() {
         setRightOpen(defaultS.right_pane_open);
       }
     } catch {
+      if (openRequestId !== openDocumentRequestId.current) return;
       const defaultS = createDefaultReadingSession(doc.id);
       setActiveSession(defaultS);
     }
+
+    if (openRequestId !== openDocumentRequestId.current) return;
 
     setDestination("reader");
 
@@ -707,6 +729,7 @@ function App() {
                 rightTab={rightTab}
                 selected={selected}
                 targetPage={targetPage}
+                onTargetPageConsumed={() => setTargetPage(undefined)}
                 annotationsList={annotationsList}
                 scannedPdfBannerVisible={scannedPdfBannerVisible}
                 versionMismatchBannerVisible={versionMismatchBannerVisible}
@@ -805,6 +828,7 @@ type ReaderProps = {
   rightTab: "annotations" | "note" | "ai";
   selected: string;
   targetPage?: number;
+  onTargetPageConsumed?: () => void;
   totalPages: number;
   rightPaneWidth?: number;
   annotationsList: Highlight[];
@@ -970,6 +994,11 @@ function Reader(props: ReaderProps) {
   useEffect(() => {
     if (props.targetPage && props.targetPage > 0) {
       handlePageChange(props.targetPage);
+      // Clear the deep-link page target after consuming it so it does not bleed
+      // into the next document opened from the library, and so a subsequent
+      // deep link to the same page re-fires the effect instead of being a
+      // no-op (state unchanged → effect skipped).
+      props.onTargetPageConsumed?.();
     }
   }, [props.targetPage]);
 

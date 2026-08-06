@@ -419,33 +419,35 @@ impl Database {
   }
 
   pub fn add_page(&self, page: Page) -> Result<(), String> {
-    let conn = self.conn.lock().unwrap();
-    conn
-      .execute(
-        "INSERT INTO pages (id, document_id, page_number, width, height, text_content, created_at, provenance)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-          page.id,
-          page.document_id,
-          page.page_number,
-          page.width,
-          page.height,
-          page.text_content,
-          page.created_at,
-          page.provenance
-        ],
-      )
-      .map_err(|e| e.to_string())?;
+    let mut conn = self.conn.lock().unwrap();
+    // Insert the page row and its FTS index entry atomically: a failure between
+    // the two would otherwise leave search silently missing the page until a
+    // full index rebuild is triggered.
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+      "INSERT INTO pages (id, document_id, page_number, width, height, text_content, created_at, provenance)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+      params![
+        page.id,
+        page.document_id,
+        page.page_number,
+        page.width,
+        page.height,
+        page.text_content,
+        page.created_at,
+        page.provenance
+      ],
+    )
+    .map_err(|e| e.to_string())?;
 
-    // Also populate FTS index
-    conn
-      .execute(
-        "INSERT INTO fts_document_text (document_id, page_number, text_content, provenance)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![page.document_id, page.page_number, page.text_content, page.provenance],
-      )
-      .map_err(|e| e.to_string())?;
+    tx.execute(
+      "INSERT INTO fts_document_text (document_id, page_number, text_content, provenance)
+       VALUES (?1, ?2, ?3, ?4)",
+      params![page.document_id, page.page_number, page.text_content, page.provenance],
+    )
+    .map_err(|e| e.to_string())?;
 
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
   }
 
@@ -545,18 +547,23 @@ impl Database {
   }
 
   pub fn rebuild_fts_index(&self) -> Result<usize, String> {
-    let conn = self.conn.lock().unwrap();
+    let mut conn = self.conn.lock().unwrap();
+    // Wipe and refill the FTS index inside a single transaction so a mid-rebuild
+    // failure rolls back to the pre-rebuild index instead of leaving it empty.
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
 
-    // Rebuild FTS5 index without deleting documents or pages
-    conn.execute("DELETE FROM fts_document_text", []).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM fts_document_text", [])
+      .map_err(|e| e.to_string())?;
 
-    let count: usize = conn
+    let count: usize = tx
       .execute(
         "INSERT INTO fts_document_text (document_id, page_number, text_content, provenance)
          SELECT document_id, page_number, text_content, provenance FROM pages",
         [],
       )
       .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
 
     Ok(count)
   }

@@ -6,7 +6,7 @@
  */
 
 import { PageTextContent } from './pdfUtils';
-import { normalizeDiacritics } from './diacritics';
+import { normalizeDiacritics, normalizeDiacriticsWithMap } from './diacritics';
 
 export interface SearchOptions {
   caseSensitive: boolean;
@@ -73,9 +73,17 @@ export function performAdvancedSearch(
   for (const page of pages) {
     const originalText = page.text;
     let searchableText = originalText;
+    // When diacritic-tolerant search is on, normalizeDiacritics expands
+    // ligatures (æ→ae, ß→ss, …) and strips combining marks, so indices in
+    // `searchableText` no longer line up with `originalText`. We carry a
+    // normToOrig map so every match position can be translated back into the
+    // original-text coordinates the UI highlights against.
+    let normToOrig: number[] | null = null;
 
     if (options.diacriticTolerant) {
-      searchableText = normalizeDiacritics(searchableText);
+      const mapped = normalizeDiacriticsWithMap(originalText);
+      searchableText = mapped.normalized;
+      normToOrig = mapped.normToOrig;
     }
     if (!options.caseSensitive) {
       searchableText = searchableText.toLowerCase();
@@ -99,25 +107,34 @@ export function performAdvancedSearch(
 
       if (isValidWordBoundary) {
         globalMatchCounter++;
-        const matchedText = originalText.slice(foundIdx, foundIdx + queryLen);
 
-        // Build snippet
-        const snippetStart = Math.max(0, foundIdx - snippetPadding);
-        const snippetEnd = Math.min(originalText.length, foundIdx + queryLen + snippetPadding);
+        // Translate the normalized match range back to original-text indices.
+        const lastNormIdx = foundIdx + queryLen - 1;
+        const origStart = normToOrig ? normToOrig[foundIdx] : foundIdx;
+        const origEndSourceIdx = normToOrig ? normToOrig[lastNormIdx] : lastNormIdx;
+        // Each original source char is one UTF-16 code unit, so the exclusive
+        // end is one past the last contributing source index.
+        const origEnd = origEndSourceIdx + 1;
+        const origMatchLen = origEnd - origStart;
+        const matchedText = originalText.slice(origStart, origEnd);
+
+        // Build snippet in original-text coordinates.
+        const snippetStart = Math.max(0, origStart - snippetPadding);
+        const snippetEnd = Math.min(originalText.length, origEnd + snippetPadding);
 
         const rawSnippet = originalText.slice(snippetStart, snippetEnd);
         const prefix = snippetStart > 0 ? '…' : '';
         const suffix = snippetEnd < originalText.length ? '…' : '';
 
         const fullSnippet = `${prefix}${rawSnippet}${suffix}`;
-        const matchStartInSnippet = prefix.length + (foundIdx - snippetStart);
-        const matchEndInSnippet = matchStartInSnippet + queryLen;
+        const matchStartInSnippet = prefix.length + (origStart - snippetStart);
+        const matchEndInSnippet = matchStartInSnippet + origMatchLen;
 
         matches.push({
           id: `match-${page.pageNumber}-${globalMatchCounter}`,
           pageNumber: page.pageNumber,
-          matchIndex: foundIdx,
-          matchLength: queryLen,
+          matchIndex: origStart,
+          matchLength: origMatchLen,
           matchedText,
           snippet: fullSnippet,
           snippetMatchRange: {

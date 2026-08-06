@@ -64,7 +64,10 @@ export function parsePdfDate(rawDate?: string): string | undefined {
   }
 
   // Handle PDF Date string format: D:YYYYMMDDHHmmSSOHH'mm'
-  const pdfDateRegex = /^D:(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?/;
+  // The trailing OHH'mm' is the UTC offset (O is +, -, or Z). The previous
+  // implementation ignored it and always appended `.000Z`, mislabelling local
+  // wall-clock time as UTC for any non-UTC document.
+  const pdfDateRegex = /^D:(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?([+-Z])?(\d{2})?'?(\d{2})?/;
   const match = cleaned.match(pdfDateRegex);
   if (match) {
     const year = match[1];
@@ -73,11 +76,27 @@ export function parsePdfDate(rawDate?: string): string | undefined {
     const hour = match[4] || '00';
     const min = match[5] || '00';
     const sec = match[6] || '00';
+    const offsetSign = match[7]; // '+', '-', 'Z', or undefined
+    const offsetHours = match[8];
+    const offsetMinutes = match[9];
 
-    const isoStr = `${year}-${month}-${day}T${hour}:${min}:${sec}.000Z`;
-    const d = new Date(isoStr);
-    if (!isNaN(d.getTime())) {
-      return isoStr;
+    // Interpret the wall-clock fields as UTC first, then apply the offset.
+    const baseIso = `${year}-${month}-${day}T${hour}:${min}:${sec}.000Z`;
+    const baseDate = new Date(baseIso);
+
+    if (!isNaN(baseDate.getTime())) {
+      if (offsetSign === 'Z') {
+        return baseIso;
+      }
+      if ((offsetSign === '+' || offsetSign === '-') && offsetHours) {
+        const signNum = offsetSign === '-' ? -1 : 1;
+        const offsetTotalMinutes =
+          signNum * (parseInt(offsetHours, 10) * 60 + (offsetMinutes ? parseInt(offsetMinutes, 10) : 0));
+        // Wall-clock-as-UTC minus the offset yields the true UTC instant.
+        return new Date(baseDate.getTime() - offsetTotalMinutes * 60 * 1000).toISOString();
+      }
+      // No offset recorded: preserve prior behaviour (treat as UTC).
+      return baseIso;
     }
   }
 

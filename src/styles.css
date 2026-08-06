@@ -99,7 +99,7 @@
 /* Thumbnail Panel Styling */
 .thumbnail-panel-container { flex: 1; overflow-y: auto; padding: 12px; }
 .thumbnail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 12px; }
-.thumbnail-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border: 1px solid rgba(32, 30, 29, .3); background: #eae9e9; cursor: pointer; border-radius: 3px; transition: border-color 0.15s; }
+.thumbnail-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px; border: 1px solid rgba(32, 30, 29, .3); background: #eae9e9; cursor: pointer; border-radius: 3px; transition: border-color 0.15s; content-visibility: auto; contain-intrinsic-size: 80px 130px; }
 .thumbnail-card:hover { background: #d7d3d3; border-color: #ec3013; }
 .thumbnail-card.active { border: 2px solid #ec3013; background: #fff2ef; }
 .thumbnail-preview-frame { position: relative; width: 68px; height: 90px; background: #fff; border: 1px solid rgba(32, 30, 29, .2); box-shadow: 0 1px 4px rgba(0,0,0,0.15); display: flex; align-items: center; justify-content: center; }

@@ -33,6 +33,15 @@ describe('metadataUtils', () => {
     expect(parsePdfDate(undefined)).toBeUndefined();
   });
 
+  it('applies the PDF date UTC offset instead of mislabelling local time as UTC', () => {
+    // A -05'00' offset means the wall-clock 05:39:01 local is 10:39:01 UTC.
+    expect(parsePdfDate("D:20260806053901-05'00'")).toBe('2026-08-06T10:39:01.000Z');
+    // A +02'00' offset means 05:39:01 local is 03:39:01 UTC.
+    expect(parsePdfDate("D:20260806053901+02'00'")).toBe('2026-08-06T03:39:01.000Z');
+    // The Z marker is honoured directly.
+    expect(parsePdfDate("D:20260806053901Z")).toBe('2026-08-06T05:39:01.000Z');
+  });
+
   it('parses embedded PDF info dictionary without any network call', () => {
     const mockPdfInfoDict = {
       Title: 'Test-Enhanced Learning',

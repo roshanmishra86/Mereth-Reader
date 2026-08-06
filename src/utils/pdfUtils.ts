@@ -432,9 +432,9 @@ export function extractOrderedText(items: PDFTextItem[]): ExtractedOrderedText {
   if (overlapCount > 0) {
     confidence -= Math.min(0.4, overlapCount * 0.05);
   }
-  if (columnsCount > 1 && xGaps.length === 0) {
-    confidence -= 0.2;
-  }
+  // (A previous `columnsCount > 1 && xGaps.length === 0` penalty lived here but
+  // was unreachable: columnsCount can only exceed 1 inside the
+  // `xGaps.length > 0` branch above, so the conjunction was always false.)
 
   confidence = Math.max(0.1, Math.min(1.0, Math.round(confidence * 100) / 100));
 

@@ -53,6 +53,7 @@ export function ImportModal({
         filename: string;
         sha256_hash: string;
         file_size_bytes: number;
+        page_count: number;
         exists: boolean;
       };
 
@@ -66,6 +67,7 @@ export function ImportModal({
           filename,
           sha256_hash: `hash-preview-${filename}`,
           file_size_bytes: 1024 * 500,
+          page_count: 1,
           exists: true,
         };
       }
@@ -81,6 +83,7 @@ export function ImportModal({
         filename: metadata.filename,
         sha256_hash: metadata.sha256_hash,
         file_size_bytes: metadata.file_size_bytes,
+        page_count: metadata.page_count,
         exists: metadata.exists,
       });
 
@@ -136,15 +139,24 @@ export function ImportModal({
     try {
       let finalFilePath = candidate.filepath;
       let originalFilePath: string | undefined = undefined;
+      let effectiveOwnership = ownershipMode;
 
       if (ownershipMode === 'managed_library') {
-        originalFilePath = candidate.filepath;
         try {
           finalFilePath = await invoke<string>('import_copy_to_managed_library', {
             sourcePath: candidate.filepath,
           });
-        } catch {
+          originalFilePath = candidate.filepath;
+        } catch (copyErr) {
+          // Managed copy failed (disk full, permission, etc.). Fall back to
+          // open-in-place rather than persisting a "managed" record that points
+          // at the un-copied original — that would mislabel ownership and the
+          // "managed" copy would be lost if the original is later moved.
           finalFilePath = candidate.filepath;
+          originalFilePath = undefined;
+          effectiveOwnership = 'open_in_place';
+          const msg = copyErr instanceof Error ? copyErr.message : String(copyErr);
+          setError(`Could not copy file into managed library (${msg}). Imported in place instead.`);
         }
       }
 
@@ -154,7 +166,7 @@ export function ImportModal({
         original_filepath: originalFilePath,
         sha256_hash: candidate.sha256_hash,
         page_count: candidate.page_count ?? 1,
-        ownership_mode: ownershipMode,
+        ownership_mode: effectiveOwnership,
       });
 
       try {

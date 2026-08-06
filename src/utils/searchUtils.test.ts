@@ -96,4 +96,29 @@ describe('searchUtils', () => {
     expect(getNextMatchIndex(2, 5, 'prev')).toBe(1);
     expect(getNextMatchIndex(0, 0, 'next')).toBe(0);
   });
+
+  it('maps diacritic-tolerant matches back to original-text indices when ligatures shift positions', () => {
+    // The ligature ß expands to "ss" in the normalized text, so every index
+    // after it shifts by +1 relative to the original. A naive implementation
+    // would slice the wrong characters out of the original and produce a
+    // mispositioned highlight.
+    const pages: PageTextContent[] = [
+      { pageNumber: 1, text: 'Die Straße führt nach Köln.' },
+    ];
+
+    const results = performAdvancedSearch(pages, 'strasse', DEFAULT_SEARCH_OPTIONS);
+    expect(results.length).toBe(1);
+    const match = results[0];
+    expect(match.matchedText).toBe('Straße');
+    expect(match.matchLength).toBe('Straße'.length);
+    expect(originalIndex(pages[0].text, 'Straße')).toBe(match.matchIndex);
+
+    const highlighted = match.snippet.slice(match.snippetMatchRange.start, match.snippetMatchRange.end);
+    expect(highlighted).toBe('Straße');
+  });
 });
+
+/** Helper: character index of `needle` in `haystack`, used only by the tests. */
+function originalIndex(haystack: string, needle: string): number {
+  return haystack.indexOf(needle);
+}

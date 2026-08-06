@@ -15,13 +15,13 @@ export function CollectionManagerModal({
   onClose,
   onUpdateCollections,
 }: CollectionManagerModalProps) {
-  if (!isOpen) return null;
-
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  if (!isOpen) return null;
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();

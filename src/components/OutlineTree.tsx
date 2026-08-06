@@ -37,18 +37,35 @@ export function OutlineTree({ nodes, currentPage, onSelectPage }: OutlineTreePro
     if (!matchesFilter(node, filterQuery)) return null;
 
     const hasChildren = node.children && node.children.length > 0;
-    const isExpanded = expandedNodes[node.id] ?? true;
+    // While a filter is active, force-expand any node that itself matches (or
+    // has a matching descendant) so the matching descendant is actually
+    // revealed instead of being hidden under a collapsed ancestor.
+    const isExpanded = filterQuery
+      ? matchesFilter(node, filterQuery)
+      : (expandedNodes[node.id] ?? true);
     const isActive = node.pageNumber === currentPage;
+
+    const handleRowActivate = () => {
+      if (node.pageNumber) {
+        onSelectPage(node.pageNumber);
+      }
+    };
 
     return (
       <div key={node.id} className="outline-tree-item" style={{ paddingLeft: `${node.level * 12}px` }}>
         <div
           className={`outline-row ${isActive ? 'active' : ''}`}
-          onClick={() => {
-            if (node.pageNumber) {
-              onSelectPage(node.pageNumber);
+          onClick={handleRowActivate}
+          onKeyDown={(e) => {
+            // FR-8.7: outline-to-page navigation must be reachable by keyboard.
+            if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+              e.preventDefault();
+              handleRowActivate();
             }
           }}
+          role="button"
+          tabIndex={0}
+          aria-label={node.pageNumber ? `${node.title} — jump to page ${node.pageNumber}` : node.title}
           title={node.pageNumber ? `Jump to ${node.title} (Page ${node.pageNumber})` : node.title}
         >
           {hasChildren ? (

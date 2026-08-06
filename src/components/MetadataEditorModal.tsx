@@ -19,21 +19,21 @@ export function MetadataEditorModal({
   onClose,
   onSave,
 }: MetadataEditorModalProps) {
-  if (!isOpen || !doc) return null;
-
-  const [title, setTitle] = useState(doc.title || '');
-  const [author, setAuthor] = useState(doc.author || '');
-  const [subject, setSubject] = useState(doc.subject || '');
-  const [keywords, setKeywords] = useState(doc.keywords || '');
-  const [creationDate, setCreationDate] = useState(doc.creation_date || '');
-  const [doi, setDoi] = useState(doc.doi || '');
-  const [isbn, setIsbn] = useState(doc.isbn || '');
-  const [isFavourite, setIsFavourite] = useState(Boolean(doc.is_favourite));
-  const [isArchived, setIsArchived] = useState(Boolean(doc.is_archived));
-  const [tagsInput, setTagsInput] = useState((doc.tags || []).join(', '));
-  const [selectedCollections, setSelectedCollections] = useState<string[]>(doc.collections || []);
+  const [title, setTitle] = useState(doc?.title || '');
+  const [author, setAuthor] = useState(doc?.author || '');
+  const [subject, setSubject] = useState(doc?.subject || '');
+  const [keywords, setKeywords] = useState(doc?.keywords || '');
+  const [creationDate, setCreationDate] = useState(doc?.creation_date || '');
+  const [doi, setDoi] = useState(doc?.doi || '');
+  const [isbn, setIsbn] = useState(doc?.isbn || '');
+  const [isFavourite, setIsFavourite] = useState(Boolean(doc?.is_favourite));
+  const [isArchived, setIsArchived] = useState(Boolean(doc?.is_archived));
+  const [tagsInput, setTagsInput] = useState((doc?.tags || []).join(', '));
+  const [selectedCollections, setSelectedCollections] = useState<string[]>(doc?.collections || []);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  if (!isOpen || !doc) return null;
 
   const handleCollectionToggle = (colName: string) => {
     if (selectedCollections.includes(colName)) {

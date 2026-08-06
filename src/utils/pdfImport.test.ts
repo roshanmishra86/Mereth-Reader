@@ -25,6 +25,9 @@ describe('pdfImport utilities', () => {
     });
     expect(validatePdfFilePath('C:\\Users\\Research\\paper.pdf')).toEqual({ valid: true });
     expect(validatePdfFilePath('/home/user/paper.PDF')).toEqual({ valid: true });
+    // An extensionless file literally named "pdf" must not be accepted as a PDF.
+    expect(validatePdfFilePath('pdf').valid).toBe(false);
+    expect(validatePdfFilePath('/home/user/pdf').valid).toBe(false);
   });
 
   it('detectDuplicateDocument identifies SHA-256 fingerprint matches', () => {
