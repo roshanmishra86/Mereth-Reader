@@ -1050,17 +1050,17 @@ High AI usage is not a success metric. Low usage may mean the manual product is 
 | OQ-6 | **Resolved** | PDF is the only v1 document format. EPUB and DjVu are later. | R0 |
 | OQ-7 | **Resolved** | Zotero’s annotation-to-note and source-return interactions are the reader benchmark; full citation management is not. | R2/R3 |
 | OQ-8 | **Resolved** | Retrieval practice and spaced review are internal; AI does not grade correctness. | R4 |
-| OQ-9 | **Open** | Should managed-library copy or open-in-place be the recommended onboarding default? | R1 usability test |
-| OQ-10 | **Open** | Are area capture and comment enough for v1 diagrams, or is freehand ink required before release? | R0/R2 |
+| OQ-9 | **Resolved (provisional)** | **Open-in-place is the recommended onboarding default**, but both ownership modes from FR-7.2 remain fully supported: managed-library copy is offered as an explicit, non-destructive choice at import, and the original file is never moved or modified by default. The default is provisional — confirmed by the R1 usability test with real users before it becomes binding. See ADR `R0.8-reader-architecture-decisions.md`. | R1 usability test |
+| OQ-10 | **Resolved** | v1 ships area capture (rectangular snips) and text highlighting/comment only; freehand ink is deferred past v1. | R0/R2 |
 | OQ-11 | **Open** | Which Markdown front-matter fields and note templates must ship by default? | R3 |
 | OQ-12 | **Open** | Does v1 need CSL citation-style formatting, or are editable metadata plus page/source references sufficient? | R3 |
 | OQ-13 | **Open** | Which FSRS implementation/library satisfies desktop licensing and deterministic export requirements? | R4 |
 | OQ-14 | **Open** | Should app-managed `llama.cpp` ship before support for existing Ollama/LM Studio installations, or together? | R5 |
 | OQ-15 | **Open** | What reference PDFs and user-authored tasks make up the local AI citation evaluation corpus? | R5 |
-| OQ-16 | **Open** | Is Windows 11 x64 sufficient for the first installer, or is Windows on ARM required at launch? | R0 |
-| OQ-17 | **Open** | Does v1 print PDFs through the OS print dialog, or is printing an explicit post-v1 capability? | R0 scope gate |
-| OQ-18 | **Open** | Does v1 support one active document window, multiple tabs, or multiple application windows? | R0 architecture gate |
-| OQ-19 | **Open** | Does v1 open password-protected PDFs after an in-app password prompt, or reject them with a clear recoverable explanation? Passwords must never be persisted without a separate security decision. | R0 corpus gate |
+| OQ-16 | **Resolved** | Windows 11 x64 is the primary target for the first installer; Windows on ARM is not required at launch (deferred). | R0 |
+| OQ-17 | **Resolved** | v1 prints through the OS/webview print dialog (`window.print()`) or the system PDF viewer; no custom print driver. | R0 scope gate |
+| OQ-18 | **Resolved** | v1 is a single application instance with document tabs; OS "Open with" routes launch arguments to the existing window via `tauri-plugin-single-instance`. | R0 architecture gate |
+| OQ-19 | **Resolved** | v1 opens password-protected PDFs after an in-app password prompt; decrypted bytes live only in volatile memory and are never persisted without a separate security decision. | R0 corpus gate |
 
 ---
 
