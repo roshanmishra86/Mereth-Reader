@@ -1,7 +1,136 @@
+pub mod db;
+pub mod launch;
+
+use db::{Database, Document, Job, Page, Setting};
+use launch::{normalize_and_validate_launch_path, route_launch_args, LaunchValidationResult};
+use std::sync::Mutex;
+use tauri::{Emitter, Manager, State};
+
+pub struct AppState {
+  pub db: Mutex<Option<Database>>,
+}
+
+#[tauri::command]
+fn db_init(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+  let app_dir = app_handle
+    .path()
+    .app_data_dir()
+    .map_err(|e| e.to_string())?;
+
+  let database = Database::new(&app_dir)?;
+  let mut lock = state.db.lock().unwrap();
+  *lock = Some(database);
+  Ok(())
+}
+
+#[tauri::command]
+fn db_get_documents(state: State<'_, AppState>) -> Result<Vec<Document>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_documents()
+}
+
+#[tauri::command]
+fn db_add_document(doc: Document, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.add_document(doc)
+}
+
+#[tauri::command]
+fn db_get_pages(document_id: String, state: State<'_, AppState>) -> Result<Vec<Page>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_pages(&document_id)
+}
+
+#[tauri::command]
+fn db_add_job(job: Job, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.add_job(job)
+}
+
+#[tauri::command]
+fn db_get_jobs(state: State<'_, AppState>) -> Result<Vec<Job>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_jobs()
+}
+
+#[tauri::command]
+fn db_update_job(id: String, status: String, error: Option<String>, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_job(&id, &status, error)
+}
+
+#[tauri::command]
+fn db_get_settings(state: State<'_, AppState>) -> Result<Vec<Setting>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_settings()
+}
+
+#[tauri::command]
+fn db_update_settings(key: String, value: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_setting(&key, &value)
+}
+
+#[tauri::command]
+fn db_rebuild_index(state: State<'_, AppState>) -> Result<usize, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.rebuild_fts_index()
+}
+
+#[tauri::command]
+fn cmd_normalize_and_validate_launch_path(input_path: String) -> LaunchValidationResult {
+  normalize_and_validate_launch_path(&input_path)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .run(tauri::generate_context!())
-        .expect("error while running Mereth Reader");
+  let mut builder = tauri::Builder::default()
+    .plugin(tauri_plugin_dialog::init())
+    .manage(AppState {
+      db: Mutex::new(None),
+    })
+    .invoke_handler(tauri::generate_handler![
+      db_init,
+      db_get_documents,
+      db_add_document,
+      db_get_pages,
+      db_add_job,
+      db_get_jobs,
+      db_update_job,
+      db_get_settings,
+      db_update_settings,
+      db_rebuild_index,
+      cmd_normalize_and_validate_launch_path,
+    ]);
+
+  // OQ-18 (single-instance window): enforce one application instance and route
+  // launch arguments — e.g. "Open with" from the OS, or a second invocation —
+  // to the existing window instead of spawning a second process. The resolved
+  // document path is emitted to the frontend on the `launch-route` event so the
+  // reader can load it in a new tab. This wires the R0.6 single-instance routing
+  // that previously existed only as untested Rust logic.
+  #[cfg(desktop)]
+  {
+    builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+      let route = route_launch_args(&argv);
+      if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("launch-route", route.clone());
+      }
+    }));
+  }
+
+  builder
+    .run(tauri::generate_context!())
+    .expect("error while running tauri application");
 }
