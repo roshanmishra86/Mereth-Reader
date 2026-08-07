@@ -59,7 +59,11 @@ export function getDefaultOwnershipMode(): OwnershipMode {
 }
 
 /**
- * Validates whether a file path has a valid PDF extension and basic non-empty path formatting.
+ * Validates whether a file path can be passed safely to the native PDF reader.
+ *
+ * A browser `File` only exposes its name, not its local path. That name must
+ * never be treated as a path: the Rust commands intentionally accept absolute
+ * paths only so the webview cannot probe arbitrary files.
  */
 export function validatePdfFilePath(filepath: string): { valid: boolean; error?: string } {
   if (!filepath || !filepath.trim()) {
@@ -75,6 +79,15 @@ export function validatePdfFilePath(filepath: string): { valid: boolean; error?:
 
   if (ext !== 'pdf') {
     return { valid: false, error: `Invalid file format '.${ext ?? ''}'. Only PDF documents are supported.` };
+  }
+
+  const isPosixAbsolute = cleanPath.startsWith('/');
+  const isWindowsAbsolute = /^[a-z]:\//i.test(cleanPath);
+  if (!isPosixAbsolute && !isWindowsAbsolute) {
+    return {
+      valid: false,
+      error: 'Mereth needs the file’s full location. Choose the PDF with the Open PDF button or drop it into the desktop app.',
+    };
   }
 
   return { valid: true };

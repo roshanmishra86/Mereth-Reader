@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
   OwnershipMode,
   DocumentRecord,
@@ -10,6 +11,7 @@ import {
   formatFileSize,
   detectDuplicateDocument,
   createDocumentRecord,
+  validatePdfFilePath,
 } from '../utils/pdfImport';
 
 import { loadPdfDocument } from '../utils/pdfViewer';
@@ -20,6 +22,7 @@ interface ImportModalProps {
   onImportComplete: (document: DocumentRecord) => void;
   existingDocuments: DocumentRecord[];
   initialFilePath?: string | null;
+  mode?: 'open' | 'import';
 }
 
 export function ImportModal({
@@ -28,6 +31,7 @@ export function ImportModal({
   onImportComplete,
   existingDocuments,
   initialFilePath,
+  mode = 'open',
 }: ImportModalProps) {
   const [candidate, setCandidate] = useState<ImportCandidate | null>(null);
   const [ownershipMode, setOwnershipMode] = useState<OwnershipMode>(getDefaultOwnershipMode());
@@ -36,20 +40,71 @@ export function ImportModal({
   const [isDragOver, setIsDragOver] = useState(false);
   const [duplicateMatch, setDuplicateMatch] = useState<DocumentRecord | null>(null);
 
+  const isOpenFlow = mode === 'open';
+
+  React.useEffect(() => {
+    if (!isOpen) {
+      setCandidate(null);
+      setError(null);
+      setDuplicateMatch(null);
+      setIsDragOver(false);
+      return;
+    }
+    setOwnershipMode(isOpenFlow ? 'open_in_place' : 'managed_library');
+  }, [isOpen, isOpenFlow]);
+
   React.useEffect(() => {
     if (initialFilePath && isOpen) {
-      processFilePath(initialFilePath);
+      processFilePath(initialFilePath, isOpenFlow);
     }
-  }, [initialFilePath, isOpen]);
+  }, [initialFilePath, isOpen, isOpenFlow]);
+
+  React.useEffect(() => {
+    if (!isOpen || !isTauri()) return;
+
+    let unlisten: (() => void) | undefined;
+    getCurrentWindow()
+      .onDragDropEvent((event) => {
+        if (event.payload.type === 'enter' || event.payload.type === 'over') {
+          setIsDragOver(true);
+          return;
+        }
+        if (event.payload.type === 'leave') {
+          setIsDragOver(false);
+          return;
+        }
+
+        setIsDragOver(false);
+        const [filePath] = event.payload.paths;
+        if (!filePath) return;
+        if (!filePath.toLowerCase().endsWith('.pdf')) {
+          setError('Choose a PDF file to open.');
+          return;
+        }
+        void processFilePath(filePath, isOpenFlow);
+      })
+      .then((stop) => { unlisten = stop; })
+      .catch(() => {
+        // The native dialog remains available if desktop drag events cannot be registered.
+      });
+
+    return () => unlisten?.();
+  }, [isOpen, isOpenFlow]);
 
   if (!isOpen) return null;
 
-  async function processFilePath(filePath: string) {
+  async function processFilePath(filePath: string, openImmediately = false) {
     setIsProcessing(true);
     setError(null);
     setDuplicateMatch(null);
 
     try {
+      const pathValidation = validatePdfFilePath(filePath);
+      if (!pathValidation.valid) {
+        setError(pathValidation.error ?? 'Choose a PDF file to open.');
+        return;
+      }
+
       let metadata: {
         filepath: string;
         filename: string;
@@ -59,9 +114,9 @@ export function ImportModal({
         exists: boolean;
       };
 
-      try {
+      if (isTauri()) {
         metadata = await invoke('import_compute_file_metadata', { filepath: filePath });
-      } catch {
+      } else {
         // Fallback for non-Tauri / dev environment preview
         const filename = extractFilenameFromPath(filePath);
         metadata = {
@@ -104,6 +159,19 @@ export function ImportModal({
       const dupResult = detectDuplicateDocument(metadata.sha256_hash, existingDocuments);
       if (dupResult.isDuplicate && dupResult.existingDocument) {
         setDuplicateMatch(dupResult.existingDocument);
+        if (openImmediately) {
+          onImportComplete(dupResult.existingDocument);
+          onClose();
+        }
+      } else if (openImmediately) {
+        await saveCandidate({
+          filepath: metadata.filepath,
+          filename: metadata.filename,
+          sha256_hash: metadata.sha256_hash,
+          file_size_bytes: metadata.file_size_bytes,
+          page_count: authoritativePageCount,
+          exists: metadata.exists,
+        }, 'open_in_place');
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -122,7 +190,7 @@ export function ImportModal({
       });
 
       if (selected && typeof selected === 'string') {
-        await processFilePath(selected);
+        await processFilePath(selected, isOpenFlow);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -130,55 +198,28 @@ export function ImportModal({
     }
   }
 
-  function handleHtmlDrop(e: React.DragEvent<HTMLDivElement>) {
-    e.preventDefault();
-    setIsDragOver(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      const path = (file as File & { path?: string }).path || file.name;
-      if (!path.toLowerCase().endsWith('.pdf')) {
-        setError('Only PDF files can be imported.');
-        return;
-      }
-      processFilePath(path);
-    }
-  }
-
-  async function handleConfirmImport() {
-    if (!candidate) return;
+  async function saveCandidate(candidateToSave: ImportCandidate, selectedOwnershipMode: OwnershipMode) {
     setIsProcessing(true);
     setError(null);
 
     try {
-      let finalFilePath = candidate.filepath;
+      let finalFilePath = candidateToSave.filepath;
       let originalFilePath: string | undefined = undefined;
-      let effectiveOwnership = ownershipMode;
+      const effectiveOwnership = selectedOwnershipMode;
 
-      if (ownershipMode === 'managed_library') {
-        try {
-          finalFilePath = await invoke<string>('import_copy_to_managed_library', {
-            sourcePath: candidate.filepath,
-          });
-          originalFilePath = candidate.filepath;
-        } catch (copyErr) {
-          // Managed copy failed (disk full, permission, etc.). Fall back to
-          // open-in-place rather than persisting a "managed" record that points
-          // at the un-copied original — that would mislabel ownership and the
-          // "managed" copy would be lost if the original is later moved.
-          finalFilePath = candidate.filepath;
-          originalFilePath = undefined;
-          effectiveOwnership = 'open_in_place';
-          const msg = copyErr instanceof Error ? copyErr.message : String(copyErr);
-          setError(`Could not copy file into managed library (${msg}). Imported in place instead.`);
-        }
+      if (selectedOwnershipMode === 'managed_library') {
+        finalFilePath = await invoke<string>('import_copy_to_managed_library', {
+          sourcePath: candidateToSave.filepath,
+        });
+        originalFilePath = candidateToSave.filepath;
       }
 
       const docRecord = createDocumentRecord({
-        title: candidate.filename.replace(/\.pdf$/i, ''),
+        title: candidateToSave.filename.replace(/\.pdf$/i, ''),
         filepath: finalFilePath,
         original_filepath: originalFilePath,
-        sha256_hash: candidate.sha256_hash,
-        page_count: candidate.page_count ?? 1,
+        sha256_hash: candidateToSave.sha256_hash,
+        page_count: candidateToSave.page_count ?? 1,
         ownership_mode: effectiveOwnership,
       });
 
@@ -188,10 +229,14 @@ export function ImportModal({
       onClose();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setError(`Import failed: ${msg}`);
+      setError(`Could not open PDF: ${msg}`);
     } finally {
       setIsProcessing(false);
     }
+  }
+
+  async function handleConfirmImport() {
+    if (candidate) await saveCandidate(candidate, ownershipMode);
   }
 
   function handleOpenExisting() {
@@ -205,7 +250,7 @@ export function ImportModal({
     <div className="sheet-backdrop" onClick={onClose}>
       <div className="sheet import-sheet" onClick={(e) => e.stopPropagation()}>
         <header className="sheet-header">
-          <h3>Import PDF Document</h3>
+          <h3>{isOpenFlow ? 'Open PDF' : 'Import PDF copy'}</h3>
           <button className="icon-button" onClick={onClose} aria-label="Close modal">✕</button>
         </header>
 
@@ -215,16 +260,18 @@ export function ImportModal({
           {!candidate ? (
             <div
               className={`drag-drop-zone ${isDragOver ? 'drag-over' : ''}`}
-              onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
-              onDragLeave={() => setIsDragOver(false)}
-              onDrop={handleHtmlDrop}
             >
               <div className="drop-icon">📄</div>
-              <p><strong>Drag and drop a PDF file here</strong></p>
-              <p className="dimmed">or browse files from your computer</p>
+              <p><strong>{isOpenFlow ? 'Choose a PDF and start reading' : 'Choose a PDF to copy into your library'}</strong></p>
+              <p className="dimmed">
+                {isOpenFlow
+                  ? 'It opens in place and is added to your Library automatically.'
+                  : 'The original stays where it is; Mereth keeps a separate copy.'}
+              </p>
               <button className="button primary" onClick={handleBrowseNative} disabled={isProcessing}>
-                {isProcessing ? 'Inspecting file...' : 'Choose PDF File'}
+                {isProcessing ? 'Opening file...' : (isOpenFlow ? 'Open PDF' : 'Choose PDF')}
               </button>
+              <p className="dimmed">You can also drag a PDF onto this window.</p>
             </div>
           ) : (
             <div className="import-details">
@@ -244,13 +291,13 @@ export function ImportModal({
                   <p>A document with matching SHA-256 fingerprint already exists in your library as <em>"{duplicateMatch.title}"</em>.</p>
                   <div className="duplicate-actions">
                     <button className="button secondary compact" onClick={handleOpenExisting}>Open Existing Document</button>
-                    <span className="dimmed">or confirm below to re-import</span>
+                    <span className="dimmed">or import another copy below</span>
                   </div>
                 </div>
               )}
 
-              <fieldset className="ownership-selector">
-                <legend>Document Ownership Mode (FR-7.2)</legend>
+              {!isOpenFlow && <fieldset className="ownership-selector">
+                <legend>Import option</legend>
 
                 <label className={`mode-option ${ownershipMode === 'open_in_place' ? 'selected' : ''}`}>
                   <input
@@ -261,9 +308,8 @@ export function ImportModal({
                     onChange={() => setOwnershipMode('open_in_place')}
                   />
                   <div className="mode-text">
-                    <strong>Open in Place (Recommended Default)</strong>
-                    <p>Retain original file location. Best for reading existing folder hierarchies. Original file is never moved or modified.</p>
-                    <span className="badge-recommended">Default</span>
+                    <strong>Keep original location</strong>
+                    <p>Keep reading from this file. The original is never moved or modified.</p>
                   </div>
                 </label>
 
@@ -276,11 +322,11 @@ export function ImportModal({
                     onChange={() => setOwnershipMode('managed_library')}
                   />
                   <div className="mode-text">
-                    <strong>Add to Managed Library</strong>
-                    <p>Copies original PDF into application storage (<code>documents/</code>). Preserves original file and path as metadata.</p>
+                    <strong>Copy into Mereth Library</strong>
+                    <p>Keeps a separate managed copy while preserving the original.</p>
                   </div>
                 </label>
-              </fieldset>
+              </fieldset>}
             </div>
           )}
         </div>
@@ -289,7 +335,7 @@ export function ImportModal({
           <button className="button secondary" onClick={onClose} disabled={isProcessing}>Cancel</button>
           {candidate && (
             <button className="button primary" onClick={handleConfirmImport} disabled={isProcessing}>
-              {isProcessing ? 'Importing...' : 'Confirm Import'}
+              {isProcessing ? (isOpenFlow ? 'Opening…' : 'Importing…') : (isOpenFlow ? 'Open PDF' : 'Import PDF')}
             </button>
           )}
         </footer>

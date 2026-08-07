@@ -18,6 +18,7 @@ interface LibraryViewProps {
   collections: CollectionItem[];
   activeJobsCount: number;
   onOpenDocument: (doc: DocumentRecord) => void;
+  onOpenPdf: () => void;
   onOpenImportModal: () => void;
   onOpenJobQueue: () => void;
   onToggleFavourite: (docId: string, currentStatus: boolean) => void;
@@ -31,6 +32,7 @@ export function LibraryView({
   collections,
   activeJobsCount,
   onOpenDocument,
+  onOpenPdf,
   onOpenImportModal,
   onOpenJobQueue,
   onToggleFavourite,
@@ -256,8 +258,11 @@ export function LibraryView({
               ⚙️ Jobs {activeJobsCount > 0 && <span className="badge running">{activeJobsCount}</span>}
             </button>
 
-            <button className="button primary compact" onClick={onOpenImportModal}>
-              + Import PDF
+            <button className="button primary compact" onClick={onOpenPdf}>
+              Open PDF
+            </button>
+            <button className="button secondary compact" onClick={onOpenImportModal}>
+              Import a copy
             </button>
           </div>
         </header>
@@ -265,7 +270,7 @@ export function LibraryView({
         {/* Document Grid / List Container */}
         {filteredDocs.length === 0 ? (
           documents.length === 0 ? (
-            <EmptyState viewType="library" onPrimaryAction={onOpenImportModal} />
+            <EmptyState viewType="library" onPrimaryAction={onOpenPdf} onSecondaryAction={onOpenImportModal} />
           ) : (
             <EmptyState
               viewType="search"

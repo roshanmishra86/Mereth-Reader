@@ -195,6 +195,7 @@ function App() {
   const [promptOpen, setPromptOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [initialImportPath, setInitialImportPath] = useState<string | null>(null);
+  const [pdfEntryMode, setPdfEntryMode] = useState<'open' | 'import'>('open');
   const [readingOnly, setReadingOnly] = useState(false);
   const [revealed, setRevealed] = useState(false);
 
@@ -241,6 +242,7 @@ function App() {
         openDocument(existing);
       } else {
         setInitialImportPath(docPath);
+        setPdfEntryMode('open');
         setImportOpen(true);
       }
       return;
@@ -436,6 +438,7 @@ function App() {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
         event.preventDefault();
         setInitialImportPath(null);
+        setPdfEntryMode('open');
         setImportOpen(true);
       }
       const target = event.target as HTMLElement;
@@ -616,6 +619,15 @@ function App() {
   };
 
   function handleImportComplete(newDoc: DocumentRecord) {
+    // Opening a document already in the Library must not be treated as a new
+    // import; it should simply take the reader to that existing record.
+    const existingDocument = documents.find((document) => document.id === newDoc.id);
+    if (existingDocument) {
+      openDocument(existingDocument);
+      setImportOpen(false);
+      return;
+    }
+
     // Check for duplicate fingerprint before finalizing import (FR-7.7)
     const dupCheck = checkDuplicateFingerprint(newDoc.sha256_hash, newDoc.filepath, documents);
     if (dupCheck.hasDuplicate && dupCheck.existingDocument) {
@@ -746,7 +758,7 @@ function App() {
                 onReanchorAnnotations={() => setVersionMismatchBannerVisible(false)}
                 onReturnToLibrary={() => setDestination("library")}
                 setAiOn={setAiOn}
-                setImportOpen={() => { setInitialImportPath(null); setImportOpen(true); }}
+                setImportOpen={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
                 setLeftOpen={setLeftOpen}
                 setPromptOpen={setPromptOpen}
                 setReadingOnly={setReadingOnly}
@@ -764,7 +776,8 @@ function App() {
             collections={collections}
             activeJobsCount={activeJobsCount}
             onOpenDocument={openDocument}
-            onOpenImportModal={() => { setInitialImportPath(null); setImportOpen(true); }}
+            onOpenPdf={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
+            onOpenImportModal={() => { setInitialImportPath(null); setPdfEntryMode('import'); setImportOpen(true); }}
             onOpenJobQueue={() => setJobDrawerOpen(true)}
             onToggleFavourite={handleToggleFavourite}
             onToggleArchive={handleToggleArchive}
@@ -788,10 +801,11 @@ function App() {
       
       <ImportModal
         isOpen={importOpen}
-        onClose={() => setImportOpen(false)}
+        onClose={() => { setImportOpen(false); setInitialImportPath(null); }}
         onImportComplete={handleImportComplete}
         existingDocuments={documents}
         initialFilePath={initialImportPath}
+        mode={pdfEntryMode}
       />
 
       <JobQueueDrawer
@@ -1235,6 +1249,7 @@ function Reader(props: ReaderProps) {
           onToggleReadingOnly={() => props.setReadingOnly(!props.readingOnly)}
           aiOn={props.aiOn}
           onToggleAi={() => props.setAiOn(!props.aiOn)}
+          onOpenPdf={() => props.setImportOpen(true)}
         />
       )}
 

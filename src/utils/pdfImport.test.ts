@@ -25,6 +25,10 @@ describe('pdfImport utilities', () => {
     });
     expect(validatePdfFilePath('C:\\Users\\Research\\paper.pdf')).toEqual({ valid: true });
     expect(validatePdfFilePath('/home/user/paper.PDF')).toEqual({ valid: true });
+    expect(validatePdfFilePath('paper.pdf')).toEqual({
+      valid: false,
+      error: 'Mereth needs the file’s full location. Choose the PDF with the Open PDF button or drop it into the desktop app.',
+    });
     // An extensionless file literally named "pdf" must not be accepted as a PDF.
     expect(validatePdfFilePath('pdf').valid).toBe(false);
     expect(validatePdfFilePath('/home/user/pdf').valid).toBe(false);

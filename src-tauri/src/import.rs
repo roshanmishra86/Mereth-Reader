@@ -119,19 +119,49 @@ pub fn compute_file_metadata(filepath: &str) -> Result<FileMetadata, String> {
   })
 }
 
-/// True for POSIX-absolute (`/...`) and Windows-drive-absolute (`C:\...` /
-/// `C:/...`) paths. Used instead of `Path::is_absolute()` so the validation
-/// logic is consistent on the Windows runtime and the Linux CI/test host.
+/// True for POSIX-absolute paths and supported Windows absolute path forms.
+///
+/// Windows `fs::canonicalize` returns an extended-length path (`\\?\C:\...`)
+/// on many systems. It is still absolute and is the value returned by the
+/// metadata command, so it must remain valid when that value is later stored.
+/// This helper is deliberately platform-independent because Linux CI also
+/// exercises Windows-originating values.
 fn path_looks_absolute(p: &Path) -> bool {
   let s = p.to_string_lossy();
   if s.starts_with('/') {
     return true;
   }
-  let bytes = s.as_bytes();
-  bytes.len() >= 3
-    && bytes[0].is_ascii_alphabetic()
-    && bytes[1] == b':'
-    && (bytes[2] == b'\\' || bytes[2] == b'/')
+
+  let is_windows_drive_absolute = |value: &str| {
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+      && bytes[0].is_ascii_alphabetic()
+      && bytes[1] == b':'
+      && (bytes[2] == b'\\' || bytes[2] == b'/')
+  };
+
+  // Extended-length drive path, e.g. `\\?\C:\Users\reader\paper.pdf`.
+  if let Some(extended) = s.strip_prefix(r"\\?\") {
+    if is_windows_drive_absolute(extended) {
+      return true;
+    }
+
+    // Extended-length UNC path, e.g.
+    // `\\?\UNC\server\share\paper.pdf`.
+    if let Some(unc) = extended.strip_prefix("UNC\\") {
+      let mut parts = unc.split('\\').filter(|part| !part.is_empty());
+      return parts.next().is_some() && parts.next().is_some();
+    }
+    return false;
+  }
+
+  // Standard UNC path, e.g. `\\server\share\paper.pdf`.
+  if let Some(unc) = s.strip_prefix(r"\\") {
+    let mut parts = unc.split('\\').filter(|part| !part.is_empty());
+    return parts.next().is_some() && parts.next().is_some();
+  }
+
+  is_windows_drive_absolute(&s)
 }
 
 /// Validates that a webview-supplied path is an absolute `.pdf` path. This is
@@ -288,6 +318,9 @@ mod tests {
     assert!(validate_pdf_filepath_basic("/abs/doc.txt").is_err());
     assert!(validate_pdf_filepath_basic("/abs/doc.pdf").is_ok());
     assert!(validate_pdf_filepath_basic("C:\\abs\\doc.PDF").is_ok());
+    assert!(validate_pdf_filepath_basic(r"\\?\C:\abs\doc.pdf").is_ok());
+    assert!(validate_pdf_filepath_basic(r"\\server\share\doc.pdf").is_ok());
+    assert!(validate_pdf_filepath_basic(r"\\?\UNC\server\share\doc.pdf").is_ok());
   }
 
   #[test]

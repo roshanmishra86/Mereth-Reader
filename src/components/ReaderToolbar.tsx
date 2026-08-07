@@ -45,6 +45,7 @@ interface ReaderToolbarProps {
   onToggleReadingOnly: () => void;
   aiOn: boolean;
   onToggleAi: () => void;
+  onOpenPdf: () => void;
 }
 
 export function ReaderToolbar(props: ReaderToolbarProps) {
@@ -375,6 +376,14 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
       </div>
 
       <div className="toolbar-spacer" />
+
+      <button
+        className="outline-button"
+        onClick={props.onOpenPdf}
+        title="Open another PDF"
+      >
+        Open PDF
+      </button>
 
       {/* Presentation / Fullscreen Button */}
       <button

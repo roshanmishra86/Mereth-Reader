@@ -196,8 +196,9 @@ export function getEmptyStateDetails(
         viewType: 'library',
         icon: '📚',
         title: 'Library is empty',
-        description: 'No documents in your library. Import a PDF file to begin reading and taking notes.',
-        primaryActionLabel: '+ Import PDF',
+        description: 'Open a PDF to begin reading. It will be added to your Library automatically.',
+        primaryActionLabel: 'Open PDF',
+        secondaryActionLabel: 'Import a copy',
       };
 
     case 'search':
