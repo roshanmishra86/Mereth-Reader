@@ -31,6 +31,14 @@
     "category": "Productivity",
     "shortDescription": "A calm, local-first PDF reader",
     "longDescription": "Read PDFs, turn annotations into source-linked notes, and review what you choose to remember.",
+    "fileAssociations": [
+      {
+        "ext": ["pdf"],
+        "name": "PDF Document",
+        "description": "Portable Document Format File",
+        "role": "Viewer"
+      }
+    ],
     "windows": {
       "nsis": {
         "installMode": "currentUser",

@@ -66,6 +66,29 @@ describe('R0.4 Durable Annotation-Overlay Persistence', () => {
     expect(rect270).toEqual({ left: 100, top: 400, width: 200, height: 400 });
   });
 
+  it('uses the correct axis dimension for rotation on non-square pages', () => {
+    // US-Letter-style 800x1000 page. After 90°/270° rotation the display
+    // viewport swaps to 1000 wide x 800 tall, so the horizontal axis must use
+    // scaledHeight (1000) for 90° and the vertical axis must use scaledWidth
+    // (800) for 270°. The square-page tests above cannot catch this because
+    // scaledWidth === scaledHeight there.
+    const geometry = { x: 0.1, y: 0.2, width: 0.5, height: 0.1 };
+    const baseTransform: Omit<ViewportTransform, 'rotationDegrees'> = {
+      pageWidthPx: 800,
+      pageHeightPx: 1000,
+      scale: 1.0,
+    };
+
+    const rect90 = denormalizeGeometry(geometry, { ...baseTransform, rotationDegrees: 90 });
+    // newLeft = scaledHeight - y - h = 1000 - 200 - 100 = 700
+    // newTop  = x = 80; width = h = 100; height = w = 400
+    expect(rect90).toEqual({ left: 700, top: 80, width: 100, height: 400 });
+
+    const rect270 = denormalizeGeometry(geometry, { ...baseTransform, rotationDegrees: 270 });
+    // newLeft = y = 200; newTop = scaledWidth - x - w = 800 - 80 - 400 = 320
+    expect(rect270).toEqual({ left: 200, top: 320, width: 100, height: 400 });
+  });
+
   it('supports highlight and rectangle annotation types with checksums', () => {
     const geometry = { x: 0.1, y: 0.1, width: 0.2, height: 0.05 };
     const quoteContext = {
@@ -107,11 +130,21 @@ describe('R0.4 Durable Annotation-Overlay Persistence', () => {
     const syncedSame = syncAnnotationVersion(baseAnn, 'v1');
     expect(syncedSame.status).toBe('active');
 
-    // New version, text matches -> re-anchors to active on new version
+    // New version, text matches -> re-anchors to active on new version and
+    // regenerates the checksum so it matches the new documentVersionId.
     const pageTextModified = 'In this matter, breach of fiduciary duty was alleged by plaintiffs.';
     const syncedMatch = syncAnnotationVersion(baseAnn, 'v2', pageTextModified);
     expect(syncedMatch.status).toBe('active');
     expect(syncedMatch.documentVersionId).toBe('v2');
+    const expectedChecksum = calculateAnnotationChecksum(
+      'v2',
+      baseAnn.pageNumber,
+      baseAnn.type,
+      baseAnn.geometry,
+      baseAnn.quoteContext
+    );
+    expect(syncedMatch.checksum).toBe(expectedChecksum);
+    expect(syncedMatch.checksum).not.toBe(baseAnn.checksum);
 
     // New version, text removed -> detached flag
     const pageTextDiff = 'In this matter, breach of contract was alleged by plaintiffs.';
