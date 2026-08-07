@@ -23,7 +23,7 @@ pub const ALLOWED_PROVENANCES: &[&str] = &[
 ];
 
 /// The highest migration version this engine knows how to apply.
-const LATEST_MIGRATION_VERSION: i32 = 1;
+const LATEST_MIGRATION_VERSION: i32 = 3;
 
 /// Runs forward-only migrations.
 ///
@@ -172,6 +172,75 @@ pub fn run_migrations(conn: &mut Connection, app_dir: &Path, db_existed: bool) -
       tx.execute(
         "INSERT INTO migration_metadata (version, applied_at, checksum)
        VALUES (1, datetime('now'), 'migration_1_init_v1');",
+        [],
+      )?;
+
+      tx.commit()?;
+    }
+
+    if current_version < 2 {
+      let tx = conn.transaction()?;
+
+      // Extend documents table with metadata fields, favourites, archive, tags, collections
+      tx.execute("ALTER TABLE documents ADD COLUMN author TEXT;", [])?;
+      tx.execute("ALTER TABLE documents ADD COLUMN subject TEXT;", [])?;
+      tx.execute("ALTER TABLE documents ADD COLUMN keywords TEXT;", [])?;
+      tx.execute("ALTER TABLE documents ADD COLUMN creation_date TEXT;", [])?;
+      tx.execute("ALTER TABLE documents ADD COLUMN doi TEXT;", [])?;
+      tx.execute("ALTER TABLE documents ADD COLUMN isbn TEXT;", [])?;
+      tx.execute("ALTER TABLE documents ADD COLUMN is_favourite INTEGER NOT NULL DEFAULT 0;", [])?;
+      tx.execute("ALTER TABLE documents ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;", [])?;
+      tx.execute("ALTER TABLE documents ADD COLUMN last_opened_at TEXT;", [])?;
+      tx.execute("ALTER TABLE documents ADD COLUMN tags TEXT NOT NULL DEFAULT '[]';", [])?;
+      tx.execute("ALTER TABLE documents ADD COLUMN collections TEXT NOT NULL DEFAULT '[]';", [])?;
+
+      // Create collections manager table
+      tx.execute(
+        "CREATE TABLE IF NOT EXISTS collections (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        description TEXT,
+        created_at TEXT NOT NULL
+      );",
+        [],
+      )?;
+
+      // Record migration 2 completion
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (2, datetime('now'), 'migration_2_metadata_collections');",
+        [],
+      )?;
+
+      tx.commit()?;
+    }
+
+    if current_version < 3 {
+      let tx = conn.transaction()?;
+
+      // Create reading_sessions table for Task 2.6 session restore
+      tx.execute(
+        "CREATE TABLE IF NOT EXISTS reading_sessions (
+          document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+          current_page INTEGER NOT NULL DEFAULT 1,
+          zoom_mode TEXT NOT NULL DEFAULT 'fit-width',
+          zoom_scale REAL NOT NULL DEFAULT 100.0,
+          scroll_top_px REAL NOT NULL DEFAULT 0.0,
+          left_pane_open INTEGER NOT NULL DEFAULT 1,
+          left_pane_width_px REAL NOT NULL DEFAULT 260.0,
+          right_pane_open INTEGER NOT NULL DEFAULT 0,
+          right_pane_width_px REAL NOT NULL DEFAULT 300.0,
+          view_mode TEXT NOT NULL DEFAULT 'single',
+          rotation INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL
+        );",
+        [],
+      )?;
+
+      // Record migration 3 completion
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (3, datetime('now'), 'migration_3_reading_sessions');",
         [],
       )?;
 

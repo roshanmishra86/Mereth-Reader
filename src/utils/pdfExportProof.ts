@@ -58,6 +58,16 @@ export async function exportAnnotatedPdfCopy(
   outputPath: string,
   annotations: Annotation[]
 ): Promise<ExportResult> {
+  // PRD FR-14.3 / RK-3: export must NEVER overwrite the original PDF. The
+  // post-hoc SHA-256 comparison only *reports* a violation after the fact, so
+  // reject identical source/destination up front before any read or write.
+  if (path.resolve(sourcePath) === path.resolve(outputPath)) {
+    throw new Error(
+      'Refusing to export: output path resolves to the same file as the source PDF. ' +
+      'Export produces a new annotated copy and must never overwrite the original (PRD FR-14.3).'
+    );
+  }
+
   const sourceBytes = fs.readFileSync(sourcePath);
   const initialSourceSha256 = calculateSha256(sourceBytes);
 
