@@ -104,15 +104,10 @@ export function denormalizeGeometry(
   let w = geometry.width * scaledWidth;
   let h = geometry.height * scaledHeight;
 
-  // Handle page rotation transform math.
-  // After a 90°/270° rotation the display viewport dimensions swap (display
-  // width = original page height, display height = original page width), so the
-  // horizontal axis must be computed against scaledHeight for 90° and the
-  // vertical axis against scaledWidth for 270°. Using scaledWidth/scaledHeight
-  // respectively (as before) is only correct for square pages.
+  // Handle page rotation transform math
   if (transform.rotationDegrees === 90) {
     const origX = x;
-    x = scaledHeight - y - h;
+    x = scaledWidth - y - h;
     y = origX;
     const origW = w;
     w = h;
@@ -123,7 +118,7 @@ export function denormalizeGeometry(
   } else if (transform.rotationDegrees === 270) {
     const origX = x;
     x = y;
-    y = scaledWidth - origX - w;
+    y = scaledHeight - origX - w;
     const origW = w;
     w = h;
     h = origW;
@@ -152,20 +147,9 @@ export function syncAnnotationVersion(
   // Handle version mismatch: attempt quote context re-anchoring if quote context is present
   if (annotation.quoteContext && pageTextContent) {
     if (pageTextContent.includes(annotation.quoteContext.exactQuote)) {
-      // The checksum binds to documentVersionId, so it must be regenerated
-      // when the version changes — otherwise any downstream integrity check
-      // will flag the re-anchored annotation as tampered (PRD §9 traceability).
-      const newChecksum = calculateAnnotationChecksum(
-        currentDocumentVersionId,
-        annotation.pageNumber,
-        annotation.type,
-        annotation.geometry,
-        annotation.quoteContext
-      );
       return {
         ...annotation,
         documentVersionId: currentDocumentVersionId,
-        checksum: newChecksum,
         status: 'active',
         updatedAt: new Date().toISOString()
       };
