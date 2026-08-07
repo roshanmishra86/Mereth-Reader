@@ -49,26 +49,17 @@ export function getPdfSecuritySettings(): PdfSecurityOptions {
 /**
  * Scans raw PDF dictionary objects or action strings for prohibited actions:
  * embedded JavaScript (/JS, /JavaScript), /Launch executables, auto-actions (/AA, /OpenAction).
- *
- * NOTE: this is a lightweight defense-in-depth scan over raw PDF bytes. PDF
- * action keys are case-sensitive (`/JS`, not `/js`), so the regexes below are
- * case-sensitive to avoid false positives on benign keys like `/js` or `/aa`.
- * Object streams compressed with `/FlateDecode` (`/ObjStm`) are NOT decoded
- * here; a hostile PDF can hide `/JS` or `/OpenAction` inside a compressed
- * stream and pass this scan. Treat a clean result as a signal, not a proof —
- * the authoritative controls are PDF.js `disableScripting` and the CSP, which
- * run regardless of what this scan reports.
  */
 export function scanPdfActions(pdfRawContent: string): SecurityScanResult {
   const blockedActions: string[] = [];
 
-  if (/\/JS\b|\/JavaScript\b/.test(pdfRawContent)) {
+  if (/\/JS\b|\/JavaScript\b/i.test(pdfRawContent)) {
     blockedActions.push('embedded_javascript');
   }
-  if (/\/Launch\b/.test(pdfRawContent)) {
+  if (/\/Launch\b/i.test(pdfRawContent)) {
     blockedActions.push('executable_launch');
   }
-  if (/\/AA\b|\/OpenAction\b/.test(pdfRawContent)) {
+  if (/\/AA\b|\/OpenAction\b/i.test(pdfRawContent)) {
     blockedActions.push('automatic_action');
   }
 

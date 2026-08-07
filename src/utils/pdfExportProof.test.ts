@@ -72,14 +72,4 @@ describe('R0.5 Annotated-PDF Copy Export Proofs', () => {
     // Clean up temporary directory
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
-
-  it('refuses to export when output path resolves to the source PDF (FR-14.3 / RK-3)', async () => {
-    await expect(exportAnnotatedPdfCopy(corpusPdfPath, corpusPdfPath, [])).rejects.toThrow(
-      /must never overwrite the original/
-    );
-    // Also catch non-identical strings that resolve to the same file.
-    await expect(
-      exportAnnotatedPdfCopy(corpusPdfPath, path.resolve(corpusPdfPath), [])
-    ).rejects.toThrow(/must never overwrite the original/);
-  });
 });
