@@ -94,6 +94,11 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
   // Mount-time capture for one-shot session restore.
   const mountPageRef = useRef(currentPage);
   const didRestoreRef = useRef(false);
+  // An explicit navigation command (toolbar/outline/search/deep link) always
+  // wins over restoring the saved scroll position — even when it arrives (or
+  // is already present) before the restore effect's gate opens, as happens
+  // with an OS "Open with" / mereth:// deep link racing session restore.
+  const explicitNavRequestRef = useRef(scrollToPageRequest !== null);
 
   // Viewport measurement (fit math + virtualization window).
   useEffect(() => {
@@ -200,6 +205,7 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
   // Explicit navigation (toolbar page input, outline, search match, deep link).
   useEffect(() => {
     if (!scrollToPageRequest) return;
+    explicitNavRequestRef.current = true;
     const el = scrollRef.current;
     if (!el || rowLayouts.length === 0) return;
     const rowIndex = findRowIndexForPage(
@@ -221,6 +227,10 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
     const el = scrollRef.current;
     if (!el) return;
     didRestoreRef.current = true;
+
+    // An explicit navigation request already claimed the scroll position —
+    // restoring the saved session here would override it.
+    if (explicitNavRequestRef.current) return;
 
     if (initialScrollTop > 0) {
       el.scrollTop = initialScrollTop;

@@ -480,11 +480,10 @@ function App() {
     const updated = jobQueueManager.updateProgress(jobId, processedPages);
     setJobs(jobQueueManager.getJobs());
     if (updated && updated.status === 'completed') {
-      try {
-        invoke("db_update_job", { id: jobId, status: "completed", error: null });
-      } catch {
+      // invoke() returns a Promise — a sync try/catch can't catch a rejection.
+      invoke("db_update_job", { id: jobId, status: "completed", error: null }).catch(() => {
         // Dev environment fallback
-      }
+      });
     }
   };
 
@@ -548,17 +547,15 @@ function App() {
   const handleCancelJob = (jobId: string) => {
     jobQueueManager.cancelJob(jobId, "Cancelled by user from background jobs drawer");
     setJobs(jobQueueManager.getJobs());
-    try {
-      invoke("db_update_job", { id: jobId, status: "cancelled", error: "Cancelled by user" });
-    } catch {}
+    // invoke() returns a Promise — a sync try/catch can't catch a rejection.
+    invoke("db_update_job", { id: jobId, status: "cancelled", error: "Cancelled by user" }).catch(() => {});
   };
 
   const handleRestartJob = (jobId: string) => {
     jobQueueManager.restartJob(jobId);
     setJobs(jobQueueManager.getJobs());
-    try {
-      invoke("db_update_job", { id: jobId, status: "pending", error: null });
-    } catch {}
+    // invoke() returns a Promise — a sync try/catch can't catch a rejection.
+    invoke("db_update_job", { id: jobId, status: "pending", error: null }).catch(() => {});
   };
 
   function handleImportComplete(newDoc: DocumentRecord) {
@@ -883,6 +880,10 @@ function Reader(props: ReaderProps) {
   const currentPageRef = useRef(currentPage);
   const [scrollToPageRequest, setScrollToPageRequest] = useState<{ page: number; nonce: number } | null>(null);
   const scrollSaveTimeoutRef = useRef<number>(0);
+  // Monotonic counter for scrollToPageRequest nonces — Date.now() can repeat
+  // within the same millisecond for back-to-back navigations, which would
+  // silently drop the second one (ReaderCanvas's scroll effect keys off nonce).
+  const navNonceRef = useRef(0);
 
   const totalPages = loadedPdf?.numPages || props.totalPages || 1;
 
@@ -1085,7 +1086,7 @@ function Reader(props: ReaderProps) {
     if (recordHistory) {
       setHistoryState((prev) => pushNavigationHistory(prev, validPage));
     }
-    setScrollToPageRequest({ page: validPage, nonce: Date.now() });
+    setScrollToPageRequest({ page: validPage, nonce: ++navNonceRef.current });
   };
 
   // Scroll-driven page sync from the canvas: no history, no scroll command.
