@@ -258,13 +258,18 @@ fn verify_document_file_exists(document_id: String, state: State<'_, AppState>) 
 }
 
 #[tauri::command]
-fn db_get_pdf_bytes(filepath: String) -> Result<Vec<u8>, String> {
+fn db_get_pdf_bytes(filepath: String) -> Result<tauri::ipc::Response, String> {
   validate_pdf_filepath_basic(&filepath)?;
   let p = Path::new(&filepath);
   if !p.exists() {
     return Err(format!("File not found: {filepath}"));
   }
-  std::fs::read(p).map_err(|e| e.to_string())
+  // Returned as a raw binary IPC payload (application/octet-stream), which the
+  // webview receives as an ArrayBuffer. Returning Vec<u8> directly would take
+  // the JSON path and serialize every byte as a number — several times the
+  // file size in JSON text and the dominant cost of opening a large PDF.
+  let bytes = std::fs::read(p).map_err(|e| e.to_string())?;
+  Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

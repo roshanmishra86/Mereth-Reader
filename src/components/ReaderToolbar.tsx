@@ -250,6 +250,17 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
           <option value={500}>500%</option>
           <option value="fit-width">Fit Width</option>
           <option value="fit-page">Fit Page</option>
+          {/* When the effective scale is a computed value (a fit mode resolved
+              against the viewport, or a persisted custom scale), show it as
+              its own option so the control reflects the real state. */}
+          {props.zoomMode === 'custom' &&
+            ![25, 50, 75, 100, 125, 150, 200, 300, 400, 500].includes(
+              Math.round(props.zoomScale * 100)
+            ) && (
+              <option value={Math.round(props.zoomScale * 100)}>
+                {Math.round(props.zoomScale * 100)}%
+              </option>
+            )}
         </select>
         <button
           className="outline-button"

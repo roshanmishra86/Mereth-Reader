@@ -131,3 +131,112 @@ export function validateLayoutMode(
   }
   return { isSupported: true };
 }
+
+export interface PageSize {
+  width: number;
+  height: number;
+}
+
+/** US Letter at PDF default user units — the pre-measurement estimate. */
+export const DEFAULT_PAGE_SIZE: PageSize = { width: 612, height: 792 };
+
+/** Horizontal gap between the two pages of a facing spread (mockup: 2px divider). */
+export const SPREAD_GAP_PX = 2;
+/** Vertical gap between rows (pages or spreads) in scroll layouts. */
+export const ROW_GAP_PX = 16;
+/** Breathing room inside the scroll viewport used by fit calculations. */
+export const FIT_PADDING_X_PX = 48;
+export const FIT_PADDING_Y_PX = 48;
+
+/**
+ * Swaps width/height for 90°/270° user rotation so fit math sees the
+ * dimensions the page will actually occupy on screen.
+ */
+export function rotatePageSize(size: PageSize, rotation: RotationAngle): PageSize {
+  return rotation === 90 || rotation === 270
+    ? { width: size.height, height: size.width }
+    : size;
+}
+
+export interface FitScaleParams {
+  containerWidth: number;
+  containerHeight: number;
+  /** Natural page size at scale 1 (already includes the page's own /Rotate). */
+  pageSize: PageSize;
+  mode: 'fit-width' | 'fit-page';
+  layoutMode: LayoutMode;
+  rotation: RotationAngle;
+}
+
+/**
+ * Single source of truth for fit-width / fit-page zoom.
+ *
+ * - fit-width sizes the page (or the whole spread in facing mode, per the
+ *   mockup's "Fit width keeps both pages whole") to the viewport width minus
+ *   padding.
+ * - fit-page sizes so the entire page/spread fits both axes.
+ * Result is clamped to the 25%–500% zoom range. Returns null when the
+ * container has not been measured yet, so callers can keep the prior scale
+ * instead of flashing a wrong one.
+ */
+export function calculateFitScale(params: FitScaleParams): number | null {
+  const { containerWidth, containerHeight, mode, layoutMode, rotation } = params;
+  if (containerWidth <= 0 || containerHeight <= 0) return null;
+
+  const rotated = rotatePageSize(params.pageSize, rotation);
+  if (rotated.width <= 0 || rotated.height <= 0) return null;
+
+  const contentWidth =
+    layoutMode === 'facing' ? rotated.width * 2 + SPREAD_GAP_PX : rotated.width;
+  const contentHeight = rotated.height;
+
+  const availableWidth = Math.max(100, containerWidth - FIT_PADDING_X_PX);
+  const availableHeight = Math.max(100, containerHeight - FIT_PADDING_Y_PX);
+
+  const scaleW = availableWidth / contentWidth;
+  const scaleH = availableHeight / contentHeight;
+  const raw = mode === 'fit-width' ? scaleW : Math.min(scaleW, scaleH);
+
+  const clamped = Math.max(MIN_ZOOM_SCALE, Math.min(MAX_ZOOM_SCALE, raw));
+  return Math.round(clamped * 100) / 100;
+}
+
+/**
+ * One scrollable row of the reader: a single page in single/continuous mode,
+ * or a spread (cover page solo, then pairs) in facing mode.
+ */
+export interface ReaderRow {
+  rowIndex: number;
+  leftPage: number;
+  rightPage?: number;
+}
+
+/**
+ * Builds the row model for a layout mode. Facing uses cover-page pairing
+ * (1 solo, then 2–3, 4–5, …) via calculateFacingPagePairs.
+ */
+export function buildReaderRows(layoutMode: LayoutMode, totalPages: number): ReaderRow[] {
+  if (totalPages <= 0) return [];
+  if (layoutMode === 'facing') {
+    return calculateFacingPagePairs(totalPages).map((pair, index) => ({
+      rowIndex: index,
+      leftPage: pair.leftPage,
+      rightPage: pair.rightPage,
+    }));
+  }
+  const rows: ReaderRow[] = [];
+  for (let page = 1; page <= totalPages; page++) {
+    rows.push({ rowIndex: page - 1, leftPage: page });
+  }
+  return rows;
+}
+
+/** Finds the row containing a page (for page → scroll-position navigation). */
+export function findRowIndexForPage(rows: ReaderRow[], pageNumber: number): number {
+  for (const row of rows) {
+    if (row.leftPage === pageNumber || row.rightPage === pageNumber) {
+      return row.rowIndex;
+    }
+  }
+  return Math.max(0, Math.min(pageNumber - 1, rows.length - 1));
+}
