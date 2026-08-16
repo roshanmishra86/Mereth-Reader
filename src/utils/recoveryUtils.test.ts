@@ -91,7 +91,8 @@ describe('recoveryUtils', () => {
     it('returns truthful empty library details', () => {
       const state = getEmptyStateDetails('library');
       expect(state.title).toBe('Library is empty');
-      expect(state.primaryActionLabel).toBe('+ Import PDF');
+      expect(state.primaryActionLabel).toBe('Open PDF');
+      expect(state.secondaryActionLabel).toBe('Import a copy');
     });
 
     it('returns truthful search details with query', () => {
