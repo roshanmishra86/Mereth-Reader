@@ -698,3 +698,315 @@
   margin-top: 6px;
 }
 
+/* ============================================================
+   Task 3.4 — annotation overlays and creation UI (PRD R2 / FR-9)
+   ============================================================ */
+
+/* Durable overlay layer: rects re-derive from normalized geometry against
+   the current scale/rotation (FR-9.4). Pointer-transparent so selection and
+   scrolling pass through; interactive affordances re-enable it themselves. */
+.annotation-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.annotation-rect {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+}
+
+.annotation-highlight {
+  mix-blend-mode: multiply;
+}
+
+.annotation-underline {
+  border-bottom: 2px solid;
+  background: transparent;
+}
+
+.annotation-overlay.selected .annotation-rect {
+  outline: 2px solid #ec3013;
+  outline-offset: 1px;
+}
+
+/* Area capture crop: the stored bitmap, positioned at its stored rect. */
+.annotation-area {
+  position: absolute;
+  pointer-events: auto;
+  display: block;
+  padding: 0;
+  border: 1px solid rgba(32, 30, 29, 0.55);
+  background: #fff;
+  overflow: visible;
+  cursor: pointer;
+  text-align: left;
+}
+
+.annotation-area img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+
+.annotation-area .area-loading {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: #9b9797;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: #eae9e9;
+}
+
+.annotation-area .area-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -17px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #444141;
+  font-size: 10px;
+}
+
+.annotation-area.selected {
+  outline: 2px solid #ec3013;
+  outline-offset: 2px;
+}
+
+/* Anchored comment pin (FR-9.1): a small marker at the anchor rect. */
+.annotation-pin {
+  position: absolute;
+  z-index: 3;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #f3f2f2;
+  box-shadow: 0 0 0 1px rgba(32, 30, 29, 0.55), 0 1px 3px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  pointer-events: auto;
+  display: grid;
+  place-items: center;
+}
+
+.annotation-pin .pin-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+.annotation-pin.selected {
+  outline: 2px solid #ec3013;
+  outline-offset: 1px;
+}
+
+/* Bookmark flag in the page's top-right corner. */
+.annotation-bookmark {
+  position: absolute;
+  z-index: 3;
+  top: 0 !important;
+  right: 0 !important;
+  left: auto;
+  width: 18px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 0 3px 3px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  display: grid;
+  place-items: start center;
+}
+
+.annotation-bookmark span {
+  display: block;
+  width: 14px;
+  height: 18px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
+  border: 1px solid rgba(0, 0, 0, 0.3);
+}
+
+.annotation-bookmark.selected span {
+  outline: 2px solid #ec3013;
+  outline-offset: 1px;
+}
+
+/* Compact selection popover (FR-9.2): colours, comment, one-tap actions. */
+.selection-popup {
+  position: absolute;
+  z-index: 20;
+  width: 252px;
+  padding: 10px;
+  background: #f3f2f2;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  border-top: 3px solid #ec3013;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+  display: grid;
+  gap: 8px;
+}
+
+.popup-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #605d5d;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.popup-close {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: #605d5d;
+  padding: 0 2px;
+}
+
+.popup-close:hover {
+  color: #201e1d;
+}
+
+.popup-swatches {
+  display: flex;
+  gap: 6px;
+}
+
+.popup-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.popup-swatch.selected {
+  border-color: #201e1d;
+  outline: 1px solid #f3f2f2;
+  outline-offset: -1px;
+}
+
+.popup-swatch:disabled {
+  cursor: default;
+}
+
+.popup-field {
+  display: grid;
+  gap: 4px;
+}
+
+.popup-field > span {
+  color: #605d5d;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.popup-field textarea {
+  width: 100%;
+  min-height: 44px;
+  padding: 6px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #eae9e9;
+  resize: vertical;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #201e1d;
+}
+
+.popup-error {
+  margin: 0;
+  color: #ae1800;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.popup-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.popup-actions .button.compact {
+  flex: 1;
+  min-width: 72px;
+}
+
+.popup-actions .button.compact:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.popup-lock {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #605d5d;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.popup-lock input {
+  accent-color: #ec3013;
+  margin: 0;
+}
+
+/* Area capture mode: full-container drag surface (FR-9.2). */
+.area-capture-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  cursor: crosshair;
+  background: rgba(32, 30, 29, 0.06);
+}
+
+.area-drag-box {
+  position: absolute;
+  border: 1px solid #ec3013;
+  background: rgba(236, 48, 19, 0.12);
+  z-index: 16;
+  pointer-events: none;
+}
+
+/* Area capture caption prompt (FR-9.2/9.7). */
+.area-caption-popover {
+  position: absolute;
+  z-index: 21;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 300px;
+  padding: 13px;
+  background: #f3f2f2;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  border-top: 3px solid #ec3013;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+  display: grid;
+  gap: 9px;
+}
+
+.area-caption-popover .eyebrow {
+  margin-bottom: 0;
+}
+
+.area-caption-popover .popup-actions {
+  justify-content: flex-end;
+}
+

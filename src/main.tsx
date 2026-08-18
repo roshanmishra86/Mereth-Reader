@@ -80,9 +80,42 @@ import { RendererErrorBoundary } from "./components/RendererErrorBoundary";
 import { MalformedDocumentView } from "./components/MalformedDocumentView";
 import { EmptyState } from "./components/EmptyState";
 import { validatePdfPassword } from "./utils/recoveryUtils";
+import { formatExtendedPageLabel } from "./utils/navigationUtils";
+// Task 3.4 annotation creation and durable anchors (PRD R2)
+import {
+  AnnotationRecord,
+  DEFAULT_ANNOTATION_PALETTE,
+  DEFAULT_ANNOTATION_COLOR,
+  buildAreaAnnotation,
+  buildAreaAssetRecord,
+  buildBookmarkAnnotation,
+  buildCommentAnnotation,
+  buildTextAnnotation,
+  paletteColorFor,
+  paletteLabelFor,
+} from "./utils/annotationTypes";
+import { AnnotationAssetVisual } from "./components/PageAnnotationLayer";
+import { SelectionPopup, SelectionPopupAnchor } from "./components/SelectionPopup";
+import { AreaCaptureLayer, AreaCaptureResult } from "./components/AreaCaptureLayer";
+import {
+  addAnnotationAsset,
+  createAnnotation,
+  loadAnnotationAssets,
+  loadDocumentAnnotations,
+  readAnnotationAssetBlob,
+  removeAnnotationAssetFile,
+  writeAnnotationAssetFile,
+} from "./utils/annotationIo";
+import {
+  PageBox,
+  ViewportRect,
+  buildQuoteContext,
+  computeTextLayerChecksum,
+  dragBoxToNormalized,
+  mergeSelectionRects,
+} from "./utils/annotationAnchor";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
-type Highlight = { id: string; color: string; label: string; quote: string; page: string };
 
 interface LaunchRoutePayload {
   is_single_instance?: boolean;
@@ -164,14 +197,18 @@ function App() {
     detached: number;
   } | null>(null);
 
-  // Annotations, notes, and review prompts have no persistence until the R2–R4
-  // milestones — they start empty rather than fabricated (U15).
-  const [annotationsList] = useState<Highlight[]>([]);
+  // Task 3.4: annotations are real records loaded from SQLite per open
+  // document; notes and review prompts arrive with their R3/R4 milestones —
+  // nothing is fabricated (U15).
+  const [annotationsList, setAnnotationsList] = useState<AnnotationRecord[]>([]);
   const [notesList] = useState<Array<{ id: string; title: string; type: string }>>([]);
   const [reviewPromptsList] = useState<Array<{ id: string; prompt: string }>>([]);
+  // The current version row's id — creation-time checksums bind to it and
+  // re-anchoring switches it; null until registration/refresh completes.
+  const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
 
   const activeAnnotation = useMemo(
-    () => annotationsList.find((annotation) => annotation.id === selected) ?? annotationsList[0] ?? { id: "none", color: "yellow", label: "Evidence", quote: "No active highlight selected", page: "1" },
+    () => annotationsList.find((annotation) => annotation.id === selected) ?? annotationsList[0] ?? null,
     [selected, annotationsList],
   );
 
@@ -404,6 +441,12 @@ function App() {
   // Monotonic id for in-flight openDocument calls so a stale async open can
   // detect that a newer one superseded it and bail out before mutating state.
   const openDocumentRequestId = useRef(0);
+  // Mirror of the active document for async handlers that need to scope their
+  // refreshes (e.g. version registration completing for the open document).
+  const activeDocumentRef = useRef<DocumentRecord | null>(null);
+  useEffect(() => {
+    activeDocumentRef.current = activeDocument;
+  }, [activeDocument]);
 
   async function openDocument(doc: DocumentRecord) {
     // Task 2.9 gate mark (dev-only) so the in-app driver can attribute timing.
@@ -414,6 +457,10 @@ function App() {
     // newer document's session and the debounced save effect cannot persist one
     // document's page/zoom into another's session row.
     const openRequestId = ++openDocumentRequestId.current;
+    // Whether this open switches documents — only then is the previous
+    // document's selection cleared (a deep link re-opening the SAME document
+    // keeps its annotation selection).
+    const switchingDocument = activeDocumentRef.current?.id !== doc.id;
 
     let fileExists = true;
     try {
@@ -507,6 +554,39 @@ function App() {
       setVersionOffer(null);
       setVersionMismatchBannerVisible(false);
     }
+
+    // Task 3.4 (FR-9.4): creation-time checksums bind to the current version
+    // row, so resolve the latest version and load the document's active
+    // annotations before the reader can create any. Both are guarded by the
+    // open-request id so a stale open cannot attach another document's
+    // version/annotations to the active reader.
+    try {
+      const versions = await invoke<DocumentVersionRecord[]>("db_get_document_versions", {
+        documentId: doc.id,
+      });
+      if (openRequestId !== openDocumentRequestId.current) return;
+      const latest = versions[versions.length - 1] ?? null;
+      const latestId = latest?.id ?? null;
+      setCurrentVersionId(latestId);
+      if (latestId) {
+        const annotations = await invoke<AnnotationRecord[]>("db_get_annotations_for_document", {
+          documentId: doc.id,
+          includeTrashed: false,
+        });
+        if (openRequestId !== openDocumentRequestId.current) return;
+        setAnnotationsList(annotations ?? []);
+      } else {
+        setAnnotationsList([]);
+      }
+    } catch {
+      if (openRequestId !== openDocumentRequestId.current) return;
+      setCurrentVersionId(null);
+      setAnnotationsList([]);
+    }
+
+    // A fresh open never shows the previous document's selection.
+    if (openRequestId !== openDocumentRequestId.current) return;
+    if (switchingDocument) setSelected("");
 
     // The text-extraction job for the active document is managed by the
     // `activeDocument?.id` effect below, so every open path (library click,
@@ -666,6 +746,21 @@ function App() {
     setVersionStatus("unchanged");
     setVersionOffer((offer) => (offer?.documentId === documentId ? null : offer));
     setReanchorDecision(null);
+
+    // Task 3.4: the current version id may have just been created (first open
+    // of a pre-3.3 record) or moved (re-anchor pass) — refresh it and the
+    // annotation rows (re-anchor rewrites their version bindings).
+    if (documentId === activeDocumentRef.current?.id) {
+      invoke<DocumentVersionRecord[]>("db_get_document_versions", { documentId })
+        .then((versions) => {
+          const latest = versions[versions.length - 1] ?? null;
+          setCurrentVersionId(latest?.id ?? null);
+        })
+        .catch(() => {});
+      loadDocumentAnnotations(documentId)
+        .then((annotations) => setAnnotationsList(annotations))
+        .catch(() => {});
+    }
   };
 
   const handleReanchorOutcome = (outcome: { reanchored: number; detached: number }) => {
@@ -814,6 +909,9 @@ function App() {
                 targetPage={targetPage}
                 onTargetPageConsumed={() => setTargetPage(undefined)}
                 annotationsList={annotationsList}
+                currentVersionId={currentVersionId}
+                onAnnotationsUpdated={setAnnotationsList}
+                onJumpToAnnotation={(pageIndex) => setTargetPage(pageIndex + 1)}
                 scannedPdfBannerVisible={scannedPdfBannerVisible}
                 versionMismatchBannerVisible={versionMismatchBannerVisible}
                 versionStatus={versionStatus}
@@ -910,7 +1008,7 @@ function App() {
 
 type ReaderProps = {
   aiOn: boolean;
-  activeAnnotation: Highlight;
+  activeAnnotation: AnnotationRecord | null;
   activeDocument: DocumentRecord;
   activeSession: ReadingSessionState | null;
   appearance: AppearancePreferences;
@@ -924,7 +1022,11 @@ type ReaderProps = {
   onTargetPageConsumed?: () => void;
   totalPages: number;
   rightPaneWidth?: number;
-  annotationsList: Highlight[];
+  annotationsList: AnnotationRecord[];
+  /** Task 3.4: the version row new annotations bind to (null until registered). */
+  currentVersionId: string | null;
+  onAnnotationsUpdated: (annotations: AnnotationRecord[]) => void;
+  onJumpToAnnotation?: (pageIndex: number) => void;
   scannedPdfBannerVisible?: boolean;
   versionMismatchBannerVisible?: boolean;
   versionStatus?: VersionCheckResult["status"] | null;
@@ -1012,6 +1114,35 @@ function Reader(props: ReaderProps) {
   // within the same millisecond for back-to-back navigations, which would
   // silently drop the second one (ReaderCanvas's scroll effect keys off nonce).
   const navNonceRef = useRef(0);
+
+  // ---- Task 3.4: annotation creation state (FR-9.1/FR-9.2/FR-9.4) ----
+  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
+  const [selectionPopup, setSelectionPopup] = useState<(SelectionPopupAnchor & { pageBox: PageBox }) | null>(null);
+  const [popupColor, setPopupColor] = useState(DEFAULT_ANNOTATION_COLOR);
+  const [popupComment, setPopupComment] = useState("");
+  const [popupLocked, setPopupLocked] = useState(false);
+  const [popupBusy, setPopupBusy] = useState(false);
+  const [popupError, setPopupError] = useState<string | null>(null);
+  const [captureActive, setCaptureActive] = useState(false);
+  const [areaPending, setAreaPending] = useState<AreaCaptureResult | null>(null);
+  const [areaCaption, setAreaCaption] = useState("");
+  const [areaSaving, setAreaSaving] = useState(false);
+  const [areaError, setAreaError] = useState<string | null>(null);
+  // Object URLs for area-capture crops, keyed by annotation id. Cleaned up on
+  // unmount so long reading sessions do not leak blob URLs.
+  const [annotationAssets, setAnnotationAssets] = useState<Record<string, AnnotationAssetVisual>>({});
+  const objectUrlsRef = useRef<string[]>([]);
+  useEffect(
+    () => () => {
+      for (const url of objectUrlsRef.current) URL.revokeObjectURL(url);
+    },
+    []
+  );
+  // Mirrors so document-level listeners never capture stale state.
+  const captureActiveRef = useRef(captureActive);
+  useEffect(() => {
+    captureActiveRef.current = captureActive;
+  }, [captureActive]);
 
   const totalPages = loadedPdf?.numPages || props.totalPages || 1;
 
@@ -1407,6 +1538,14 @@ function Reader(props: ReaderProps) {
   // Keyboard shortcut listener for Reader canvas actions (FR-8.7)
   useEffect(() => {
     const handleShortcutKeyDown = (e: KeyboardEvent) => {
+      // Escape always dismisses the compact annotation surfaces (FR-9.2).
+      if (e.key === "Escape") {
+        setSelectionPopup(null);
+        setAreaPending(null);
+        setAreaError(null);
+        setAreaCaption("");
+        setCaptureActive(false);
+      }
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
         return;
@@ -1483,6 +1622,12 @@ function Reader(props: ReaderProps) {
         case 'annot.highlight.green':
           if (props.annotationsList.length > 1) props.setSelected(props.annotationsList[1].id);
           break;
+        case 'annot.areaCapture':
+          setCaptureActive((prev) => !prev);
+          break;
+        case 'annot.bookmark':
+          void handleToggleBookmark();
+          break;
         case 'annot.remember':
           if (props.annotationsList.length > 0) props.setPromptOpen(true);
           break;
@@ -1506,6 +1651,361 @@ function Reader(props: ReaderProps) {
       setCopyWarning(extraction.isLowConfidence && extraction.warning ? extraction.warning : null);
     });
   }, [loadedPdf]);
+
+  // ---- Task 3.4: selection popover (FR-9.2) ----
+  // The popover tracks `selectionchange`, but a collapse caused by clicking a
+  // popover control must not yank the popover away before the click lands —
+  // clicks inside the popup set suppress, which skips the hide.
+  const popupSuppressRef = useRef(false);
+  useEffect(() => {
+    let raf = 0;
+    const handler = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        if (popupSuppressRef.current) {
+          popupSuppressRef.current = false;
+          return;
+        }
+        const container = canvasContainerRef.current;
+        if (!container || !props.currentVersionId || captureActiveRef.current) {
+          setSelectionPopup(null);
+          return;
+        }
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+          setSelectionPopup(null);
+          return;
+        }
+        const anchorNode = sel.anchorNode;
+        if (!anchorNode) {
+          setSelectionPopup(null);
+          return;
+        }
+        const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode.parentElement;
+        const pageEl = anchorEl?.closest(".pdf-page") as HTMLElement | null;
+        if (!pageEl || !pageEl.closest(".reader-canvas-container")) {
+          setSelectionPopup(null);
+          return;
+        }
+        const pageNumber = Number(pageEl.dataset.pageNumber ?? 0);
+        if (!pageNumber) {
+          setSelectionPopup(null);
+          return;
+        }
+        const pageRect = pageEl.getBoundingClientRect();
+        const pageBox: PageBox = {
+          left: pageRect.left,
+          top: pageRect.top,
+          right: pageRect.right,
+          bottom: pageRect.bottom,
+          width: pageRect.width,
+          height: pageRect.height,
+        };
+        let minL = Number.POSITIVE_INFINITY;
+        let minT = Number.POSITIVE_INFINITY;
+        let maxR = Number.NEGATIVE_INFINITY;
+        let maxB = Number.NEGATIVE_INFINITY;
+        for (let i = 0; i < sel.rangeCount; i++) {
+          const range = sel.getRangeAt(i);
+          for (const cr of range.getClientRects()) {
+            if (cr.bottom <= pageBox.top || cr.top >= pageBox.bottom || cr.right <= pageBox.left || cr.left >= pageBox.right) continue;
+            minL = Math.min(minL, Math.max(cr.left, pageBox.left));
+            minT = Math.min(minT, Math.max(cr.top, pageBox.top));
+            maxR = Math.max(maxR, Math.min(cr.right, pageBox.right));
+            maxB = Math.max(maxB, Math.min(cr.bottom, pageBox.bottom));
+          }
+        }
+        if (!Number.isFinite(minL) || minL >= maxR || minT >= maxB) {
+          setSelectionPopup(null);
+          return;
+        }
+        const containerRect = container.getBoundingClientRect();
+        setSelectionPopup({
+          left: maxR - containerRect.left + 10,
+          top: maxB - containerRect.top + 8,
+          pageNumber,
+          pageBox,
+        });
+      });
+    };
+    document.addEventListener("selectionchange", handler);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener("selectionchange", handler);
+    };
+  }, [props.currentVersionId]);
+
+  // Task 3.4: create a highlight/underline/comment from the current DOM
+  // selection (FR-9.1/9.2/9.4). Anchors are re-measured at save time so the
+  // stored rects always match what the user last selected.
+  const handleCreateFromSelection = async (type: "highlight" | "underline" | "comment") => {
+    const popup = selectionPopup;
+    if (!popup || !loadedPdf || !props.currentVersionId) {
+      setSelectionPopup(null);
+      return;
+    }
+    setPopupBusy(true);
+    setPopupError(null);
+    try {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+        throw new Error("The selection collapsed — select the text again.");
+      }
+      const rects: ViewportRect[] = [];
+      for (let i = 0; i < sel.rangeCount; i++) {
+        const range = sel.getRangeAt(i);
+        for (const cr of range.getClientRects()) {
+          if (cr.bottom <= popup.pageBox.top || cr.top >= popup.pageBox.bottom || cr.right <= popup.pageBox.left || cr.left >= popup.pageBox.right) continue;
+          rects.push({
+            left: Math.max(cr.left, popup.pageBox.left),
+            top: Math.max(cr.top, popup.pageBox.top),
+            right: Math.min(cr.right, popup.pageBox.right),
+            bottom: Math.min(cr.bottom, popup.pageBox.bottom),
+          });
+        }
+      }
+      const normalized = mergeSelectionRects(rects, popup.pageBox, rotation);
+      if (normalized.length === 0) {
+        throw new Error("The selection is empty on this page.");
+      }
+      const quote = sel.toString().replace(/\s+/g, " ").trim();
+      if (!quote) {
+        throw new Error("No readable text selected.");
+      }
+
+      // FR-9.4 anchor fields from the real text layer: prefix/suffix context
+      // and the text-layer checksum (same ordered text re-anchoring matches).
+      const items = await getPdfPageTextItems(loadedPdf.doc, popup.pageNumber);
+      const ordered = extractOrderedText(items);
+      const { prefix, suffix } = buildQuoteContext(ordered.text, quote);
+      const textLayerChecksum = await computeTextLayerChecksum(ordered.text);
+      const pageLabel = formatExtendedPageLabel(popup.pageNumber, totalPages).displayLabel;
+      const docId = props.activeDocument.id;
+
+      if (type === "comment") {
+        if (!popupComment.trim()) {
+          throw new Error("Write the comment text first.");
+        }
+        const record = buildCommentAnnotation({
+          documentId: docId,
+          documentVersionId: props.currentVersionId,
+          pageIndex: popup.pageNumber - 1,
+          pageLabel,
+          rects: normalized,
+          comment: popupComment.trim(),
+          color: popupColor,
+        });
+        await createAnnotation(record);
+      } else {
+        const record = buildTextAnnotation({
+          documentId: docId,
+          documentVersionId: props.currentVersionId,
+          pageIndex: popup.pageNumber - 1,
+          pageLabel,
+          type,
+          rects: normalized,
+          quote,
+          prefix,
+          suffix,
+          textLayerChecksum,
+          color: popupColor,
+          comment: popupComment.trim(),
+        });
+        await createAnnotation(record);
+      }
+
+      const updated = await loadDocumentAnnotations(docId);
+      props.onAnnotationsUpdated(updated);
+
+      if (popupLocked) {
+        // FR-9.2 locked mode: keep the popup armed for the next selection.
+        popupSuppressRef.current = true;
+        window.getSelection()?.removeAllRanges();
+        setPopupComment("");
+      } else {
+        setSelectionPopup(null);
+      }
+    } catch (err) {
+      setPopupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPopupBusy(false);
+    }
+  };
+
+  // Task 3.4: resolve area-crop assets into object URLs for the overlay.
+  useEffect(() => {
+    const areaAnnotations = props.annotationsList.filter((a) => a.annotation_type === "area");
+    const missing = areaAnnotations.filter((a) => !annotationAssets[a.id]);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const next: Record<string, AnnotationAssetVisual> = {};
+      for (const annotation of missing) {
+        if (cancelled) break;
+        try {
+          const assets = await loadAnnotationAssets(annotation.id);
+          const first = assets[0];
+          if (!first) continue;
+          const blob = await readAnnotationAssetBlob(first.id);
+          const url = URL.createObjectURL(blob);
+          objectUrlsRef.current.push(url);
+          next[annotation.id] = { url, caption: first.caption };
+        } catch {
+          // Asset unavailable (e.g. file removed on disk) — the overlay shows
+          // its loading placeholder honestly instead of a broken image.
+        }
+      }
+      if (!cancelled) setAnnotationAssets((prev) => ({ ...prev, ...next }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.annotationsList]);
+
+  // Task 3.4: one-drag area capture completion → caption prompt → crop save
+  // (FR-9.2/9.7). The crop is drawn from the rendered page bitmap (rotation
+  // included), capped at 1280 px, written atomically by Rust, then the
+  // annotation and asset rows are inserted — a failed insert removes the file
+  // so no orphaned bitmap ever lingers.
+  const handleAreaCaptureComplete = (result: AreaCaptureResult) => {
+    setAreaPending(result);
+    setAreaCaption("");
+    setAreaError(null);
+  };
+
+  const handleAreaCaptureCancel = () => {
+    setCaptureActive(false);
+    setAreaPending(null);
+    setAreaError(null);
+    setAreaCaption("");
+  };
+
+  const handleSaveAreaCapture = async () => {
+    const pending = areaPending;
+    if (!pending || !loadedPdf || !props.currentVersionId) return;
+    setAreaSaving(true);
+    setAreaError(null);
+    const assetId = crypto.randomUUID();
+    const relativePath = `annotations/${assetId}.png`;
+    try {
+      const pageEl = canvasContainerRef.current?.querySelector(
+        `.pdf-page[data-page-number="${pending.pageNumber}"]`
+      ) as HTMLElement | null;
+      const canvas = pageEl?.querySelector("canvas") as HTMLCanvasElement | null;
+      if (!pageEl || !canvas) {
+        throw new Error("The page is no longer visible — scroll back and try again.");
+      }
+      const box = pending.box;
+      const ratioX = canvas.width / pending.pageBox.width;
+      const ratioY = canvas.height / pending.pageBox.height;
+      const srcX = Math.max(0, (box.left - pending.pageBox.left) * ratioX);
+      const srcY = Math.max(0, (box.top - pending.pageBox.top) * ratioY);
+      const srcW = Math.min(canvas.width - srcX, Math.max(0, (box.right - box.left) * ratioX));
+      const srcH = Math.min(canvas.height - srcY, Math.max(0, (box.bottom - box.top) * ratioY));
+      if (srcW < 2 || srcH < 2) {
+        throw new Error("The capture area is too small.");
+      }
+      const maxSide = 1280;
+      const shrink = Math.min(1, maxSide / Math.max(srcW, srcH));
+      const outW = Math.max(1, Math.round(srcW * shrink));
+      const outH = Math.max(1, Math.round(srcH * shrink));
+      const off = document.createElement("canvas");
+      off.width = outW;
+      off.height = outH;
+      const ctx = off.getContext("2d");
+      if (!ctx) throw new Error("Canvas is unavailable.");
+      ctx.clearRect(0, 0, outW, outH);
+      ctx.drawImage(canvas, srcX, srcY, srcW, srcH, 0, 0, outW, outH);
+      const blob = await new Promise<Blob | null>((resolve) => off.toBlob(resolve, "image/png"));
+      if (!blob) throw new Error("The capture could not be encoded.");
+
+      const docId = props.activeDocument.id;
+      await writeAnnotationAssetFile(relativePath, await blob.arrayBuffer());
+      const annotation = buildAreaAnnotation({
+        documentId: docId,
+        documentVersionId: props.currentVersionId,
+        pageIndex: pending.pageNumber - 1,
+        pageLabel: formatExtendedPageLabel(pending.pageNumber, totalPages).displayLabel,
+        rect: dragBoxToNormalized(box, pending.pageBox, rotation),
+        caption: areaCaption.trim(),
+        color: popupColor,
+      });
+      try {
+        await createAnnotation(annotation);
+        const asset = buildAreaAssetRecord({
+          id: assetId,
+          annotationId: annotation.id,
+          documentId: docId,
+          relativePath,
+          widthPx: outW,
+          heightPx: outH,
+          caption: areaCaption.trim(),
+        });
+        await addAnnotationAsset(asset);
+      } catch (err) {
+        // Half-created capture: remove the file so nothing orphaned remains.
+        await removeAnnotationAssetFile(relativePath).catch(() => {});
+        throw err;
+      }
+
+      const updated = await loadDocumentAnnotations(docId);
+      props.onAnnotationsUpdated(updated);
+      setAreaPending(null);
+      setCaptureActive(false);
+      setAreaCaption("");
+    } catch (err) {
+      setAreaError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAreaSaving(false);
+    }
+  };
+
+  // Task 3.4: bookmark creation for the current page (FR-9.1). Bookmark
+  // removal is a trash operation and lands with the task 3.5 trash UI.
+  const currentPageBookmarked = useMemo(
+    () =>
+      props.annotationsList.some(
+        (a) => a.annotation_type === "bookmark" && a.page_index === currentPage - 1
+      ),
+    [props.annotationsList, currentPage]
+  );
+
+  // Overlay lookup: active annotations grouped by 1-based renderer page.
+  const annotationsByPage = useMemo(() => {
+    const map = new Map<number, AnnotationRecord[]>();
+    for (const annotation of props.annotationsList) {
+      const page = annotation.page_index + 1;
+      const list = map.get(page) ?? [];
+      list.push(annotation);
+      map.set(page, list);
+    }
+    return map;
+  }, [props.annotationsList]);
+
+  const handleToggleBookmark = useCallback(async () => {
+    if (!loadedPdf || !props.currentVersionId) return;
+    if (
+      props.annotationsList.some(
+        (a) => a.annotation_type === "bookmark" && a.page_index === currentPage - 1
+      )
+    ) {
+      return;
+    }
+    try {
+      const record = buildBookmarkAnnotation({
+        documentId: props.activeDocument.id,
+        documentVersionId: props.currentVersionId,
+        pageIndex: currentPage - 1,
+        pageLabel: formatExtendedPageLabel(currentPage, totalPages).displayLabel,
+      });
+      await createAnnotation(record);
+      const updated = await loadDocumentAnnotations(props.activeDocument.id);
+      props.onAnnotationsUpdated(updated);
+    } catch {
+      // Creation errors surface through the list not changing; retry is safe.
+    }
+  }, [currentPage, loadedPdf, props.activeDocument.id, props.annotationsList, props.currentVersionId, props.onAnnotationsUpdated, totalPages]);
 
   return (
     <>
@@ -1543,6 +2043,10 @@ function Reader(props: ReaderProps) {
           aiOn={props.aiOn}
           onToggleAi={() => props.setAiOn(!props.aiOn)}
           onOpenPdf={() => props.setImportOpen(true)}
+          areaCaptureActive={captureActive}
+          onToggleAreaCapture={() => setCaptureActive((prev) => !prev)}
+          currentPageBookmarked={currentPageBookmarked}
+          onToggleBookmark={() => void handleToggleBookmark()}
         />
       )}
 
@@ -1564,7 +2068,7 @@ function Reader(props: ReaderProps) {
           </>
         )}
 
-        <div className="reader-canvas-container">
+        <div className="reader-canvas-container" ref={canvasContainerRef}>
           {props.appearance.pageDimming !== "0%" && (
             <div
               className="page-dimming-overlay"
@@ -1604,7 +2108,7 @@ function Reader(props: ReaderProps) {
           {props.scannedPdfBannerVisible && (
             <ScannedPdfBanner
               onDismiss={() => props.onDismissScannedBanner?.()}
-              onActivateAreaCapture={() => props.setSelected('recall')}
+              onActivateAreaCapture={() => setCaptureActive(true)}
             />
           )}
 
@@ -1673,9 +2177,68 @@ function Reader(props: ReaderProps) {
                 onPageSizeMeasured={handlePageSizeMeasured}
                 onScrollPositionChange={handleScrollPositionChange}
                 onCopySelection={handleCopySelection}
+                annotationsByPage={annotationsByPage}
+                annotationAssets={annotationAssets}
+                selectedAnnotationId={props.selected}
+                onSelectAnnotation={props.setSelected}
               />
             )}
           </RendererErrorBoundary>
+
+          {/* Task 3.4: compact selection popover (FR-9.2) */}
+          {selectionPopup && !captureActive && (
+            <SelectionPopup
+              anchor={selectionPopup}
+              palette={DEFAULT_ANNOTATION_PALETTE}
+              color={popupColor}
+              onColorChange={setPopupColor}
+              comment={popupComment}
+              onCommentChange={setPopupComment}
+              locked={popupLocked}
+              onToggleLocked={() => setPopupLocked((prev) => !prev)}
+              busy={popupBusy}
+              error={popupError}
+              onCreate={(type) => void handleCreateFromSelection(type)}
+              onClose={() => {
+                setSelectionPopup(null);
+                setPopupError(null);
+              }}
+            />
+          )}
+
+          {/* Task 3.4: one-drag area capture (FR-9.2) */}
+          {captureActive && !areaPending && (
+            <AreaCaptureLayer
+              onComplete={handleAreaCaptureComplete}
+              onCancel={() => setCaptureActive(false)}
+            />
+          )}
+
+          {/* Task 3.4: area capture caption prompt (FR-9.2/9.7) */}
+          {areaPending && !areaSaving && (
+            <div className="area-caption-popover" role="dialog" aria-label="Save area capture">
+              <span className="eyebrow">Area capture · p. {areaPending.pageNumber}</span>
+              <label className="popup-field">
+                <span>Optional caption</span>
+                <textarea
+                  value={areaCaption}
+                  onChange={(e) => setAreaCaption(e.target.value)}
+                  placeholder="e.g. Figure 3 — the retention curve"
+                  aria-label="Area capture caption"
+                  autoFocus
+                />
+              </label>
+              {areaError && <p className="popup-error" role="alert">{areaError}</p>}
+              <div className="popup-actions">
+                <button className="button compact" onClick={() => setAreaPending(null)}>
+                  Discard
+                </button>
+                <button className="button compact primary" onClick={() => void handleSaveAreaCapture()}>
+                  Save capture
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {props.rightOpen && !props.readingOnly && (
@@ -1712,13 +2275,17 @@ function RightPane(props: ReaderProps) {
               <button
                 key={item.id}
                 className={props.selected === item.id ? "annotation-item active" : "annotation-item"}
-                onClick={() => props.setSelected(item.id)}
+                onClick={() => {
+                  props.setSelected(item.id);
+                  props.onJumpToAnnotation?.(item.page_index);
+                }}
+                title={item.annotation_type === 'comment' ? item.comment : item.quote || paletteLabelFor(item.color)}
               >
-                <i className={`annotation-swatch ${item.color}`} />
+                <i className="annotation-swatch" style={{ background: paletteColorFor(item.color) }} />
                 <span>
-                  <b>{item.label}</b>
-                  <small>p. {item.page}</small>
-                  <q>{item.quote}</q>
+                  <b>{paletteLabelFor(item.color)} · {item.annotation_type}</b>
+                  <small>p. {item.page_label || item.page_index + 1}</small>
+                  <q>{item.annotation_type === 'area' ? 'Area capture' : item.annotation_type === 'bookmark' ? 'Bookmark' : item.comment || item.quote}</q>
                 </span>
               </button>
             ))
@@ -1726,8 +2293,8 @@ function RightPane(props: ReaderProps) {
           <button
             className="wide-action"
             onClick={() => props.setPromptOpen(true)}
-            disabled={list.length === 0}
-            title={list.length === 0 ? 'No annotation selected yet — highlight text first (annotation tools arrive with the R2 milestone)' : undefined}
+            disabled={!props.activeAnnotation}
+            title={!props.activeAnnotation ? 'Select a passage and annotate it first' : 'Draft a retrieval review prompt (R4 milestone)'}
           >
             <Glyph>▰</Glyph> Remember selected evidence
           </button>
@@ -1744,16 +2311,24 @@ function RightPane(props: ReaderProps) {
                 milestone; this build does not fabricate example notes.
               </p>
             </>
-          ) : (
+          ) : props.activeAnnotation ? (
             <>
-              <h2>{props.activeAnnotation.label}</h2>
+              <h2>{paletteLabelFor(props.activeAnnotation.color)} · {props.activeAnnotation.annotation_type}</h2>
               <p className="evidence-block">
-                “{props.activeAnnotation.quote}”
-                <small>— {props.documentName.replace(".pdf", "")}, p. {props.activeAnnotation.page}</small>
+                {props.activeAnnotation.annotation_type === 'highlight' || props.activeAnnotation.annotation_type === 'underline'
+                  ? `“${props.activeAnnotation.quote}”`
+                  : props.activeAnnotation.annotation_type === 'comment'
+                    ? props.activeAnnotation.comment
+                    : props.activeAnnotation.annotation_type === 'area'
+                      ? 'Area capture'
+                      : 'Bookmark'}
+                <small>— {props.documentName.replace(".pdf", "")}, p. {props.activeAnnotation.page_label || props.activeAnnotation.page_index + 1}</small>
               </p>
               <textarea aria-label="Note content" placeholder="Write your own prose here — it stays separate from the quoted evidence." />
               <button className="wide-action">Add evidence block</button>
             </>
+          ) : (
+            <p className="dimmed">Select an annotation to preview it here.</p>
           )}
         </div>
       )}
@@ -1890,8 +2465,18 @@ function SettingsView({
   );
 }
 
-function PromptDialog({ close, evidence }: { close: () => void; evidence: Highlight }) {
-  return <div className="modal-backdrop" role="presentation"><section className="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><button className="modal-close" onClick={close} aria-label="Close"><Glyph>×</Glyph></button><span className="eyebrow">Draft · not scheduled</span><h2 id="prompt-title">New retrieval prompt</h2><p>Nothing enters the review queue until you approve it. Every prompt keeps a link to its evidence.</p><p className="evidence-block">“{evidence.quote}”<small>Linked evidence · p. {evidence.page}</small></p><label className="field-label">Prompt<textarea placeholder="Write the question your future self should answer from memory…" /></label><label className="field-label">Your answer — you write or rewrite this<textarea placeholder="Write the answer in your own words…" /></label><div className="prompt-check"><b>Prompt check — advisory, never blocking</b><span>✓ Focused — one retrieval task.</span><span>✓ Requires recall — no recognition options.</span><span>! Cue — name the source context if you will need it later.</span></div><div className="modal-actions"><button className="wide-action" onClick={close}>Save as draft</button><button className="wide-action primary" onClick={close}>Approve prompt</button></div></section></div>;
+function PromptDialog({ close, evidence }: { close: () => void; evidence: AnnotationRecord | null }) {
+  const evidenceLabel = evidence
+    ? evidence.annotation_type === 'highlight' || evidence.annotation_type === 'underline'
+      ? `“${evidence.quote}”`
+      : evidence.annotation_type === 'comment'
+        ? evidence.comment
+        : evidence.annotation_type === 'area'
+          ? 'Area capture'
+          : 'Bookmark'
+    : '';
+  const evidencePage = evidence ? `p. ${evidence.page_label || evidence.page_index + 1}` : '';
+  return <div className="modal-backdrop" role="presentation"><section className="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><button className="modal-close" onClick={close} aria-label="Close"><Glyph>×</Glyph></button><span className="eyebrow">Draft · not scheduled</span><h2 id="prompt-title">New retrieval prompt</h2><p>Nothing enters the review queue until you approve it. Every prompt keeps a link to its evidence.</p>{evidence ? <p className="evidence-block">{evidenceLabel}<small>Linked evidence · {evidencePage}</small></p> : <p className="dimmed">Select an annotation first — prompts must link to source evidence (FR-11.3).</p>}<label className="field-label">Prompt<textarea placeholder="Write the question your future self should answer from memory…" /></label><label className="field-label">Your answer — you write or rewrite this<textarea placeholder="Write the answer in your own words…" /></label><div className="prompt-check"><b>Prompt check — advisory, never blocking</b><span>✓ Focused — one retrieval task.</span><span>✓ Requires recall — no recognition options.</span><span>! Cue — name the source context if you will need it later.</span></div><div className="modal-actions"><button className="wide-action" onClick={close}>Save as draft</button><button className="wide-action primary" onClick={close}>Approve prompt</button></div></section></div>;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);

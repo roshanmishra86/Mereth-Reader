@@ -14,6 +14,8 @@ import {
   RotationAngle,
 } from '../utils/viewModeUtils';
 import { PdfPageCanvas } from './PdfPageCanvas';
+import { AnnotationRecord } from '../utils/annotationTypes';
+import { AnnotationAssetVisual } from './PageAnnotationLayer';
 
 interface ReaderCanvasProps {
   doc: pdfjsLib.PDFDocumentProxy;
@@ -35,6 +37,11 @@ interface ReaderCanvasProps {
   onPageSizeMeasured: (pageNumber: number, baseSize: PageSize) => void;
   onScrollPositionChange: (scrollTop: number) => void;
   onCopySelection?: () => void;
+  // Task 3.4 durable annotation overlays (FR-9.4)
+  annotationsByPage?: Map<number, AnnotationRecord[]>;
+  annotationAssets?: Record<string, AnnotationAssetVisual>;
+  selectedAnnotationId?: string | null;
+  onSelectAnnotation?: (id: string) => void;
 }
 
 interface RowLayout {
@@ -75,6 +82,10 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
     onPageSizeMeasured,
     onScrollPositionChange,
     onCopySelection,
+    annotationsByPage,
+    annotationAssets,
+    selectedAnnotationId,
+    onSelectAnnotation,
   } = props;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -296,6 +307,11 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
                 scale={scale}
                 rotation={rotation}
                 onRendered={handlePageRendered}
+                annotations={annotationsByPage?.get(row.leftPage)}
+                baseSize={baseSizesRef.current.get(row.leftPage) ?? representativeSize}
+                annotationAssets={annotationAssets}
+                selectedAnnotationId={selectedAnnotationId}
+                onSelectAnnotation={onSelectAnnotation}
               />
               {row.rightPage !== undefined && (
                 <PdfPageCanvas
@@ -304,6 +320,11 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
                   scale={scale}
                   rotation={rotation}
                   onRendered={handlePageRendered}
+                  annotations={annotationsByPage?.get(row.rightPage)}
+                  baseSize={baseSizesRef.current.get(row.rightPage) ?? representativeSize}
+                  annotationAssets={annotationAssets}
+                  selectedAnnotationId={selectedAnnotationId}
+                  onSelectAnnotation={onSelectAnnotation}
                 />
               )}
             </div>

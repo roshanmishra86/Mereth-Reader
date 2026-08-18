@@ -2,6 +2,8 @@ import { memo, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { renderPdfPageToCanvas, cancelCanvasRender } from '../utils/pdfViewer';
 import { RotationAngle, PageSize } from '../utils/viewModeUtils';
+import { AnnotationRecord } from '../utils/annotationTypes';
+import { PageAnnotationLayer, AnnotationAssetVisual } from './PageAnnotationLayer';
 
 interface PdfPageCanvasProps {
   doc: pdfjsLib.PDFDocumentProxy;
@@ -11,6 +13,13 @@ interface PdfPageCanvasProps {
   rotation: RotationAngle;
   /** Reports the CSS-pixel size of the rendered page (for row measurements). */
   onRendered?: (pageNumber: number, size: PageSize) => void;
+  // Task 3.4 durable annotation overlays (FR-9.4)
+  annotations?: AnnotationRecord[];
+  /** Natural (unrotated, scale 1) page size — the overlay's denormalize base. */
+  baseSize?: PageSize;
+  annotationAssets?: Record<string, AnnotationAssetVisual>;
+  selectedAnnotationId?: string | null;
+  onSelectAnnotation?: (id: string) => void;
 }
 
 /**
@@ -25,6 +34,11 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
   scale,
   rotation,
   onRendered,
+  annotations,
+  baseSize,
+  annotationAssets,
+  selectedAnnotationId,
+  onSelectAnnotation,
 }: PdfPageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
@@ -82,6 +96,18 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
     >
       <canvas ref={canvasRef} className="pdf-page-canvas" />
       <div ref={textLayerRef} className="textLayer" />
+      {annotations && annotations.length > 0 && baseSize && (
+        <PageAnnotationLayer
+          pageNumber={pageNumber}
+          annotations={annotations}
+          pageBaseSize={baseSize}
+          scale={scale}
+          rotation={rotation}
+          selectedId={selectedAnnotationId ?? null}
+          assetsByAnnotationId={annotationAssets ?? {}}
+          onSelectAnnotation={(id) => onSelectAnnotation?.(id)}
+        />
+      )}
       {failed && (
         <div className="pdf-page-error" role="alert">
           Page {pageNumber} could not be rendered.

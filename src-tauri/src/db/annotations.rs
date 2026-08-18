@@ -14,6 +14,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
 /// FR-9.1 + OQ-10: the exact v1 annotation type set. Freehand ink is deferred
 /// and will be added by the migration of the feature that owns it.
@@ -550,6 +551,87 @@ impl Database {
     }
   }
 
+  /// Writes an asset file's bytes under `app-data/annotations/` (task 3.4).
+  ///
+  /// The relative path is validated against the §15.4 confinement, the
+  /// `annotations/` directory is created when missing, and the bytes land via
+  /// an atomic temp-file + rename so a crash mid-write can never leave a
+  /// truncated file that a later row-insert would point at (FR-9.7). Temp
+  /// names are random UUIDs, so concurrent writers cannot collide; rename is
+  /// atomic on the same filesystem (which the app-data layout guarantees).
+  pub fn write_asset_file(
+    &self,
+    app_dir: &Path,
+    relative_path: &str,
+    bytes: &[u8],
+  ) -> Result<(), String> {
+    validate_asset_relative_path(relative_path)?;
+
+    let annotations_dir = app_dir.join(ASSET_ROOT_COMPONENT);
+    fs::create_dir_all(&annotations_dir).map_err(|e| e.to_string())?;
+
+    let full = asset_full_path(app_dir, relative_path)?;
+    let parent = full
+      .parent()
+      .ok_or_else(|| "Asset path has no parent directory".to_string())?;
+    let file_name = full
+      .file_name()
+      .and_then(|n| n.to_str())
+      .ok_or_else(|| "Asset path has no file name".to_string())?;
+
+    let tmp_path = parent.join(format!(".{file_name}.tmp-{}", Uuid::new_v4()));
+    // Best-effort cleanup of the temp file if the rename fails after the write.
+    let write_res = fs::write(&tmp_path, bytes);
+    if let Err(e) = write_res {
+      let _ = fs::remove_file(&tmp_path);
+      return Err(format!("Failed to write asset file: {e}"));
+    }
+    if let Err(e) = fs::rename(&tmp_path, &full) {
+      let _ = fs::remove_file(&tmp_path);
+      return Err(format!("Failed to finalize asset file: {e}"));
+    }
+    Ok(())
+  }
+
+  /// Reads an asset file's bytes back by row id (task 3.4).
+  ///
+  /// The stored path is resolved server-side from the asset row, then
+  /// re-validated against the app data confinement at file-access time —
+  /// there is no caller-supplied path, so this cannot be used as an
+  /// arbitrary-file read oracle (PRD §15.3 / RK-11).
+  pub fn read_asset_file(&self, app_dir: &Path, asset_id: &str) -> Result<Vec<u8>, String> {
+    let relative_path: String = {
+      let conn = self.conn.lock().unwrap();
+      conn
+        .query_row(
+          "SELECT relative_path FROM annotation_assets WHERE id = ?1",
+          params![asset_id],
+          |row| row.get(0),
+        )
+        .map_err(|_| format!("Annotation asset not found: {asset_id}"))?
+    };
+    let full = asset_full_path(app_dir, &relative_path)?;
+    if !full.exists() {
+      return Err(format!("Asset file is missing at '{}'", full.display()));
+    }
+    fs::read(&full).map_err(|e| e.to_string())
+  }
+
+  /// Removes an asset FILE without a row (task 3.4 cleanup path).
+  ///
+  /// Used when a capture's row inserts fail after the file write, so a
+  /// half-created area capture never leaves an orphaned bitmap on disk
+  /// (FR-9.7). The path is validated against the §15.4 confinement again; a
+  /// missing file is a no-op (idempotent cleanup).
+  pub fn remove_asset_file(&self, app_dir: &Path, relative_path: &str) -> Result<(), String> {
+    validate_asset_relative_path(relative_path)?;
+    let full = asset_full_path(app_dir, relative_path)?;
+    if full.exists() {
+      fs::remove_file(&full).map_err(|e| format!("Failed to remove asset file: {e}"))?;
+    }
+    Ok(())
+  }
+
   /// Removes an asset row and its file. The file path is re-validated against
   /// the app data confinement before deletion.
   pub fn delete_annotation_asset(&self, app_dir: &Path, id: &str) -> Result<(), String> {
@@ -899,6 +981,119 @@ mod tests {
     assert!(db.get_annotation_asset_by_id("asset-real").unwrap().is_none());
     assert!(!file.exists(), "delete must remove the asset file");
     assert!(db.delete_annotation_asset(app_dir.path(), "asset-real").is_err());
+  }
+
+  #[test]
+  fn test_asset_file_write_read_and_confinement() {
+    let db = Database::in_memory().unwrap();
+    let app_dir = tempdir().unwrap();
+
+    // A missing annotations/ directory is created on first write.
+    let good_path = "annotations/crop-1.png";
+    let bytes: Vec<u8> = (0..256u32).map(|i| (i % 251) as u8).collect();
+    db.write_asset_file(app_dir.path(), good_path, &bytes).unwrap();
+    let written = app_dir.path().join("annotations").join("crop-1.png");
+    assert!(written.exists());
+    assert_eq!(fs::read(&written).unwrap(), bytes);
+
+    // Read-back by row id round-trips the exact bytes. The row must exist
+    // (FR-9.7: no dangling rows), so seed a minimal annotation + its asset.
+    let (doc_id, version_id) = seed_document_and_version(&db);
+    let annotation = sample_annotation(&doc_id, &version_id);
+    db.add_annotation(&annotation).unwrap();
+    let asset = AnnotationAsset {
+      id: "asset-read".into(),
+      annotation_id: annotation.id.clone(),
+      document_id: doc_id.clone(),
+      asset_kind: "area_capture".into(),
+      relative_path: good_path.into(),
+      content_type: "image/png".into(),
+      width_px: 320,
+      height_px: 240,
+      caption: String::new(),
+      created_at: "2026-08-04T13:52:57Z".into(),
+      provenance: "user_authored".into(),
+    };
+    db.add_annotation_asset(app_dir.path(), &asset).unwrap();
+    let read_back = db.read_asset_file(app_dir.path(), "asset-read").unwrap();
+    assert_eq!(read_back, bytes);
+
+    // Unknown asset id errors cleanly (no path is ever caller-supplied).
+    assert!(db.read_asset_file(app_dir.path(), "missing").is_err());
+
+    // A row whose stored path escaped the annotations/ root is rejected on
+    // read even if the file exists.
+    let conn = db.conn.lock().unwrap();
+    conn
+      .execute(
+        "INSERT INTO annotation_assets (id, annotation_id, document_id, asset_kind, relative_path, content_type, width_px, height_px, created_at, provenance)
+         VALUES ('asset-escape', ?2, ?1, 'area_capture', 'outside.png', 'image/png', 10, 10, 'now', 'user_authored')",
+        params![doc_id, annotation.id],
+      )
+      .unwrap();
+    drop(conn);
+    fs::write(app_dir.path().join("outside.png"), b"x").unwrap();
+    assert!(db.read_asset_file(app_dir.path(), "asset-escape").is_err());
+  }
+
+  #[test]
+  fn test_remove_asset_file_cleanup_path() {
+    let db = Database::in_memory().unwrap();
+    let app_dir = tempdir().unwrap();
+
+    db.write_asset_file(app_dir.path(), "annotations/cleanup.png", b"bytes").unwrap();
+    let target = app_dir.path().join("annotations").join("cleanup.png");
+    assert!(target.exists());
+
+    // Removal deletes the file; a second removal is a no-op.
+    db.remove_asset_file(app_dir.path(), "annotations/cleanup.png").unwrap();
+    assert!(!target.exists());
+    db.remove_asset_file(app_dir.path(), "annotations/cleanup.png").unwrap();
+
+    // Confinement is re-checked on the cleanup path too.
+    for bad in ["../escape.png", "/abs.png", "mereth_reader.db"] {
+      assert!(db.remove_asset_file(app_dir.path(), bad).is_err(), "must reject: {bad}");
+    }
+    // Files elsewhere in the app data root are untouched (a cleanup cannot
+    // escape the annotations/ directory).
+    fs::write(app_dir.path().join("other.png"), b"keep").unwrap();
+    db.remove_asset_file(app_dir.path(), "annotations/none.png").unwrap();
+    assert!(app_dir.path().join("other.png").exists());
+  }
+
+  #[test]
+  fn test_asset_file_write_atomicity_and_bad_paths() {
+    let db = Database::in_memory().unwrap();
+    let app_dir = tempdir().unwrap();
+
+    // Invalid relative paths never touch the filesystem.
+    fs::create_dir_all(app_dir.path().join(ASSET_ROOT_COMPONENT)).unwrap();
+    for bad in ["../escape.png", "/abs.png", "annotations", "mereth_reader.db", r"annotations\x.png"] {
+      assert!(db.write_asset_file(app_dir.path(), bad, b"x").is_err(), "must reject: {bad}");
+    }
+
+    // A successful write leaves no .tmp leftovers behind.
+    db.write_asset_file(app_dir.path(), "annotations/clean.png", b"abc").unwrap();
+    let leftovers: Vec<_> = fs::read_dir(app_dir.path().join(ASSET_ROOT_COMPONENT))
+      .unwrap()
+      .filter_map(|e| e.ok())
+      .map(|e| e.file_name().to_string_lossy().to_string())
+      .filter(|n| n.contains(".tmp-"))
+      .collect();
+    assert!(leftovers.is_empty(), "atomic write must not leak temp files: {leftovers:?}");
+
+    // Overwriting an existing asset is allowed (idempotent re-capture) and
+    // stays atomic.
+    db.write_asset_file(app_dir.path(), "annotations/clean.png", b"xyz").unwrap();
+    assert_eq!(
+      fs::read(app_dir.path().join("annotations").join("clean.png")).unwrap(),
+      b"xyz"
+    );
+
+    // Zero-byte assets are legal (a valid crop can be blank); they must still
+    // produce a file so the row-insert existence check passes.
+    db.write_asset_file(app_dir.path(), "annotations/empty.png", b"").unwrap();
+    assert!(app_dir.path().join("annotations").join("empty.png").exists());
   }
 
   #[test]
