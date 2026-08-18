@@ -22,6 +22,7 @@
 .pdf-load-failure h2 { margin: 0 0 8px; font-size: 18px; }
 .pdf-load-failure p { margin: 0 0 16px; font-size: 12px; line-height: 1.5; }
 .copy-warning-banner { margin: 8px 20px 0; padding: 8px 14px; border-left: 4px solid #ec3013; background: #fff3cd; color: #856404; font-size: 11.5px; }
+.reanchor-summary-banner { margin: 8px 20px 0; padding: 8px 14px; border-left: 4px solid #2f9e44; background: #eef7ee; color: #2b5e2b; font-size: 11.5px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 /* Selectable text layer — the pdf.js v6 TextLayer CSS contract, flattened
    for chrome105/safari13 (no CSS nesting). Spans position in % of the layer
    and size via --total-scale-factor, which .pdf-page computes from the
