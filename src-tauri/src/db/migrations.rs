@@ -23,9 +23,14 @@ pub const ALLOWED_PROVENANCES: &[&str] = &[
 ];
 
 /// The highest migration version this engine knows how to apply.
-const LATEST_MIGRATION_VERSION: i32 = 3;
+const LATEST_MIGRATION_VERSION: i32 = 8;
 
 /// Runs forward-only migrations.
+///
+/// `db_dir` is the directory that contains (or will contain) `mereth_reader.db`.
+/// Per the PRD §15.4 data layout this is `app-data/db/`; the caller is
+/// responsible for creating it and for relocating a legacy database from
+/// `app-data/mereth_reader.db` before opening (task 3.1).
 ///
 /// `db_existed` must be true only when the database file already existed on
 /// disk before the caller opened the connection. A backup of the pre-migration
@@ -33,7 +38,7 @@ const LATEST_MIGRATION_VERSION: i32 = 3;
 /// existing database — never on a plain re-open and never for a brand-new
 /// database. This fixes the previous behaviour where `mereth_reader.db.bak`
 /// was overwritten on every open.
-pub fn run_migrations(conn: &mut Connection, app_dir: &Path, db_existed: bool) -> Result<(), MigrationError> {
+pub fn run_migrations(conn: &mut Connection, db_dir: &Path, db_existed: bool) -> Result<(), MigrationError> {
   // Step 1: Set WAL mode. `PRAGMA journal_mode = WAL` returns a row (the new
   // mode), so read it via query_row. execute/pragma_update/execute_batch all
   // reject the returned row with "Execute returned results". In-memory
@@ -48,8 +53,8 @@ pub fn run_migrations(conn: &mut Connection, app_dir: &Path, db_existed: bool) -
   // no rows, so `execute` is safe here.
   conn.execute("PRAGMA foreign_keys = ON", [])?;
 
-  // Ensure the app data directory exists.
-  fs::create_dir_all(app_dir)?;
+  // Ensure the database directory exists.
+  fs::create_dir_all(db_dir)?;
 
   // Step 2: Initialize migration metadata table
   conn.execute(
@@ -75,9 +80,9 @@ pub fn run_migrations(conn: &mut Connection, app_dir: &Path, db_existed: bool) -
   if current_version < LATEST_MIGRATION_VERSION {
     // Back up the pre-migration file ONLY when migrating an existing database.
     if db_existed {
-      let db_path = app_dir.join("mereth_reader.db");
+      let db_path = db_dir.join("mereth_reader.db");
       if db_path.exists() {
-        let backup_path = app_dir.join("mereth_reader.db.bak");
+        let backup_path = db_dir.join("mereth_reader.db.bak");
         fs::copy(&db_path, &backup_path)?;
       }
     }
@@ -241,6 +246,402 @@ pub fn run_migrations(conn: &mut Connection, app_dir: &Path, db_existed: bool) -
       tx.execute(
         "INSERT INTO migration_metadata (version, applied_at, checksum)
        VALUES (3, datetime('now'), 'migration_3_reading_sessions');",
+        [],
+      )?;
+
+      tx.commit()?;
+    }
+
+    if current_version < 4 {
+      let tx = conn.transaction()?;
+
+      // Task 3.1 (PRD R2): annotation records and their area-capture assets.
+      //
+      // Design notes, each traceable to PRD §9:
+      // - `annotation_type` maps FR-9.1 to the v1 set exactly:
+      //   highlight / underline / area (image capture) / comment (anchored
+      //   comment without a highlight) / bookmark. Freehand ink is deferred
+      //   (OQ-10) and will be added by the migration of the feature that owns
+      //   it, not by a speculative column today.
+      // - `page_index` is the zero-based physical page and `page_label` the
+      //   visible label (FR-9.4).
+      // - `rects_json` holds one or more 0..1 normalized rectangles (FR-9.4,
+      //   the geometry model proven in R0.4). Rust validates the JSON before
+      //   write; the CHECK below only keeps non-text/area invariants honest.
+      // - `quote` / `prefix_text` / `suffix_text` / `text_layer_checksum`
+      //   are the FR-9.4 durable-anchor fields. The quote is read-only after
+      //   creation: no update path touches it (FR-9.5).
+      // - `comment` is the separate user comment field (FR-9.5).
+      // - `color` is the semantic palette key; the palette's colour+label
+      //   configuration ships with task 3.5 (FR-9.3).
+      // - `tags` is a JSON array of tag strings (FR-9.6).
+      // - `deleted_at` is the recoverable-trash marker (FR-9.8); rows are
+      //   purged only by an explicit purge after trash.
+      // - `provenance` carries the R0.3 constraint forward (task 3.2 extends
+      //   its enforcement to every text-bearing record; embedded-annotation
+      //   imports will use `deterministic_transform`, FR-9.9).
+      tx.execute(
+        "CREATE TABLE annotations (
+          id TEXT PRIMARY KEY,
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+          annotation_type TEXT NOT NULL CHECK (annotation_type IN (
+            'highlight', 'underline', 'area', 'comment', 'bookmark'
+          )),
+          page_index INTEGER NOT NULL CHECK (page_index >= 0),
+          page_label TEXT NOT NULL DEFAULT '',
+          rects_json TEXT NOT NULL DEFAULT '[]',
+          quote TEXT NOT NULL DEFAULT '',
+          prefix_text TEXT NOT NULL DEFAULT '',
+          suffix_text TEXT NOT NULL DEFAULT '',
+          text_layer_checksum TEXT,
+          comment TEXT NOT NULL DEFAULT '',
+          color TEXT NOT NULL DEFAULT '',
+          tags TEXT NOT NULL DEFAULT '[]',
+          deleted_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          )),
+          CHECK (
+            (annotation_type IN ('highlight','underline') AND length(quote) > 0)
+            OR (annotation_type NOT IN ('highlight','underline') AND length(quote) = 0)
+          ),
+          CHECK (annotation_type <> 'area' OR length(rects_json) > 2)
+        );",
+        [],
+      )?;
+
+      // Lookups that task 3.7's filter/search paths and the reader sidebar use.
+      tx.execute("CREATE INDEX idx_annotations_document ON annotations(document_id);", [])?;
+      tx.execute("CREATE INDEX idx_annotations_version ON annotations(document_version_id);", [])?;
+      tx.execute("CREATE INDEX idx_annotations_type ON annotations(annotation_type);", [])?;
+      tx.execute("CREATE INDEX idx_annotations_trash ON annotations(deleted_at);", [])?;
+
+      // FR-9.7: area captures are assets plus provenance — document, page, and
+      // normalized rectangle live on the parent annotation, never an orphaned
+      // bitmap. Files live under app-data/annotations/ (§15.4); `relative_path`
+      // is relative to the app data root, validated by Rust on every insert
+      // (`validator::validate_asset_relative_path`).
+      tx.execute(
+        "CREATE TABLE annotation_assets (
+          id TEXT PRIMARY KEY,
+          annotation_id TEXT NOT NULL REFERENCES annotations(id) ON DELETE CASCADE,
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          asset_kind TEXT NOT NULL CHECK (asset_kind IN ('area_capture')),
+          relative_path TEXT NOT NULL,
+          content_type TEXT NOT NULL DEFAULT 'image/png',
+          width_px INTEGER NOT NULL CHECK (width_px > 0),
+          height_px INTEGER NOT NULL CHECK (height_px > 0),
+          caption TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL,
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          ))
+        );",
+        [],
+      )?;
+
+      tx.execute(
+        "CREATE INDEX idx_annotation_assets_annotation ON annotation_assets(annotation_id);",
+        [],
+      )?;
+
+      // Record migration 4 completion
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (4, datetime('now'), 'migration_4_annotations_assets');",
+        [],
+      )?;
+
+      tx.commit()?;
+    }
+
+    if current_version < 5 {
+      let tx = conn.transaction()?;
+
+      // Task 3.1 (PRD R3): notes, bounded revision history, and stable links.
+      // - `note_type` is the FR-10.1 trio: source / concept / scratch. A
+      //   scratch note's promotion lifecycle lands with task 4.1.
+      // - `document_id` is set for source notes (one document) and null for
+      //   concept/scratch notes (FR-10.1). Deleting a document from the
+      //   library removes its source notes with it.
+      // - `body_markdown` stores FR-10.10 Markdown semantics; titles stay
+      //   non-blocking guidance per FR-10.4 (no uniqueness/length hard rule).
+      // - `deleted_at` mirrors the annotation trash pattern; task 4.1
+      //   supplies the promotion/archive/discard UI.
+      // - `note_revisions` is the bounded autosave history (FR-10.8); the
+      //   bound itself is enforced at write time by task 4.1.
+      // - `note_links` models FR-10.5 with FK-typed targets: a link points at
+      //   exactly one note, document, or annotation. Stable UUID ids make
+      //   renames safe; backlinks are derived by query, not stored.
+      tx.execute(
+        "CREATE TABLE notes (
+          id TEXT PRIMARY KEY,
+          note_type TEXT NOT NULL CHECK (note_type IN ('source','concept','scratch')),
+          title TEXT NOT NULL DEFAULT '',
+          body_markdown TEXT NOT NULL DEFAULT '',
+          document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
+          deleted_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          ))
+        );",
+        [],
+      )?;
+
+      tx.execute("CREATE INDEX idx_notes_document ON notes(document_id);", [])?;
+      tx.execute("CREATE INDEX idx_notes_type ON notes(note_type);", [])?;
+
+      tx.execute(
+        "CREATE TABLE note_revisions (
+          id TEXT PRIMARY KEY,
+          note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+          revision_number INTEGER NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          body_markdown TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          )),
+          UNIQUE (note_id, revision_number)
+        );",
+        [],
+      )?;
+
+      tx.execute(
+        "CREATE INDEX idx_note_revisions_note ON note_revisions(note_id);",
+        [],
+      )?;
+
+      tx.execute(
+        "CREATE TABLE note_links (
+          id TEXT PRIMARY KEY,
+          note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+          target_note_id TEXT REFERENCES notes(id) ON DELETE CASCADE,
+          target_document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
+          target_annotation_id TEXT REFERENCES annotations(id) ON DELETE CASCADE,
+          created_at TEXT NOT NULL,
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          )),
+          CHECK (
+            (target_note_id IS NOT NULL)
+            + (target_document_id IS NOT NULL)
+            + (target_annotation_id IS NOT NULL) = 1
+          )
+        );",
+        [],
+      )?;
+
+      tx.execute(
+        "CREATE INDEX idx_note_links_note ON note_links(note_id);",
+        [],
+      )?;
+      tx.execute(
+        "CREATE INDEX idx_note_links_target_note ON note_links(target_note_id);",
+        [],
+      )?;
+
+      // Record migration 5 completion
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (5, datetime('now'), 'migration_5_notes_revisions_links');",
+        [],
+      )?;
+
+      tx.commit()?;
+    }
+
+    if current_version < 6 {
+      let tx = conn.transaction()?;
+
+      // Task 3.1 (PRD R3): evidence blocks — the structured "Add to note"
+      // insertion of FR-10.1. The source excerpt or area image is immutable
+      // once written: quote/asset values are insert-only, and the editor's
+      // user prose lives on the owning `notes` row. On annotation purge the
+      // reference becomes NULL while the excerpt text itself survives, so a
+      // note never silently loses material it already quoted.
+      tx.execute(
+        "CREATE TABLE evidence_blocks (
+          id TEXT PRIMARY KEY,
+          note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+          source_kind TEXT NOT NULL CHECK (source_kind IN ('quote','area_image')),
+          annotation_id TEXT REFERENCES annotations(id) ON DELETE SET NULL,
+          image_asset_id TEXT REFERENCES annotation_assets(id) ON DELETE SET NULL,
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          page_index INTEGER NOT NULL CHECK (page_index >= 0),
+          page_label TEXT NOT NULL DEFAULT '',
+          quote TEXT NOT NULL DEFAULT '',
+          color TEXT NOT NULL DEFAULT '',
+          tags TEXT NOT NULL DEFAULT '[]',
+          user_comment TEXT NOT NULL DEFAULT '',
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          ))
+        );",
+        [],
+      )?;
+
+      tx.execute("CREATE INDEX idx_evidence_blocks_note ON evidence_blocks(note_id);", [])?;
+      tx.execute("CREATE INDEX idx_evidence_blocks_annotation ON evidence_blocks(annotation_id);", [])?;
+
+      // Record migration 6 completion
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (6, datetime('now'), 'migration_6_evidence_blocks');",
+        [],
+      )?;
+
+      tx.commit()?;
+    }
+
+    if current_version < 7 {
+      let tx = conn.transaction()?;
+
+      // Task 3.1 (PRD R4): Remember actions, review history, and FSRS state.
+      // - `review_prompts`: FR-11.1 (Remember opens the prompt editor, never a
+      //   silent card), FR-11.2 (the five prompt types, cloze not default —
+      //   the default lives in the UI, not the schema), FR-11.3 (every prompt
+      //   links to at least one source annotation or user-authored note; the
+      //   CHECK enforces that), FR-11.5 (the answer stays Draft until
+      //   explicitly adopted — `status` + `adopted_at`), FR-11.11 (pause and
+      //   priority), FR-11.12 (cue; repeated-failure repair state is derived
+      //   from review_events, not stored).
+      // - `review_events`: FR-11.7 (optional typed response preserved),
+      //   FR-11.8 (Again/Hard/Good/Easy outcomes + duration). Every event is
+      //   append-only so FSRS history stays reproducible and exportable
+      //   (OQ-13 decision comes in 4.5; the reviewer columns are the standard
+      //   FSRS state the implementation records in its chosen version).
+      // - `review_schedule`: FSRS state and next due time (FR-11.10);
+      //   `fsrs_version` records which scheduler produced the state so event
+      //   playback remains deterministic across upgrades.
+      tx.execute(
+        "CREATE TABLE review_prompts (
+          id TEXT PRIMARY KEY,
+          annotation_id TEXT REFERENCES annotations(id) ON DELETE SET NULL,
+          note_id TEXT REFERENCES notes(id) ON DELETE SET NULL,
+          prompt_type TEXT NOT NULL CHECK (prompt_type IN (
+            'focused_qa','explanation','application','contrast','cloze'
+          )),
+          question TEXT NOT NULL,
+          answer TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','adopted','retired')),
+          adopted_at TEXT,
+          cue TEXT NOT NULL DEFAULT '',
+          priority INTEGER NOT NULL DEFAULT 0,
+          paused_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          )),
+          CHECK (annotation_id IS NOT NULL OR note_id IS NOT NULL)
+        );",
+        [],
+      )?;
+
+      tx.execute("CREATE INDEX idx_review_prompts_annotation ON review_prompts(annotation_id);", [])?;
+      tx.execute("CREATE INDEX idx_review_prompts_note ON review_prompts(note_id);", [])?;
+      tx.execute("CREATE INDEX idx_review_prompts_status ON review_prompts(status);", [])?;
+
+      tx.execute(
+        "CREATE TABLE review_events (
+          id TEXT PRIMARY KEY,
+          prompt_id TEXT NOT NULL REFERENCES review_prompts(id) ON DELETE CASCADE,
+          reviewed_at TEXT NOT NULL,
+          outcome TEXT NOT NULL CHECK (outcome IN ('again','hard','good','easy')),
+          duration_ms INTEGER NOT NULL DEFAULT 0,
+          user_response TEXT NOT NULL DEFAULT '',
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          ))
+        );",
+        [],
+      )?;
+
+      tx.execute("CREATE INDEX idx_review_events_prompt ON review_events(prompt_id);", [])?;
+
+      tx.execute(
+        "CREATE TABLE review_schedule (
+          prompt_id TEXT PRIMARY KEY REFERENCES review_prompts(id) ON DELETE CASCADE,
+          desired_retention REAL NOT NULL DEFAULT 0.9,
+          state TEXT NOT NULL CHECK (state IN ('new','learning','review','relearning')),
+          stability REAL NOT NULL DEFAULT 0.0,
+          difficulty REAL NOT NULL DEFAULT 0.0,
+          due_at TEXT NOT NULL,
+          last_reviewed_at TEXT,
+          last_outcome TEXT CHECK (last_outcome IN ('again','hard','good','easy')),
+          fsrs_version TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL,
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          ))
+        );",
+        [],
+      )?;
+
+      // Record migration 7 completion
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (7, datetime('now'), 'migration_7_review_prompts_events_schedule');",
+        [],
+      )?;
+
+      tx.commit()?;
+    }
+
+    if current_version < 8 {
+      let tx = conn.transaction()?;
+
+      // Task 3.1 (PRD R4): export records — format, destination, manifest,
+      // and completion/error state (§16 `exports`). Every exported package
+      // keeps a row so repeated exports can be idempotent and a failed export
+      // leaves a recorded, retryable state (FR-14.3/14.6). Destination paths
+      // are user-chosen and stored only after the export feature validates
+      // them; `manifest_path` carries the sidecar manifest location
+      // (FR-14.2/14.3).
+      tx.execute(
+        "CREATE TABLE exports (
+          id TEXT PRIMARY KEY,
+          export_kind TEXT NOT NULL CHECK (export_kind IN (
+            'markdown','json_backup','review_csv','review_tsv','annotated_pdf'
+          )),
+          destination_path TEXT NOT NULL,
+          manifest_path TEXT,
+          status TEXT NOT NULL CHECK (status IN ('pending','running','completed','failed','cancelled')),
+          error TEXT,
+          items_count INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          ))
+        );",
+        [],
+      )?;
+
+      tx.execute("CREATE INDEX idx_exports_status ON exports(status);", [])?;
+
+      // Record migration 8 completion
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (8, datetime('now'), 'migration_8_exports');",
         [],
       )?;
 
