@@ -1,3 +1,4 @@
+pub mod annotations;
 pub mod migrations;
 
 use migrations::run_migrations;
@@ -138,16 +139,52 @@ fn map_row_to_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
   })
 }
 
+/// Moves a legacy `app-data/mereth_reader.db` (and any `-wal`/`-shm`
+/// sidecars) into `app-data/db/` per the PRD §15.4 layout. No-op when the new
+/// path already exists or no legacy file is present. The move happens before
+/// the connection opens so SQLite never sees a partially relocated database.
+fn relocate_legacy_database(app_dir: &Path, new_db_path: &Path) -> Result<(), String> {
+  if new_db_path.exists() {
+    return Ok(());
+  }
+  let legacy = app_dir.join("mereth_reader.db");
+  if !legacy.exists() {
+    return Ok(());
+  }
+  let db_dir = new_db_path
+    .parent()
+    .ok_or("Invalid database directory")?;
+  fs::create_dir_all(db_dir).map_err(|e| e.to_string())?;
+  fs::rename(&legacy, new_db_path)
+    .map_err(|e| format!("Failed to relocate legacy database: {e}"))?;
+  for suffix in ["-wal", "-shm"] {
+    let legacy_side = app_dir.join(format!("mereth_reader.db{suffix}"));
+    if legacy_side.exists() {
+      let new_side = db_dir.join(format!("mereth_reader.db{suffix}"));
+      let _ = fs::rename(&legacy_side, &new_side);
+    }
+  }
+  Ok(())
+}
+
 impl Database {
   pub fn new(app_dir: &Path) -> Result<Self, String> {
     fs::create_dir_all(app_dir).map_err(|e| e.to_string())?;
-    let db_path = app_dir.join("mereth_reader.db");
+    let db_dir = app_dir.join("db");
+    fs::create_dir_all(&db_dir).map_err(|e| e.to_string())?;
+    let db_path = db_dir.join("mereth_reader.db");
+
+    // PRD §15.4 places the database under `app-data/db/`. Very early builds
+    // (R0.3 era) stored it at `app-data/mereth_reader.db`; relocate such a
+    // legacy file (and any WAL sidecars) so existing profiles are preserved
+    // and every file stays under the documented layout (task 3.1).
+    relocate_legacy_database(app_dir, &db_path)?;
 
     // Detect whether the database file already existed BEFORE we open/create it.
     let db_existed = db_path.exists();
     let mut conn = Connection::open(&db_path).map_err(|e| e.to_string())?;
 
-    run_migrations(&mut conn, app_dir, db_existed).map_err(|e| e.to_string())?;
+    run_migrations(&mut conn, &db_dir, db_existed).map_err(|e| e.to_string())?;
 
     Ok(Database {
       conn: Arc::new(Mutex::new(conn)),
@@ -828,8 +865,9 @@ mod tests {
     // open, not just before a migration." Re-opening a database that is already
     // at the current migration version must NOT create or overwrite the backup.
     let dir = tempdir().unwrap();
-    let db_path = dir.path().join("mereth_reader.db");
-    let backup_path = dir.path().join("mereth_reader.db.bak");
+    // Task 3.1 relocated the database into app-data/db/ (PRD §15.4).
+    let db_path = dir.path().join("db").join("mereth_reader.db");
+    let backup_path = dir.path().join("db").join("mereth_reader.db.bak");
 
     // First creation: brand-new database, nothing to back up.
     {
@@ -855,25 +893,44 @@ mod tests {
     // migration metadata and all schema tables, then re-open so migration 1
     // re-runs against the existing file.
     let dir = tempdir().unwrap();
-    let db_path = dir.path().join("mereth_reader.db");
-    let backup_path = dir.path().join("mereth_reader.db.bak");
+    // Task 3.1 relocated the database into app-data/db/ (PRD §15.4).
+    let db_path = dir.path().join("db").join("mereth_reader.db");
+    let backup_path = dir.path().join("db").join("mereth_reader.db.bak");
 
-    // Create a valid v1 database first.
+    // Create a valid current-version database first.
     {
       let _db = Database::new(dir.path()).unwrap();
     }
     assert!(!backup_path.exists());
 
-    // Roll it back to a "version 0" state so the next open re-runs migration 1.
+    // Roll it back to a "version 0" state so the next open re-runs all
+    // migrations (1..8). Children are dropped before parents; with no rows in
+    // any table order is safe either way, but the FK graph stays intact.
     {
       let conn = Connection::open(&db_path).unwrap();
-      conn.execute("DROP TABLE IF EXISTS fts_document_text", []).unwrap();
-      conn.execute("DROP TABLE IF EXISTS pages", []).unwrap();
-      conn.execute("DROP TABLE IF EXISTS document_versions", []).unwrap();
-      conn.execute("DROP TABLE IF EXISTS documents", []).unwrap();
-      conn.execute("DROP TABLE IF EXISTS jobs", []).unwrap();
-      conn.execute("DROP TABLE IF EXISTS settings", []).unwrap();
-      conn.execute("DROP TABLE IF EXISTS migration_metadata", []).unwrap();
+      for table in [
+        "fts_document_text",
+        "exports",
+        "review_schedule",
+        "review_events",
+        "review_prompts",
+        "evidence_blocks",
+        "note_links",
+        "note_revisions",
+        "notes",
+        "annotation_assets",
+        "annotations",
+        "reading_sessions",
+        "pages",
+        "document_versions",
+        "documents",
+        "collections",
+        "jobs",
+        "settings",
+        "migration_metadata",
+      ] {
+        conn.execute(&format!("DROP TABLE IF EXISTS {table}"), []).unwrap();
+      }
     }
 
     // Re-open: the file already exists and current_version is 0, so a backup of
@@ -1179,6 +1236,326 @@ mod tests {
 
     // Deleting a non-existent document should error
     assert!(db.delete_document(&doc_id).is_err());
+  }
+
+  #[test]
+  fn test_database_lives_in_db_subdirectory_and_relocates_legacy() {
+    // A fresh database lands at app-data/db/mereth_reader.db (PRD §15.4,
+    // task 3.1) and nothing appears at the app-data root.
+    let dir = tempdir().unwrap();
+    {
+      let db = Database::new(dir.path()).unwrap();
+      assert!(dir.path().join("db").join("mereth_reader.db").exists());
+      assert!(!dir.path().join("mereth_reader.db").exists());
+      drop(db);
+    }
+
+    // A legacy database at app-data/mereth_reader.db (pre-3.1 builds) is
+    // moved into db/ on open and its data is preserved.
+    let dir2 = tempdir().unwrap();
+    let legacy_path = dir2.path().join("mereth_reader.db");
+    {
+      let conn = Connection::open(&legacy_path).unwrap();
+      conn
+        .execute(
+          "CREATE TABLE legacy_probe (id INTEGER PRIMARY KEY, note TEXT)",
+          [],
+        )
+        .unwrap();
+      conn
+        .execute("INSERT INTO legacy_probe (note) VALUES ('still here')", [])
+        .unwrap();
+      drop(conn);
+    }
+    {
+      let db = Database::new(dir2.path()).unwrap();
+      assert!(!legacy_path.exists(), "legacy file must be moved, not copied");
+      assert!(dir2.path().join("db").join("mereth_reader.db").exists());
+      let conn = db.conn.lock().unwrap();
+      // The pre-existing data survived the move…
+      let note: String = conn
+        .query_row("SELECT note FROM legacy_probe WHERE id = 1", [], |r| r.get(0))
+        .unwrap();
+      assert_eq!(note, "still here");
+      // …and the full migration set ran on top of it.
+      let rows: i64 = conn
+        .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
+        .unwrap();
+      assert_eq!(rows, 8);
+    }
+  }
+
+  #[test]
+  fn test_reopening_version3_database_runs_forward_migrations_with_backup() {
+    // Simulate a database at migration version 3 (the state task 2.x left
+    // behind): create a current db, drop every 3.1 table and its metadata
+    // rows, then re-open. The re-open must (a) back up the pre-migration
+    // file, (b) apply migrations 4-8 forward, and (c) preserve existing rows.
+    let dir = tempdir().unwrap();
+    let doc_id = Uuid::new_v4().to_string();
+    {
+      let db = Database::new(dir.path()).unwrap();
+      let doc = Document {
+        id: doc_id.clone(),
+        title: "V3 Era Document".into(),
+        filepath: "/docs/v3_era.pdf".into(),
+        sha256_hash: "a1".repeat(32),
+        page_count: 4,
+        created_at: "2026-08-04T13:52:57Z".into(),
+        updated_at: "2026-08-04T13:52:57Z".into(),
+        provenance: "source_extracted".into(),
+        author: None,
+        subject: None,
+        keywords: None,
+        creation_date: None,
+        doi: None,
+        isbn: None,
+        is_favourite: false,
+        is_archived: false,
+        last_opened_at: None,
+        tags: vec![],
+        collections: vec![],
+      };
+      db.add_document(doc).unwrap();
+      drop(db);
+    }
+
+    let db_path = dir.path().join("db").join("mereth_reader.db");
+    {
+      let conn = Connection::open(&db_path).unwrap();
+      for table in [
+        "exports",
+        "review_schedule",
+        "review_events",
+        "review_prompts",
+        "evidence_blocks",
+        "note_links",
+        "note_revisions",
+        "notes",
+        "annotation_assets",
+        "annotations",
+      ] {
+        conn.execute(&format!("DROP TABLE IF EXISTS {table}"), []).unwrap();
+      }
+      conn
+        .execute("DELETE FROM migration_metadata WHERE version > 3", [])
+        .unwrap();
+      drop(conn);
+    }
+
+    {
+      let db = Database::new(dir.path()).unwrap();
+      // The pre-migration file was backed up next to the database.
+      assert!(dir.path().join("db").join("mereth_reader.db.bak").exists());
+      // The full metadata is present again.
+      let conn = db.conn.lock().unwrap();
+      let rows: i64 = conn
+        .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
+        .unwrap();
+      assert_eq!(rows, 8);
+      drop(conn);
+      // Pre-existing data survived the forward migration.
+      let doc = db.get_document_by_id(&doc_id).unwrap().expect("document preserved");
+      assert_eq!(doc.title, "V3 Era Document");
+    }
+  }
+
+  #[test]
+  fn test_schema_inventory_and_no_speculative_columns() {
+    // Pins the 3.1 acceptance: every feature table exists with its required
+    // columns, and no deferred AI/OCR behaviour leaked in as speculative
+    // columns (a later additive migration is the mechanism for those).
+    let db = Database::in_memory().unwrap();
+    let conn = db.conn.lock().unwrap();
+
+    let required_tables = [
+      "documents",
+      "document_versions",
+      "pages",
+      "jobs",
+      "settings",
+      "collections",
+      "reading_sessions",
+      "migration_metadata",
+      "annotations",
+      "annotation_assets",
+      "notes",
+      "note_revisions",
+      "note_links",
+      "evidence_blocks",
+      "review_prompts",
+      "review_events",
+      "review_schedule",
+      "exports",
+      "fts_document_text",
+    ];
+    for table in required_tables {
+      let count: i64 = conn
+        .query_row(
+          "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+          [table],
+          |r| r.get(0),
+        )
+        .unwrap();
+      assert_eq!(count, 1, "missing required table: {table}");
+    }
+
+    let table_columns = |conn: &Connection, table: &str| -> Vec<String> {
+      let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .unwrap();
+      stmt
+        .query_map([], |r| r.get::<_, String>(1))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    let required_columns: [(&str, &[&str]); 10] = [
+      (
+        "annotations",
+        &[
+          "id", "document_id", "document_version_id", "annotation_type",
+          "page_index", "page_label", "rects_json", "quote", "prefix_text",
+          "suffix_text", "text_layer_checksum", "comment", "color", "tags",
+          "deleted_at", "created_at", "updated_at", "provenance",
+        ],
+      ),
+      (
+        "annotation_assets",
+        &[
+          "id", "annotation_id", "document_id", "asset_kind",
+          "relative_path", "content_type", "width_px", "height_px",
+          "caption", "created_at", "provenance",
+        ],
+      ),
+      (
+        "notes",
+        &[
+          "id", "note_type", "title", "body_markdown", "document_id",
+          "deleted_at", "created_at", "updated_at", "provenance",
+        ],
+      ),
+      (
+        "note_revisions",
+        &[
+          "id", "note_id", "revision_number", "title", "body_markdown",
+          "created_at", "provenance",
+        ],
+      ),
+      (
+        "note_links",
+        &[
+          "id", "note_id", "target_note_id", "target_document_id",
+          "target_annotation_id", "created_at", "provenance",
+        ],
+      ),
+      (
+        "evidence_blocks",
+        &[
+          "id", "note_id", "source_kind", "annotation_id", "image_asset_id",
+          "document_id", "page_index", "page_label", "quote", "color",
+          "tags", "user_comment", "sort_order", "created_at", "provenance",
+        ],
+      ),
+      (
+        "review_prompts",
+        &[
+          "id", "annotation_id", "note_id", "prompt_type", "question",
+          "answer", "status", "adopted_at", "cue", "priority", "paused_at",
+          "created_at", "updated_at", "provenance",
+        ],
+      ),
+      (
+        "review_events",
+        &[
+          "id", "prompt_id", "reviewed_at", "outcome", "duration_ms",
+          "user_response", "provenance",
+        ],
+      ),
+      (
+        "review_schedule",
+        &[
+          "prompt_id", "desired_retention", "state", "stability",
+          "difficulty", "due_at", "last_reviewed_at", "last_outcome",
+          "fsrs_version", "updated_at", "provenance",
+        ],
+      ),
+      (
+        "exports",
+        &[
+          "id", "export_kind", "destination_path", "manifest_path", "status",
+          "error", "items_count", "created_at", "updated_at", "provenance",
+        ],
+      ),
+    ];
+
+    for (table, cols) in required_columns {
+      let actual = table_columns(&conn, table);
+      for col in cols {
+        assert!(
+          actual.iter().any(|c| c == col),
+          "{table}.{col} missing (got {actual:?})"
+        );
+      }
+      // No speculative AI/OCR columns on any R2-R4 feature table.
+      for col in actual {
+        let lc = col.to_lowercase();
+        assert!(
+          !lc.contains("embedding")
+            && !lc.contains("vector")
+            && !lc.contains("ocr")
+            && !lc.starts_with("ai_")
+            && lc != "model_id"
+            && lc != "model_key",
+          "speculative AI/OCR column {table}.{col}"
+        );
+      }
+    }
+
+    // The ten 3.1 tables are exactly the ones the migration adds — no
+    // undocumented table appears in the schema.
+    let known_tables: [&str; 19] = [
+      "documents",
+      "document_versions",
+      "pages",
+      "jobs",
+      "settings",
+      "collections",
+      "reading_sessions",
+      "migration_metadata",
+      "annotations",
+      "annotation_assets",
+      "notes",
+      "note_revisions",
+      "note_links",
+      "evidence_blocks",
+      "review_prompts",
+      "review_events",
+      "review_schedule",
+      "exports",
+      "fts_document_text",
+    ];
+    let mut stmt = conn
+      .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+      .unwrap();
+    let all: Vec<String> = stmt
+      .query_map([], |r| r.get(0))
+      .unwrap()
+      .filter_map(|r| r.ok())
+      .collect();
+    for name in all {
+      // `sqlite_*` are SQLite internals; `fts_document_text_*` are the FTS5
+      // virtual table's own shadow tables (data/index/content/docsize/
+      // config), not schema tables.
+      if name.starts_with("sqlite_") || name.starts_with("fts_document_text_") {
+        continue;
+      }
+      assert!(
+        known_tables.contains(&name.as_str()),
+        "undocumented table in schema: {name}"
+      );
+    }
   }
 }
 
