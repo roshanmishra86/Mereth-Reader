@@ -9,7 +9,6 @@
 //! §15.4 layout confinement. SQL never leaves this crate — the webview only
 //! ever sees the typed structs through the IPC commands in `lib.rs`.
 
-use super::migrations::ALLOWED_PROVENANCES;
 use super::Database;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -161,15 +160,10 @@ pub fn validate_annotation_type(annotation_type: &str) -> Result<(), String> {
   }
 }
 
-pub fn validate_provenance(provenance: &str) -> Result<(), String> {
-  if ALLOWED_PROVENANCES.contains(&provenance) {
-    Ok(())
-  } else {
-    Err(format!(
-      "Invalid provenance '{provenance}'; expected one of {ALLOWED_PROVENANCES:?}"
-    ))
-  }
-}
+// `validate_provenance` is re-exported from `provenance` (task 3.2): the
+// six-value §16.1 vocabulary now lives in one module — provenance.rs — shared
+// by the Rust validators, migration 9's SQL, and the schema tests.
+pub use super::provenance::validate_provenance;
 
 pub fn validate_asset_kind(kind: &str) -> Result<(), String> {
   if ASSET_KINDS.contains(&kind) {

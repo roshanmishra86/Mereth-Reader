@@ -1,5 +1,6 @@
 pub mod annotations;
 pub mod migrations;
+pub mod provenance;
 
 use migrations::run_migrations;
 use rusqlite::{params, Connection};
@@ -1281,7 +1282,7 @@ mod tests {
       let rows: i64 = conn
         .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
         .unwrap();
-      assert_eq!(rows, 8);
+      assert_eq!(rows, 9);
     }
   }
 
@@ -1352,7 +1353,7 @@ mod tests {
       let rows: i64 = conn
         .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
         .unwrap();
-      assert_eq!(rows, 8);
+      assert_eq!(rows, 9);
       drop(conn);
       // Pre-existing data survived the forward migration.
       let doc = db.get_document_by_id(&doc_id).unwrap().expect("document preserved");
@@ -1419,6 +1420,7 @@ mod tests {
           "page_index", "page_label", "rects_json", "quote", "prefix_text",
           "suffix_text", "text_layer_checksum", "comment", "color", "tags",
           "deleted_at", "created_at", "updated_at", "provenance",
+          "original_provenance",
         ],
       ),
       (
@@ -1426,7 +1428,7 @@ mod tests {
         &[
           "id", "annotation_id", "document_id", "asset_kind",
           "relative_path", "content_type", "width_px", "height_px",
-          "caption", "created_at", "provenance",
+          "caption", "created_at", "provenance", "original_provenance",
         ],
       ),
       (
@@ -1434,13 +1436,14 @@ mod tests {
         &[
           "id", "note_type", "title", "body_markdown", "document_id",
           "deleted_at", "created_at", "updated_at", "provenance",
+          "original_provenance",
         ],
       ),
       (
         "note_revisions",
         &[
           "id", "note_id", "revision_number", "title", "body_markdown",
-          "created_at", "provenance",
+          "created_at", "provenance", "original_provenance",
         ],
       ),
       (
@@ -1448,6 +1451,7 @@ mod tests {
         &[
           "id", "note_id", "target_note_id", "target_document_id",
           "target_annotation_id", "created_at", "provenance",
+          "original_provenance",
         ],
       ),
       (
@@ -1456,6 +1460,7 @@ mod tests {
           "id", "note_id", "source_kind", "annotation_id", "image_asset_id",
           "document_id", "page_index", "page_label", "quote", "color",
           "tags", "user_comment", "sort_order", "created_at", "provenance",
+          "original_provenance",
         ],
       ),
       (
@@ -1463,14 +1468,14 @@ mod tests {
         &[
           "id", "annotation_id", "note_id", "prompt_type", "question",
           "answer", "status", "adopted_at", "cue", "priority", "paused_at",
-          "created_at", "updated_at", "provenance",
+          "created_at", "updated_at", "provenance", "original_provenance",
         ],
       ),
       (
         "review_events",
         &[
           "id", "prompt_id", "reviewed_at", "outcome", "duration_ms",
-          "user_response", "provenance",
+          "user_response", "provenance", "original_provenance",
         ],
       ),
       (
@@ -1478,7 +1483,7 @@ mod tests {
         &[
           "prompt_id", "desired_retention", "state", "stability",
           "difficulty", "due_at", "last_reviewed_at", "last_outcome",
-          "fsrs_version", "updated_at", "provenance",
+          "fsrs_version", "updated_at", "provenance", "original_provenance",
         ],
       ),
       (
@@ -1486,6 +1491,7 @@ mod tests {
         &[
           "id", "export_kind", "destination_path", "manifest_path", "status",
           "error", "items_count", "created_at", "updated_at", "provenance",
+          "original_provenance",
         ],
       ),
     ];
@@ -1556,6 +1562,208 @@ mod tests {
         "undocumented table in schema: {name}"
       );
     }
+  }
+
+  #[test]
+  fn test_provenance_checks_hold_schema_wide() {
+    // Task 3.2 (PRD §16.1): every text-bearing feature record carries exactly
+    // one of the six provenance values — enforced by a CHECK in the schema,
+    // not by presentation. Introspect sqlite_master so the check cannot be
+    // bypassed by a typed layer that forgets to validate.
+    use crate::db::provenance::{
+      ALLOWED_PROVENANCES, CORE_TEXT_BEARING_TABLES, TEXT_BEARING_FEATURE_TABLES,
+    };
+
+    let db = Database::in_memory().unwrap();
+    let conn = db.conn.lock().unwrap();
+    let mut stmt = conn
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type='table'")
+      .unwrap();
+    let tables: Vec<(String, String)> = stmt
+      .query_map([], |r| Ok((r.get(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))
+      .unwrap()
+      .filter_map(|r| r.ok())
+      .collect();
+    let sql_of = |name: &str| -> String {
+      tables
+        .iter()
+        .find(|(n, _)| n == name)
+        .unwrap_or_else(|| panic!("table {name} missing"))
+        .1
+        .clone()
+    };
+
+    for table in CORE_TEXT_BEARING_TABLES {
+      let sql = sql_of(table);
+      for value in ALLOWED_PROVENANCES {
+        assert!(
+          sql.contains(value),
+          "{table} must allow provenance '{value}' in its CHECK"
+        );
+      }
+    }
+
+    for table in TEXT_BEARING_FEATURE_TABLES {
+      let sql = sql_of(table);
+      let sql_lower = sql.to_lowercase();
+      // Six-value provenance CHECK (schema-level, exactly-one-of semantics
+      // with NOT NULL provenance).
+      for value in ALLOWED_PROVENANCES {
+        assert!(
+          sql.contains(value),
+          "{table} must allow provenance '{value}' in its CHECK"
+        );
+      }
+      // Migration 9: the original_provenance column with its adoption rule.
+      assert!(
+        sql.contains("original_provenance"),
+        "{table} must carry original_provenance (adoption keeps history)"
+      );
+      assert!(
+        sql_lower.contains("original_provenance is null or"),
+        "{table} must allow NULL original_provenance (never adopted)"
+      );
+      assert!(
+        sql_lower.contains("provenance <> 'user_adopted_ai'")
+          || sql_lower.contains("provenance != 'user_adopted_ai'"),
+        "{table} must pair adoption with a preserved original"
+      );
+      assert!(
+        sql_lower.contains("original_provenance is not null"),
+        "{table} must require an original when adopted"
+      );
+    }
+
+    // The three R0.3 extraction tables do NOT get adoption columns: adoption
+    // does not apply to extraction records (documented scope decision 3.2).
+    for table in CORE_TEXT_BEARING_TABLES {
+      assert!(
+        !sql_of(table).contains("original_provenance"),
+        "{table} must not carry original_provenance (extraction record)"
+      );
+    }
+  }
+
+  #[test]
+  fn test_adoption_never_erases_original_provenance_at_schema_level() {
+    // FR-11.5 / FR-12.12 / §16.1, exercised against the real schema:
+    // - a record can be `user_adopted_ai` only with a non-NULL original that
+    //   is not itself an adoption;
+    // - the adoption write keeps the pre-adoption value untouched as
+    //   original_provenance, including through later edits.
+    let db = Database::in_memory().unwrap();
+    let conn = db.conn.lock().unwrap();
+
+    // notes (representative #1).
+    conn
+      .execute(
+        "INSERT INTO notes (id, note_type, title, body_markdown, created_at, updated_at, provenance)
+         VALUES ('n1', 'concept', 'AI draft', 'draft body', 'now', 'now', 'ai_draft')",
+        [],
+      )
+      .unwrap();
+
+    // Adopt: original_provenance records exactly what the provenance was.
+    conn
+      .execute(
+        "UPDATE notes SET provenance = 'user_adopted_ai', original_provenance = 'ai_draft', updated_at = 'now' WHERE id = 'n1'",
+        [],
+      )
+      .unwrap();
+    let (provenance, original): (String, String) = conn
+      .query_row(
+        "SELECT provenance, original_provenance FROM notes WHERE id = 'n1'",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+      )
+      .unwrap();
+    assert_eq!(provenance, "user_adopted_ai");
+    assert_eq!(original, "ai_draft");
+
+    // A later edit keeps the original: history is never erased.
+    conn
+      .execute(
+        "UPDATE notes SET body_markdown = 'edited after adoption' WHERE id = 'n1'",
+        [],
+      )
+      .unwrap();
+    let original_after_edit: String = conn
+      .query_row(
+        "SELECT original_provenance FROM notes WHERE id = 'n1'",
+        [],
+        |r| r.get(0),
+      )
+      .unwrap();
+    assert_eq!(original_after_edit, "ai_draft");
+
+    // Adoption without an original is rejected by the schema CHECK.
+    let res = conn.execute(
+      "INSERT INTO notes (id, note_type, title, body_markdown, created_at, updated_at, provenance, original_provenance)
+       VALUES ('n2', 'concept', 't', 'b', 'now', 'now', 'user_adopted_ai', NULL)",
+      [],
+    );
+    assert!(res.is_err(), "user_adopted_ai without an original must fail the CHECK");
+
+    // Re-adoption (original == adopted) is rejected too.
+    let res = conn.execute(
+      "INSERT INTO notes (id, note_type, title, body_markdown, created_at, updated_at, provenance, original_provenance)
+       VALUES ('n3', 'concept', 't', 'b', 'now', 'now', 'user_adopted_ai', 'user_adopted_ai')",
+      [],
+    );
+    assert!(res.is_err(), "re-adoption that erases the first original must fail the CHECK");
+
+    // Original outside the six values is rejected even when not adopted.
+    let res = conn.execute(
+      "INSERT INTO notes (id, note_type, title, body_markdown, created_at, updated_at, provenance, original_provenance)
+       VALUES ('n4', 'concept', 't', 'b', 'now', 'now', 'user_authored', 'mystery')",
+      [],
+    );
+    assert!(res.is_err(), "original_provenance outside the six values must fail the CHECK");
+
+    // A valid pre-existing draft that was never adopted keeps NULL original.
+    conn
+      .execute(
+        "INSERT INTO notes (id, note_type, title, body_markdown, created_at, updated_at, provenance)
+         VALUES ('n5', 'concept', 't', 'b', 'now', 'now', 'ai_draft')",
+        [],
+      )
+      .unwrap();
+    let original_null: Option<String> = conn
+      .query_row("SELECT original_provenance FROM notes WHERE id = 'n5'", [], |r| r.get(0))
+      .unwrap();
+    assert!(original_null.is_none());
+
+    // review_prompts (representative #2): the answer-adoption path (FR-11.5).
+    conn
+      .execute(
+        "INSERT INTO review_prompts (id, note_id, prompt_type, question, answer, status, created_at, updated_at, provenance)
+         VALUES ('p1', 'n1', 'focused_qa', 'What is the claim?', 'draft answer', 'draft', 'now', 'now', 'ai_draft')",
+        [],
+      )
+      .unwrap();
+    conn
+      .execute(
+        "UPDATE review_prompts SET provenance = 'user_adopted_ai', original_provenance = 'ai_draft', status = 'adopted', adopted_at = 'now' WHERE id = 'p1'",
+        [],
+      )
+      .unwrap();
+    let (provenance, original): (String, String) = conn
+      .query_row(
+        "SELECT provenance, original_provenance FROM review_prompts WHERE id = 'p1'",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+      )
+      .unwrap();
+    assert_eq!(provenance, "user_adopted_ai");
+    assert_eq!(original, "ai_draft");
+
+    // The six-value vocabulary itself is enforced on review_prompts.
+    let res = conn.execute(
+      "INSERT INTO review_prompts (id, note_id, prompt_type, question, answer, status, created_at, updated_at, provenance)
+       VALUES ('p2', 'n1', 'focused_qa', 'q', '', 'draft', 'now', 'now', 'fabricated')",
+      [],
+    );
+    assert!(res.is_err(), "provenance outside the six values must fail the CHECK");
   }
 }
 

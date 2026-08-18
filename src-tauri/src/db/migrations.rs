@@ -3,6 +3,10 @@ use std::fs;
 use std::path::Path;
 use thiserror::Error;
 
+use super::provenance::{
+  ADOPTION_CONSISTENCY_CHECK, ORIGINAL_PROVENANCE_SET_CHECK, TEXT_BEARING_FEATURE_TABLES,
+};
+
 #[derive(Error, Debug)]
 pub enum MigrationError {
   #[error("Database error: {0}")]
@@ -13,17 +17,8 @@ pub enum MigrationError {
   Custom(String),
 }
 
-pub const ALLOWED_PROVENANCES: &[&str] = &[
-  "source_extracted",
-  "source_ocr",
-  "user_authored",
-  "ai_draft",
-  "user_adopted_ai",
-  "deterministic_transform",
-];
-
 /// The highest migration version this engine knows how to apply.
-const LATEST_MIGRATION_VERSION: i32 = 8;
+const LATEST_MIGRATION_VERSION: i32 = 9;
 
 /// Runs forward-only migrations.
 ///
@@ -642,6 +637,47 @@ pub fn run_migrations(conn: &mut Connection, db_dir: &Path, db_existed: bool) ->
       tx.execute(
         "INSERT INTO migration_metadata (version, applied_at, checksum)
        VALUES (8, datetime('now'), 'migration_8_exports');",
+        [],
+      )?;
+
+      tx.commit()?;
+    }
+
+    if current_version < 9 {
+      let tx = conn.transaction()?;
+
+      // Task 3.2 (PRD §16.1): adoption never erases the original provenance.
+      //
+      // Every text-bearing feature table (created in migrations 4–8) already
+      // carries the six-value provenance CHECK. This migration adds
+      // `original_provenance`, the column that records what a record's
+      // provenance WAS before a user explicitly adopted a draft (FR-11.5,
+      // FR-12.12). Two column-level CHECKs pin the rule at the schema level:
+      // the original must be one of the six values, and a `user_adopted_ai`
+      // row must carry a non-NULL, non-adopted original.
+      //
+      // The check expressions are imported from `provenance` so the Rust
+      // validators, the migration SQL, and the tests cannot drift apart.
+      // Existing rows are unaffected: no row can be `user_adopted_ai` before
+      // this migration exists, so every row satisfies `ADOPTION_CONSISTENCY_CHECK`
+      // with the NULL default. The R0.3 era tables (documents, pages,
+      // document_versions) are extraction records; adoption does not apply to
+      // them and their six-value CHECKs are already in place (migration 1).
+      for table in TEXT_BEARING_FEATURE_TABLES {
+        tx.execute(
+          &format!(
+            "ALTER TABLE {table} ADD COLUMN original_provenance TEXT
+             CHECK ({ORIGINAL_PROVENANCE_SET_CHECK})
+             CHECK ({ADOPTION_CONSISTENCY_CHECK});"
+          ),
+          [],
+        )?;
+      }
+
+      // Record migration 9 completion
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (9, datetime('now'), 'migration_9_provenance_adoption');",
         [],
       )?;
 
