@@ -84,6 +84,8 @@ import { formatExtendedPageLabel } from "./utils/navigationUtils";
 // Task 3.4 annotation creation and durable anchors (PRD R2)
 import {
   AnnotationRecord,
+  AnnotationAssetRecord,
+  PaletteEntry,
   DEFAULT_ANNOTATION_PALETTE,
   DEFAULT_ANNOTATION_COLOR,
   buildAreaAnnotation,
@@ -101,11 +103,23 @@ import {
   addAnnotationAsset,
   createAnnotation,
   loadAnnotationAssets,
-  loadDocumentAnnotations,
   readAnnotationAssetBlob,
   removeAnnotationAssetFile,
+  restoreAnnotation,
+  trashAnnotation,
+  purgeAnnotation,
+  updateAnnotationFields,
   writeAnnotationAssetFile,
 } from "./utils/annotationIo";
+// Task 3.5 — palette configuration, in-session undo, quote/comment separation
+import { AnnotationEditor } from "./components/AnnotationEditor";
+import { SettingsAnnotations } from "./components/SettingsAnnotations";
+import { AnnotationUndoManager } from "./utils/annotationUndo";
+import {
+  ANNOTATION_PALETTE_SETTING_KEY,
+  parsePalette,
+  serializePalette,
+} from "./utils/annotationPalette";
 import {
   PageBox,
   ViewportRect,
@@ -140,6 +154,21 @@ const nav = [
   ["notes", "Notes", "✎"],
   ["review", "Review", "↻"],
 ] as const;
+
+/** Loads a document's annotations in one pass: active rows + trashed rows. */
+async function loadAnnotationSets(documentId: string): Promise<{
+  active: AnnotationRecord[];
+  trashed: AnnotationRecord[];
+}> {
+  const [active, withTrash] = await Promise.all([
+    invoke<AnnotationRecord[]>("db_get_annotations_for_document", { documentId, includeTrashed: false }),
+    invoke<AnnotationRecord[]>("db_get_annotations_for_document", { documentId, includeTrashed: true }),
+  ]);
+  return {
+    active: active ?? [],
+    trashed: (withTrash ?? []).filter((a) => a.deleted_at !== null),
+  };
+}
 
 function Glyph({ children }: { children: string }) {
   return <span className="glyph" aria-hidden="true">{children}</span>;
@@ -201,11 +230,21 @@ function App() {
   // document; notes and review prompts arrive with their R3/R4 milestones —
   // nothing is fabricated (U15).
   const [annotationsList, setAnnotationsList] = useState<AnnotationRecord[]>([]);
+  // Task 3.5: recoverable trash records (FR-9.8) — loaded alongside the active
+  // list so Restore/Purge stay truthful without hiding what is recoverable.
+  const [trashedAnnotations, setTrashedAnnotations] = useState<AnnotationRecord[]>([]);
   const [notesList] = useState<Array<{ id: string; title: string; type: string }>>([]);
   const [reviewPromptsList] = useState<Array<{ id: string; prompt: string }>>([]);
   // The current version row's id — creation-time checksums bind to it and
   // re-anchoring switches it; null until registration/refresh completes.
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
+  // Task 3.5: the user's semantic palette (FR-9.3), loaded from settings.
+  const [palette, setPalette] = useState<PaletteEntry[]>(DEFAULT_ANNOTATION_PALETTE);
+  // In-session undo (FR-9.8): the manager holds the inverse information; the
+  // counter drives the UI's can-undo affordance.
+  const undoManagerRef = useRef<AnnotationUndoManager | null>(null);
+  if (!undoManagerRef.current) undoManagerRef.current = new AnnotationUndoManager();
+  const [undoCount, setUndoCount] = useState(0);
 
   const activeAnnotation = useMemo(
     () => annotationsList.find((annotation) => annotation.id === selected) ?? annotationsList[0] ?? null,
@@ -342,6 +381,10 @@ function App() {
           if (settingRows && settingRows.length > 0) {
             const loaded = parseSettingsRows(settingRows);
             setAppearance(loaded);
+            // Task 3.5 (FR-9.3): the semantic palette rides the settings
+            // table as one JSON value; corrupt values fall back to defaults.
+            const paletteRow = settingRows.find((row) => row.key === ANNOTATION_PALETTE_SETTING_KEY);
+            if (paletteRow) setPalette(parsePalette(paletteRow.value));
           }
         } catch {
           // Fallback if settings table unpopulated
@@ -569,19 +612,19 @@ function App() {
       const latestId = latest?.id ?? null;
       setCurrentVersionId(latestId);
       if (latestId) {
-        const annotations = await invoke<AnnotationRecord[]>("db_get_annotations_for_document", {
-          documentId: doc.id,
-          includeTrashed: false,
-        });
+        const sets = await loadAnnotationSets(doc.id);
         if (openRequestId !== openDocumentRequestId.current) return;
-        setAnnotationsList(annotations ?? []);
+        setAnnotationsList(sets.active);
+        setTrashedAnnotations(sets.trashed);
       } else {
         setAnnotationsList([]);
+        setTrashedAnnotations([]);
       }
     } catch {
       if (openRequestId !== openDocumentRequestId.current) return;
       setCurrentVersionId(null);
       setAnnotationsList([]);
+      setTrashedAnnotations([]);
     }
 
     // A fresh open never shows the previous document's selection.
@@ -757,9 +800,134 @@ function App() {
           setCurrentVersionId(latest?.id ?? null);
         })
         .catch(() => {});
-      loadDocumentAnnotations(documentId)
-        .then((annotations) => setAnnotationsList(annotations))
+      loadAnnotationSets(documentId)
+        .then((sets) => {
+          setAnnotationsList(sets.active);
+          setTrashedAnnotations(sets.trashed);
+        })
         .catch(() => {});
+    }
+  };
+
+  // ---- Task 3.5: annotation CRUD through the typed IPC, with in-session
+  // undo (FR-9.8). Every mutation refreshes BOTH lists so the annotations
+  // pane and the trash section stay truthful. ----
+
+  const refreshAnnotations = useCallback(async (documentId: string) => {
+    const sets = await loadAnnotationSets(documentId);
+    if (activeDocumentRef.current?.id !== documentId) return; // stale doc closed
+    setAnnotationsList(sets.active);
+    setTrashedAnnotations(sets.trashed);
+  }, []);
+
+  const bumpUndoUI = () => {
+    setUndoCount(undoManagerRef.current?.size ?? 0);
+  };
+
+  const handleAnnotationCreated = async (record: AnnotationRecord) => {
+    await createAnnotation(record);
+    await refreshAnnotations(record.document_id);
+    undoManagerRef.current?.pushCreate(record.id);
+    bumpUndoUI();
+  };
+
+  const handleAreaAnnotationCreated = async (
+    annotation: AnnotationRecord,
+    asset: AnnotationAssetRecord
+  ) => {
+    await createAnnotation(annotation);
+    try {
+      await addAnnotationAsset(asset);
+    } catch (err) {
+      // Roll the annotation row back so a failed asset insert never leaves an
+      // area annotation without its bitmap (FR-9.7); the caller removes the
+      // written file (its own cleanup path).
+      await trashAnnotation(annotation.id).catch(() => {});
+      throw err;
+    }
+    await refreshAnnotations(annotation.document_id);
+    undoManagerRef.current?.pushCreate(annotation.id);
+    bumpUndoUI();
+  };
+
+  const handleAnnotationUpdated = async (id: string, color: string, comment: string, tags: string[]) => {
+    const existing = annotationsList.find((a) => a.id === id);
+    if (!existing) return;
+    const previous = { color: existing.color, comment: existing.comment, tags: existing.tags };
+    await updateAnnotationFields(id, color, comment, tags);
+    await refreshAnnotations(existing.document_id);
+    // FR-9.5: the quote and anchors are untouched by this path by design.
+    undoManagerRef.current?.pushEdit(id, previous);
+    bumpUndoUI();
+  };
+
+  const handleTrashAnnotation = async (id: string) => {
+    const existing = annotationsList.find((a) => a.id === id);
+    if (!existing) return;
+    await trashAnnotation(id);
+    await refreshAnnotations(existing.document_id);
+    // Undo of trash is restore; setSelected may point at the trashed row.
+    undoManagerRef.current?.pushTrash(id);
+    bumpUndoUI();
+    if (selected === id) setSelected("");
+  };
+
+  const handleRestoreAnnotation = async (id: string) => {
+    const existing = trashedAnnotations.find((a) => a.id === id);
+    if (!existing) return;
+    await restoreAnnotation(id);
+    await refreshAnnotations(existing.document_id);
+  };
+
+  const handlePurgeAnnotation = async (id: string) => {
+    const existing = trashedAnnotations.find((a) => a.id === id);
+    if (!existing) return;
+    await purgeAnnotation(id);
+    await refreshAnnotations(existing.document_id);
+    if (selected === id) setSelected("");
+  };
+
+  const handleUndoAnnotation = async () => {
+    const manager = undoManagerRef.current;
+    if (!manager || !manager.canUndo) return;
+    const action = manager.pop();
+    if (!action) return;
+    try {
+      if (action.kind === "create") {
+        await trashAnnotation(action.annotationId);
+      } else if (action.kind === "edit") {
+        await updateAnnotationFields(
+          action.annotationId,
+          action.previous.color,
+          action.previous.comment,
+          action.previous.tags
+        );
+      } else {
+        await restoreAnnotation(action.annotationId);
+      }
+      if (activeDocumentRef.current) {
+        await refreshAnnotations(activeDocumentRef.current.id);
+      }
+    } catch {
+      // Failed inverse: put the action back so the user can retry.
+      manager.replay(action);
+    }
+    bumpUndoUI();
+    if (selected !== "" && action.kind === "create") setSelected("");
+  };
+
+  const handleSavePalette = (next: PaletteEntry[]) => {
+    setPalette(next);
+    try {
+      const serialized = serializePalette(next);
+      invoke("db_save_settings", {
+        key: ANNOTATION_PALETTE_SETTING_KEY,
+        value: serialized,
+      }).catch(() => {
+        // Dev preview fallback — palette still applies for the session.
+      });
+    } catch {
+      // Invalid palette was already blocked by the editor; keep defaults.
     }
   };
 
@@ -910,7 +1078,16 @@ function App() {
                 onTargetPageConsumed={() => setTargetPage(undefined)}
                 annotationsList={annotationsList}
                 currentVersionId={currentVersionId}
-                onAnnotationsUpdated={setAnnotationsList}
+                trashedAnnotations={trashedAnnotations}
+                palette={palette}
+                onAnnotationCreated={handleAnnotationCreated}
+                onAreaAnnotationCreated={handleAreaAnnotationCreated}
+                onAnnotationUpdated={handleAnnotationUpdated}
+                onTrashAnnotation={handleTrashAnnotation}
+                onRestoreAnnotation={handleRestoreAnnotation}
+                onPurgeAnnotation={handlePurgeAnnotation}
+                onUndoAnnotation={handleUndoAnnotation}
+                undoCount={undoCount}
                 onJumpToAnnotation={(pageIndex) => setTargetPage(pageIndex + 1)}
                 scannedPdfBannerVisible={scannedPdfBannerVisible}
                 versionMismatchBannerVisible={versionMismatchBannerVisible}
@@ -964,6 +1141,8 @@ function App() {
             setAiOn={setAiOn}
             appearance={appearance}
             onUpdateAppearance={handleUpdateAppearance}
+            palette={palette}
+            onSavePalette={handleSavePalette}
           />
         )}
       </section>
@@ -1025,7 +1204,19 @@ type ReaderProps = {
   annotationsList: AnnotationRecord[];
   /** Task 3.4: the version row new annotations bind to (null until registered). */
   currentVersionId: string | null;
-  onAnnotationsUpdated: (annotations: AnnotationRecord[]) => void;
+  /** Task 3.5: recoverable trash rows for the open document (FR-9.8). */
+  trashedAnnotations: AnnotationRecord[];
+  /** Task 3.5: the user's semantic palette (FR-9.3). */
+  palette: PaletteEntry[];
+  /** Task 3.5 CRUD callbacks — each persists, refreshes, and records undo. */
+  onAnnotationCreated: (record: AnnotationRecord) => Promise<void>;
+  onAreaAnnotationCreated: (annotation: AnnotationRecord, asset: AnnotationAssetRecord) => Promise<void>;
+  onAnnotationUpdated: (id: string, color: string, comment: string, tags: string[]) => Promise<void>;
+  onTrashAnnotation: (id: string) => Promise<void>;
+  onRestoreAnnotation: (id: string) => Promise<void>;
+  onPurgeAnnotation: (id: string) => Promise<void>;
+  onUndoAnnotation: () => Promise<void>;
+  undoCount: number;
   onJumpToAnnotation?: (pageIndex: number) => void;
   scannedPdfBannerVisible?: boolean;
   versionMismatchBannerVisible?: boolean;
@@ -1628,6 +1819,9 @@ function Reader(props: ReaderProps) {
         case 'annot.bookmark':
           void handleToggleBookmark();
           break;
+        case 'annot.undo':
+          void props.onUndoAnnotation();
+          break;
         case 'annot.remember':
           if (props.annotationsList.length > 0) props.setPromptOpen(true);
           break;
@@ -1795,7 +1989,7 @@ function Reader(props: ReaderProps) {
           comment: popupComment.trim(),
           color: popupColor,
         });
-        await createAnnotation(record);
+        await props.onAnnotationCreated(record);
       } else {
         const record = buildTextAnnotation({
           documentId: docId,
@@ -1811,11 +2005,8 @@ function Reader(props: ReaderProps) {
           color: popupColor,
           comment: popupComment.trim(),
         });
-        await createAnnotation(record);
+        await props.onAnnotationCreated(record);
       }
-
-      const updated = await loadDocumentAnnotations(docId);
-      props.onAnnotationsUpdated(updated);
 
       if (popupLocked) {
         // FR-9.2 locked mode: keep the popup armed for the next selection.
@@ -1932,7 +2123,6 @@ function Reader(props: ReaderProps) {
         color: popupColor,
       });
       try {
-        await createAnnotation(annotation);
         const asset = buildAreaAssetRecord({
           id: assetId,
           annotationId: annotation.id,
@@ -1942,15 +2132,14 @@ function Reader(props: ReaderProps) {
           heightPx: outH,
           caption: areaCaption.trim(),
         });
-        await addAnnotationAsset(asset);
+        // Persists annotation + asset (with rollback) and records undo.
+        await props.onAreaAnnotationCreated(annotation, asset);
       } catch (err) {
         // Half-created capture: remove the file so nothing orphaned remains.
         await removeAnnotationAssetFile(relativePath).catch(() => {});
         throw err;
       }
 
-      const updated = await loadDocumentAnnotations(docId);
-      props.onAnnotationsUpdated(updated);
       setAreaPending(null);
       setCaptureActive(false);
       setAreaCaption("");
@@ -1999,13 +2188,11 @@ function Reader(props: ReaderProps) {
         pageIndex: currentPage - 1,
         pageLabel: formatExtendedPageLabel(currentPage, totalPages).displayLabel,
       });
-      await createAnnotation(record);
-      const updated = await loadDocumentAnnotations(props.activeDocument.id);
-      props.onAnnotationsUpdated(updated);
+      await props.onAnnotationCreated(record);
     } catch {
       // Creation errors surface through the list not changing; retry is safe.
     }
-  }, [currentPage, loadedPdf, props.activeDocument.id, props.annotationsList, props.currentVersionId, props.onAnnotationsUpdated, totalPages]);
+  }, [currentPage, loadedPdf, props.activeDocument.id, props.annotationsList, props.currentVersionId, props.onAnnotationCreated, totalPages]);
 
   return (
     <>
@@ -2180,6 +2367,7 @@ function Reader(props: ReaderProps) {
                 annotationsByPage={annotationsByPage}
                 annotationAssets={annotationAssets}
                 selectedAnnotationId={props.selected}
+                palette={props.palette}
                 onSelectAnnotation={props.setSelected}
               />
             )}
@@ -2189,7 +2377,7 @@ function Reader(props: ReaderProps) {
           {selectionPopup && !captureActive && (
             <SelectionPopup
               anchor={selectionPopup}
-              palette={DEFAULT_ANNOTATION_PALETTE}
+              palette={props.palette}
               color={popupColor}
               onColorChange={setPopupColor}
               comment={popupComment}
@@ -2266,7 +2454,15 @@ function RightPane(props: ReaderProps) {
         <div className="annotation-list">
           <div className="pane-heading">
             <span>All {list.length}</span>
-            <button><Glyph>•••</Glyph></button>
+            <span className="pane-heading-actions">
+              <button
+                onClick={() => void props.onUndoAnnotation()}
+                disabled={props.undoCount === 0}
+                title={props.undoCount === 0 ? 'Nothing to undo yet' : `Undo last annotation action (${props.undoCount} available)`}
+              >
+                ↶ Undo
+              </button>
+            </span>
           </div>
           {list.length === 0 ? (
             <EmptyState viewType="annotations" />
@@ -2279,17 +2475,61 @@ function RightPane(props: ReaderProps) {
                   props.setSelected(item.id);
                   props.onJumpToAnnotation?.(item.page_index);
                 }}
-                title={item.annotation_type === 'comment' ? item.comment : item.quote || paletteLabelFor(item.color)}
+                title={item.annotation_type === 'comment' ? item.comment : item.quote || paletteLabelFor(item.color, props.palette)}
               >
-                <i className="annotation-swatch" style={{ background: paletteColorFor(item.color) }} />
+                <i className="annotation-swatch" style={{ background: paletteColorFor(item.color, props.palette) }} />
                 <span>
-                  <b>{paletteLabelFor(item.color)} · {item.annotation_type}</b>
+                  <b>{paletteLabelFor(item.color, props.palette)} · {item.annotation_type}</b>
                   <small>p. {item.page_label || item.page_index + 1}</small>
                   <q>{item.annotation_type === 'area' ? 'Area capture' : item.annotation_type === 'bookmark' ? 'Bookmark' : item.comment || item.quote}</q>
                 </span>
               </button>
             ))
           )}
+
+          {props.activeAnnotation && (
+            <AnnotationEditor
+              annotation={props.activeAnnotation}
+              palette={props.palette}
+              onSave={(id, color, comment, tags) => void props.onAnnotationUpdated(id, color, comment, tags)}
+              onTrash={(id) => void props.onTrashAnnotation(id)}
+            />
+          )}
+
+          {props.trashedAnnotations.length > 0 && (
+            <div className="trash-section">
+              <div className="pane-heading">
+                <span>Trash · {props.trashedAnnotations.length} recoverable</span>
+              </div>
+              {props.trashedAnnotations.map((item) => (
+                <div key={item.id} className="annotation-item trash-item">
+                  <i className="annotation-swatch" style={{ background: paletteColorFor(item.color, props.palette) }} />
+                  <span>
+                    <b>{paletteLabelFor(item.color, props.palette)} · {item.annotation_type}</b>
+                    <small>p. {item.page_label || item.page_index + 1}</small>
+                    <q>{item.annotation_type === 'area' ? 'Area capture' : item.annotation_type === 'bookmark' ? 'Bookmark' : item.comment || item.quote}</q>
+                  </span>
+                  <span className="trash-actions">
+                    <button
+                      className="button micro"
+                      onClick={() => void props.onRestoreAnnotation(item.id)}
+                      title="Restore from trash (FR-9.8)"
+                    >
+                      Restore
+                    </button>
+                    <button
+                      className="button micro danger"
+                      onClick={() => void props.onPurgeAnnotation(item.id)}
+                      title="Purge permanently — this cannot be undone"
+                    >
+                      Purge
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
           <button
             className="wide-action"
             onClick={() => props.setPromptOpen(true)}
@@ -2382,6 +2622,8 @@ function SettingsView({
   setAiOn,
   appearance,
   onUpdateAppearance,
+  palette,
+  onSavePalette,
 }: {
   aiOn: boolean;
   setAiOn: (value: boolean) => void;
@@ -2390,8 +2632,10 @@ function SettingsView({
     key: K,
     value: AppearancePreferences[K]
   ) => void;
+  palette: PaletteEntry[];
+  onSavePalette: (palette: PaletteEntry[]) => void;
 }) {
-  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance'>('privacy');
+  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance' | 'annotations'>('privacy');
 
   return (
     <section className="settings-view">
@@ -2417,8 +2661,14 @@ function SettingsView({
         >
           Appearance
         </b>
+        <b
+          className={settingTab === 'annotations' ? 'selected-setting' : ''}
+          onClick={() => setSettingTab('annotations')}
+          style={{ cursor: 'pointer' }}
+        >
+          Annotations
+        </b>
         <b>Reading</b>
-        <b>Annotations</b>
         <b>Review</b>
         <b>Storage</b>
         <b>Export</b>
@@ -2428,6 +2678,8 @@ function SettingsView({
           <SettingsShortcuts />
         ) : settingTab === 'appearance' ? (
           <SettingsAppearance preferences={appearance} onUpdatePreference={onUpdateAppearance} />
+        ) : settingTab === 'annotations' ? (
+          <SettingsAnnotations palette={palette} onSavePalette={onSavePalette} />
         ) : (
           <>
             <span className="eyebrow">Your local boundary</span>

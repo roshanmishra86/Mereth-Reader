@@ -88,22 +88,46 @@ export const DEFAULT_ANNOTATION_PALETTE: PaletteEntry[] = [
   { key: 'support', color: '#9b9797', label: 'Support' },
 ];
 
-const paletteByKey = new Map(DEFAULT_ANNOTATION_PALETTE.map((e) => [e.key, e]));
-const paletteByColor = new Map(DEFAULT_ANNOTATION_PALETTE.map((e) => [e.color, e]));
+// Cache the key index per palette array identity so lookups in tight loops
+// (e.g. filtering 10k annotations in task 3.7) never rebuild the map.
+const paletteIndexCache = new WeakMap<PaletteEntry[], Map<string, PaletteEntry>>();
+function indexPalette(palette: PaletteEntry[]): Map<string, PaletteEntry> {
+  let map = paletteIndexCache.get(palette);
+  if (!map) {
+    map = new Map(palette.map((e) => [e.key, e]));
+    paletteIndexCache.set(palette, map);
+  }
+  return map;
+}
 
-/** Resolves a palette key to its hex colour (fallback: neutral grey). */
-export function paletteColorFor(key: string): string {
-  return paletteByKey.get(key)?.color ?? '#9b9797';
+const defaultPaletteByKey = indexPalette(DEFAULT_ANNOTATION_PALETTE);
+const defaultPaletteByColor = new Map(DEFAULT_ANNOTATION_PALETTE.map((e) => [e.color, e]));
+
+/** Neutral fallback colour used for unknown/missing palette keys. */
+export const FALLBACK_ANNOTATION_COLOR = '#9b9797';
+
+/**
+ * Resolves a palette key to its hex colour (task 3.5: honour the user's
+ * configured palette; unknown keys fall back to neutral grey).
+ */
+export function paletteColorFor(key: string, palette?: PaletteEntry[]): string {
+  if (palette && palette.length > 0) {
+    return indexPalette(palette).get(key)?.color ?? FALLBACK_ANNOTATION_COLOR;
+  }
+  return defaultPaletteByKey.get(key)?.color ?? FALLBACK_ANNOTATION_COLOR;
 }
 
 /** Resolves a palette key to its user label (fallback: a readable key). */
-export function paletteLabelFor(key: string): string {
-  return paletteByKey.get(key)?.label ?? key;
+export function paletteLabelFor(key: string, palette?: PaletteEntry[]): string {
+  if (palette && palette.length > 0) {
+    return indexPalette(palette).get(key)?.label ?? key;
+  }
+  return defaultPaletteByKey.get(key)?.label ?? key;
 }
 
-/** Resolves a hex colour back to its palette entry, if any. */
+/** Resolves a hex colour back to its default-palette entry, if any. */
 export function paletteEntryForColor(color: string): PaletteEntry | undefined {
-  return paletteByColor.get(color);
+  return defaultPaletteByColor.get(color);
 }
 
 /** The default semantic key used when none is chosen yet. */

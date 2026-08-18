@@ -1010,3 +1010,185 @@
   justify-content: flex-end;
 }
 
+/* ---- Task 3.5: annotation editor, trash, palette settings (FR-9.3/9.5/9.8) ---- */
+
+.pane-heading-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.pane-heading .pane-heading-actions button {
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #eae9e9;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 2px;
+}
+
+.pane-heading .pane-heading-actions button:hover:not(:disabled) {
+  background: #d7d3d3;
+}
+
+.pane-heading .pane-heading-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.annotation-editor {
+  margin: 8px 12px;
+  padding: 11px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  border-left: 3px solid #ec3013;
+  background: #eae9e9;
+  display: grid;
+  gap: 10px;
+}
+
+.annotation-editor .pane-heading {
+  padding: 0;
+}
+
+.editor-quote {
+  margin: 0;
+  padding: 9px 10px;
+  border-left: 3px solid #8fb583;
+  background: #f3f2f2;
+  color: #444141;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.editor-field {
+  display: grid;
+  gap: 4px;
+}
+
+.editor-field-label {
+  color: #605d5d;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.annotation-editor textarea,
+.annotation-editor input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #f3f2f2;
+  color: #201e1d;
+  font-size: 12px;
+}
+
+.annotation-editor textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.button.danger-ghost {
+  background: transparent;
+  border-color: #ae1800;
+  color: #ae1800;
+}
+
+.button.danger-ghost:hover {
+  background: #ffd9d2;
+}
+
+.button.danger {
+  background: #ae1800;
+  border-color: #ae1800;
+  color: #fff;
+}
+
+.button.danger:hover {
+  background: #921300;
+}
+
+.trash-section {
+  margin-top: 6px;
+  border-top: 2px solid rgba(32, 30, 29, 0.2);
+}
+
+.trash-item {
+  align-items: center;
+}
+
+.trash-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+/* FR-9.3 palette editor inside Settings → Annotations. */
+.palette-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(32, 30, 29, 0.15);
+}
+
+.palette-row:last-of-type {
+  border-bottom: 0;
+}
+
+.palette-color-field input[type="color"] {
+  width: 34px;
+  height: 26px;
+  padding: 1px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #eae9e9;
+  cursor: pointer;
+}
+
+.palette-label-input {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #f3f2f2;
+  color: #201e1d;
+  font-size: 12px;
+}
+
+.palette-key {
+  color: #8a8585;
+  font-size: 10px;
+}
+
+:root[data-theme="dark"] .annotation-editor {
+  background: #262424;
+  border-color: rgba(243, 242, 242, 0.25);
+}
+
+:root[data-theme="dark"] .editor-quote {
+  background: #323030;
+  color: #d7d3d3;
+}
+
+:root[data-theme="dark"] .annotation-editor textarea,
+:root[data-theme="dark"] .annotation-editor input[type="text"],
+:root[data-theme="dark"] .palette-label-input {
+  background: #323030;
+  color: #f3f2f2;
+  border-color: rgba(243, 242, 242, 0.25);
+}
+
+:root[data-theme="dark"] .button.danger-ghost {
+  border-color: #ff7a63;
+  color: #ff7a63;
+}
+
+:root[data-theme="dark"] .button.danger {
+  background: #921300;
+  border-color: #921300;
+}
+

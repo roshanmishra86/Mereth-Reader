@@ -232,6 +232,14 @@ export const SHORTCUT_LIST: KeyboardShortcut[] = [
     description: 'Add a bookmark annotation to the current page',
     match: (e) => e.altKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'b',
   },
+  {
+    id: 'annot.undo',
+    name: 'Undo Last Annotation Action',
+    category: 'Annotations & Notes',
+    keys: 'Ctrl + Z',
+    description: 'Undo the most recent annotation create, edit, or trash action (FR-9.8)',
+    match: (e) => (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z',
+  },
 ];
 
 /**

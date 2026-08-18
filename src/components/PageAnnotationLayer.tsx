@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { AnnotationRecord, paletteColorFor, paletteLabelFor, withAlpha } from '../utils/annotationTypes';
+import { AnnotationRecord, PaletteEntry, paletteColorFor, paletteLabelFor, withAlpha } from '../utils/annotationTypes';
 import { denormalizeGeometry } from '../utils/annotationOverlay';
 import { RotationAngle, PageSize } from '../utils/viewModeUtils';
 
@@ -20,6 +20,8 @@ interface PageAnnotationLayerProps {
   selectedId: string | null;
   /** Resolved area-capture image URLs, keyed by annotation id. */
   assetsByAnnotationId: Record<string, AnnotationAssetVisual>;
+  /** The user's semantic palette (FR-9.3); defaults apply when omitted. */
+  palette?: PaletteEntry[];
   onSelectAnnotation: (id: string) => void;
 }
 
@@ -66,6 +68,7 @@ export const PageAnnotationLayer = memo(function PageAnnotationLayer({
   rotation,
   selectedId,
   assetsByAnnotationId,
+  palette,
   onSelectAnnotation,
 }: PageAnnotationLayerProps) {
   if (annotations.length === 0) return null;
@@ -73,7 +76,7 @@ export const PageAnnotationLayer = memo(function PageAnnotationLayer({
   return (
     <div className="annotation-layer" aria-label={`${annotations.length} annotation${annotations.length === 1 ? '' : 's'} on page ${pageNumber}`}>
       {annotations.map((annotation) => {
-        const color = paletteColorFor(annotation.color);
+        const color = paletteColorFor(annotation.color, palette);
         const isSelected = annotation.id === selectedId;
         const common = {
           key: annotation.id,
@@ -102,7 +105,7 @@ export const PageAnnotationLayer = memo(function PageAnnotationLayer({
                       ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height, borderBottomColor: color }
                       : { left: rect.left, top: rect.top, width: rect.width, height: rect.height, background: withAlpha(color, 0.45) }
                   }
-                  title={`${paletteLabelFor(annotation.color)}: ${annotation.quote}`}
+                  title={`${paletteLabelFor(annotation.color, palette)}: ${annotation.quote}`}
                 />
               ))}
             </span>

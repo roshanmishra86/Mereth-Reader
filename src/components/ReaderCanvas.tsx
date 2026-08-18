@@ -14,7 +14,7 @@ import {
   RotationAngle,
 } from '../utils/viewModeUtils';
 import { PdfPageCanvas } from './PdfPageCanvas';
-import { AnnotationRecord } from '../utils/annotationTypes';
+import { AnnotationRecord, PaletteEntry } from '../utils/annotationTypes';
 import { AnnotationAssetVisual } from './PageAnnotationLayer';
 
 interface ReaderCanvasProps {
@@ -41,6 +41,8 @@ interface ReaderCanvasProps {
   annotationsByPage?: Map<number, AnnotationRecord[]>;
   annotationAssets?: Record<string, AnnotationAssetVisual>;
   selectedAnnotationId?: string | null;
+  /** User's semantic palette (FR-9.3). */
+  palette?: PaletteEntry[];
   onSelectAnnotation?: (id: string) => void;
 }
 
@@ -85,6 +87,7 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
     annotationsByPage,
     annotationAssets,
     selectedAnnotationId,
+    palette,
     onSelectAnnotation,
   } = props;
 
@@ -311,6 +314,7 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
                 baseSize={baseSizesRef.current.get(row.leftPage) ?? representativeSize}
                 annotationAssets={annotationAssets}
                 selectedAnnotationId={selectedAnnotationId}
+                palette={palette}
                 onSelectAnnotation={onSelectAnnotation}
               />
               {row.rightPage !== undefined && (
@@ -324,6 +328,7 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
                   baseSize={baseSizesRef.current.get(row.rightPage) ?? representativeSize}
                   annotationAssets={annotationAssets}
                   selectedAnnotationId={selectedAnnotationId}
+                  palette={palette}
                   onSelectAnnotation={onSelectAnnotation}
                 />
               )}

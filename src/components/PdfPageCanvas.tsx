@@ -2,7 +2,7 @@ import { memo, useEffect, useRef, useState, type CSSProperties } from 'react';
 import type * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { renderPdfPageToCanvas, cancelCanvasRender } from '../utils/pdfViewer';
 import { RotationAngle, PageSize } from '../utils/viewModeUtils';
-import { AnnotationRecord } from '../utils/annotationTypes';
+import { AnnotationRecord, PaletteEntry } from '../utils/annotationTypes';
 import { PageAnnotationLayer, AnnotationAssetVisual } from './PageAnnotationLayer';
 
 interface PdfPageCanvasProps {
@@ -19,6 +19,8 @@ interface PdfPageCanvasProps {
   baseSize?: PageSize;
   annotationAssets?: Record<string, AnnotationAssetVisual>;
   selectedAnnotationId?: string | null;
+  /** User's semantic palette (FR-9.3). */
+  palette?: PaletteEntry[];
   onSelectAnnotation?: (id: string) => void;
 }
 
@@ -38,6 +40,7 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
   baseSize,
   annotationAssets,
   selectedAnnotationId,
+  palette,
   onSelectAnnotation,
 }: PdfPageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -105,6 +108,7 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
           rotation={rotation}
           selectedId={selectedAnnotationId ?? null}
           assetsByAnnotationId={annotationAssets ?? {}}
+          palette={palette}
           onSelectAnnotation={(id) => onSelectAnnotation?.(id)}
         />
       )}
