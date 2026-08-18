@@ -1433,3 +1433,127 @@
   color: #b9b4b4;
 }
 
+/* ---- Task 3.7: annotation sidebar search + filters (FR-9.6) ---- */
+.annotation-filters {
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px 10px;
+  border-bottom: 1px solid rgba(32, 30, 29, 0.25);
+}
+
+.filter-search,
+.filter-tags,
+.filter-pages input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #f3f2f2;
+  color: #201e1d;
+  font-size: 11.5px;
+}
+
+.filter-search:focus,
+.filter-tags:focus,
+.filter-pages input:focus {
+  outline: 1px solid #ec3013;
+  border-color: #ec3013;
+}
+
+.filter-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid rgba(32, 30, 29, 0.35);
+  border-radius: 10px;
+  background: #eae9e9;
+  color: #605d5d;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.filter-chip .annotation-swatch {
+  width: 8px;
+  height: 8px;
+  margin: 0;
+  border-radius: 2px;
+}
+
+.filter-chip.on {
+  border-color: #ec3013;
+  background: #fff2ef;
+  color: #201e1d;
+}
+
+.filter-chip:focus-visible {
+  outline: 1px solid #ec3013;
+}
+
+.filter-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: #605d5d;
+  font-size: 10.5px;
+}
+
+.filter-pages input {
+  width: 58px;
+  padding: 4px 6px;
+}
+
+.filter-status select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #f3f2f2;
+  color: #201e1d;
+  font-size: 10.5px;
+}
+
+.filter-clear {
+  justify-self: start;
+  border: 0;
+  background: none;
+  color: #ae1800;
+  font-size: 10.5px;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.filter-empty {
+  padding: 12px;
+  margin: 0;
+}
+
+:root[data-theme="dark"] .filter-search,
+:root[data-theme="dark"] .filter-tags,
+:root[data-theme="dark"] .filter-pages input,
+:root[data-theme="dark"] .filter-status select {
+  background: #323030;
+  color: #f3f2f2;
+  border-color: rgba(243, 242, 242, 0.25);
+}
+
+:root[data-theme="dark"] .filter-chip {
+  background: #262424;
+  border-color: rgba(243, 242, 242, 0.3);
+  color: #b9b4b4;
+}
+
+:root[data-theme="dark"] .filter-chip.on {
+  background: #3a2826;
+  border-color: #ec3013;
+  color: #f3f2f2;
+}
+

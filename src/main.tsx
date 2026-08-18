@@ -54,6 +54,7 @@ import {
   matchPaletteKeyForRgb,
 } from "./utils/embeddedAnnotations";
 import { EmbeddedImportModal } from "./components/EmbeddedImportModal";
+import { AnnotationFilters, EMPTY_ANNOTATION_FILTERS, applyAnnotationFilters } from "./utils/annotationFilter";
 import { ReaderToolbar } from "./components/ReaderToolbar";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { SettingsShortcuts } from "./components/SettingsShortcuts";
@@ -96,6 +97,7 @@ import { formatExtendedPageLabel } from "./utils/navigationUtils";
 import {
   AnnotationRecord,
   AnnotationAssetRecord,
+  ANNOTATION_TYPES,
   PaletteEntry,
   DEFAULT_ANNOTATION_PALETTE,
   DEFAULT_ANNOTATION_COLOR,
@@ -1257,6 +1259,9 @@ type ReaderProps = {
   embeddedImportCounts?: { newCount: number; duplicateCount: number; unsupportedCount: number } | null;
   embeddedImportDisabled?: boolean;
   onOpenEmbeddedImport?: () => void;
+  /** Task 3.7 (FR-9.6): annotation linkage sets (populated by R3/R4 linking). */
+  linkedAnnotationIds?: ReadonlySet<string>;
+  rememberedAnnotationIds?: ReadonlySet<string>;
 };
 
 function Reader(props: ReaderProps) {
@@ -2591,13 +2596,38 @@ function Reader(props: ReaderProps) {
 function RightPane(props: ReaderProps) {
   const tabs: Array<[typeof props.rightTab, string]> = [["annotations", "Annotations"], ["note", "Note"], ["ai", "AI"]];
   const list = props.annotationsList || [];
+  // ---- Task 3.7 (FR-9.6): sidebar search + filters, reset per document ----
+  const [annotationFilters, setAnnotationFilters] = useState<AnnotationFilters>(EMPTY_ANNOTATION_FILTERS);
+  useEffect(() => {
+    setAnnotationFilters(EMPTY_ANNOTATION_FILTERS);
+  }, [props.activeDocument.id]);
+  const filtersActive =
+    annotationFilters.searchText.trim() !== '' ||
+    annotationFilters.types.length > 0 ||
+    annotationFilters.paletteKeys.length > 0 ||
+    annotationFilters.tags.some((t) => t.trim() !== '') ||
+    annotationFilters.pageFrom !== null ||
+    annotationFilters.pageTo !== null ||
+    annotationFilters.noteStatus !== 'all' ||
+    annotationFilters.rememberStatus !== 'all';
+  const filteredList = useMemo(
+    () =>
+      applyAnnotationFilters(list, annotationFilters, {
+        linkedIds: props.linkedAnnotationIds,
+        rememberedIds: props.rememberedAnnotationIds,
+      }),
+    [list, annotationFilters, props.linkedAnnotationIds, props.rememberedAnnotationIds]
+  );
+  const patchFilters = (patch: Partial<AnnotationFilters>) =>
+    setAnnotationFilters((prev) => ({ ...prev, ...patch }));
+
   return (
     <aside className="right-pane" style={props.rightPaneWidth ? { width: `${props.rightPaneWidth}px` } : undefined}>
       <div className="pane-tabs">{tabs.map(([id, label]) => <button key={id} className={props.rightTab === id ? "pane-tab active" : "pane-tab"} onClick={() => props.setRightTab(id)}>{label}{id === "ai" && <i className={props.aiOn ? "dot on" : "dot"} />}</button>)}</div>
       {props.rightTab === "annotations" && (
         <div className="annotation-list">
           <div className="pane-heading">
-            <span>All {list.length}</span>
+            <span>All {list.length}{filtersActive ? ` · ${filteredList.length} shown` : ''}</span>
             <span className="pane-heading-actions">
               <button
                 onClick={() => void props.onUndoAnnotation()}
@@ -2608,10 +2638,135 @@ function RightPane(props: ReaderProps) {
               </button>
             </span>
           </div>
+
+          {/* Task 3.7 (FR-9.6): search + filters — pure semantics from
+              annotationFilter.ts, benchmarked at 10k items. */}
+          <div className="annotation-filters">
+            <input
+              className="filter-search"
+              type="search"
+              placeholder="Search quotes and comments…"
+              value={annotationFilters.searchText}
+              onChange={(e) => patchFilters({ searchText: e.target.value })}
+              aria-label="Search annotation quote and comment text"
+            />
+            <div className="filter-chip-row" role="group" aria-label="Filter by annotation type">
+              {ANNOTATION_TYPES.map((type) => {
+                const on = annotationFilters.types.includes(type);
+                return (
+                  <button
+                    key={type}
+                    type="button"
+                    className={`filter-chip${on ? ' on' : ''}`}
+                    aria-pressed={on}
+                    onClick={() =>
+                      patchFilters({
+                        types: on
+                          ? annotationFilters.types.filter((t) => t !== type)
+                          : [...annotationFilters.types, type],
+                      })
+                    }
+                  >
+                    {type}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="filter-chip-row" role="group" aria-label="Filter by colour label">
+              {props.palette.map((entry) => {
+                const on = annotationFilters.paletteKeys.includes(entry.key);
+                return (
+                  <button
+                    key={entry.key}
+                    type="button"
+                    className={`filter-chip${on ? ' on' : ''}`}
+                    aria-pressed={on}
+                    title={entry.label}
+                    onClick={() =>
+                      patchFilters({
+                        paletteKeys: on
+                          ? annotationFilters.paletteKeys.filter((k) => k !== entry.key)
+                          : [...annotationFilters.paletteKeys, entry.key],
+                      })
+                    }
+                  >
+                    <i className="annotation-swatch" style={{ background: entry.color }} />
+                    {entry.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="filter-row">
+              <input
+                className="filter-tags"
+                type="text"
+                placeholder="Tags: claim, chapter-3"
+                value={annotationFilters.tags.join(', ')}
+                onChange={(e) => patchFilters({ tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
+                aria-label="Filter by tags (comma separated)"
+              />
+            </div>
+            <div className="filter-row filter-pages">
+              <span>Pages</span>
+              <input
+                type="number"
+                min={1}
+                placeholder="from"
+                value={annotationFilters.pageFrom ?? ''}
+                onChange={(e) =>
+                  patchFilters({ pageFrom: e.target.value === '' ? null : Math.max(1, Number(e.target.value)) })
+                }
+                aria-label="Filter from page"
+              />
+              <span>–</span>
+              <input
+                type="number"
+                min={1}
+                placeholder="to"
+                value={annotationFilters.pageTo ?? ''}
+                onChange={(e) =>
+                  patchFilters({ pageTo: e.target.value === '' ? null : Math.max(1, Number(e.target.value)) })
+                }
+                aria-label="Filter to page"
+              />
+            </div>
+            <div className="filter-row filter-status">
+              <select
+                value={annotationFilters.noteStatus}
+                onChange={(e) => patchFilters({ noteStatus: e.target.value as AnnotationFilters['noteStatus'] })}
+                aria-label="Filter by note status"
+              >
+                <option value="all">Any note status</option>
+                <option value="linked">Linked to a note</option>
+                <option value="not-linked">Not linked to a note</option>
+              </select>
+              <select
+                value={annotationFilters.rememberStatus}
+                onChange={(e) => patchFilters({ rememberStatus: e.target.value as AnnotationFilters['rememberStatus'] })}
+                aria-label="Filter by Remember status"
+              >
+                <option value="all">Any Remember status</option>
+                <option value="remembered">Remembered</option>
+                <option value="not-remembered">Not remembered</option>
+              </select>
+            </div>
+            {filtersActive && (
+              <button
+                type="button"
+                className="filter-clear"
+                onClick={() => setAnnotationFilters(EMPTY_ANNOTATION_FILTERS)}
+              >
+                ✕ Clear filters
+              </button>
+            )}
+          </div>
+
           {list.length === 0 ? (
             <EmptyState viewType="annotations" />
+          ) : filteredList.length === 0 ? (
+            <p className="dimmed filter-empty">No annotations match these filters.</p>
           ) : (
-            list.map((item) => (
+            filteredList.map((item) => (
               <button
                 key={item.id}
                 className={props.selected === item.id ? "annotation-item active" : "annotation-item"}
