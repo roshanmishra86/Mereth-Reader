@@ -5,6 +5,7 @@ pub mod launch;
 pub mod perf;
 
 use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
+use db::annotations::{Annotation, AnnotationAsset};
 use import::{
   compute_file_metadata, copy_to_managed_documents, ensure_external_pdf_source,
   validate_pdf_filepath_basic, validate_pdf_path_for_record, FileMetadata,
@@ -246,6 +247,108 @@ fn db_get_reading_session(document_id: String, state: State<'_, AppState>) -> Re
   db.get_reading_session(&document_id)
 }
 
+// Task 3.1 typed annotation persistence (PRD R2). These are the only routes
+// by which the webview reaches the annotations tables — SQL never crosses IPC
+// (PRD §15.3). The feature UI (selection popover, area capture, trash) lands
+// with tasks 3.4/3.5; the persistence contract is in place and tested here.
+#[tauri::command]
+fn db_add_annotation(annotation: Annotation, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.add_annotation(&annotation)
+}
+
+#[tauri::command]
+fn db_get_annotation(id: String, state: State<'_, AppState>) -> Result<Option<Annotation>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_annotation_by_id(&id)
+}
+
+#[tauri::command]
+fn db_get_annotations_for_document(
+  document_id: String,
+  include_trashed: bool,
+  state: State<'_, AppState>,
+) -> Result<Vec<Annotation>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_annotations_for_document(&document_id, include_trashed)
+}
+
+#[tauri::command]
+fn db_update_annotation_fields(
+  id: String,
+  color: String,
+  comment: String,
+  tags: Vec<String>,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_annotation_fields(&id, &color, &comment, &tags)
+}
+
+#[tauri::command]
+fn db_trash_annotation(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.trash_annotation(&id)
+}
+
+#[tauri::command]
+fn db_restore_annotation(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.restore_annotation(&id)
+}
+
+#[tauri::command]
+fn db_purge_annotation(
+  app_handle: tauri::AppHandle,
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.purge_annotation(&app_dir, &id)
+}
+
+#[tauri::command]
+fn db_add_annotation_asset(
+  app_handle: tauri::AppHandle,
+  asset: AnnotationAsset,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.add_annotation_asset(&app_dir, &asset)
+}
+
+#[tauri::command]
+fn db_get_annotation_assets(
+  annotation_id: String,
+  state: State<'_, AppState>,
+) -> Result<Vec<AnnotationAsset>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_annotation_assets(&annotation_id)
+}
+
+#[tauri::command]
+fn db_delete_annotation_asset(
+  app_handle: tauri::AppHandle,
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.delete_annotation_asset(&app_dir, &id)
+}
+
 #[tauri::command]
 fn verify_document_file_exists(document_id: String, state: State<'_, AppState>) -> Result<bool, String> {
   // Resolve the filepath server-side from the document id rather than accepting
@@ -306,6 +409,16 @@ pub fn run() {
       db_rebuild_index,
       db_save_reading_session,
       db_get_reading_session,
+      db_add_annotation,
+      db_get_annotation,
+      db_get_annotations_for_document,
+      db_update_annotation_fields,
+      db_trash_annotation,
+      db_restore_annotation,
+      db_purge_annotation,
+      db_add_annotation_asset,
+      db_get_annotation_assets,
+      db_delete_annotation_asset,
       cmd_get_initial_launch_route,
       import_compute_file_metadata,
       import_copy_to_managed_library,
