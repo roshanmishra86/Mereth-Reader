@@ -2,6 +2,7 @@ import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "r
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { perfMark } from "./perf/perfMark";
 import "./styles.css";
 import {
   createNavigationHistory,
@@ -153,6 +154,8 @@ function App() {
   const [targetPage, setTargetPage] = useState<number | undefined>(undefined);
 
   const handleLaunchRoutePayload = (payload: LaunchRoutePayload) => {
+    // Task 2.9 gate mark (dev-only) so boot failures are attributable.
+    perfMark(`route.payload:${JSON.stringify(payload).slice(0, 160)}`);
     const docPath = payload.target_document_path ?? payload.targetDocumentPath;
     if (docPath) {
       const existing = documents.find((d) => d.filepath === docPath || d.original_filepath === docPath);
@@ -265,7 +268,13 @@ function App() {
   useEffect(() => {
     async function initDbAndLoadData() {
       try {
-        await invoke("db_init");
+        try {
+          await invoke("db_init");
+          perfMark("boot.db-init:ok");
+        } catch (err) {
+          perfMark(`boot.db-init:error:${String(err).slice(0, 200)}`);
+          throw err;
+        }
 
         try {
           const settingRows = await invoke<Array<{ key: string; value: string }>>("db_get_settings");
@@ -302,12 +311,18 @@ function App() {
   }, []);
 
   // Tauri single-instance launch routing listener and initial launch route check
+  // The initial route is consumed exactly once: this effect re-runs whenever
+  // `documents` changes (e.g. the import completing), and re-handling the same
+  // initial route would re-open the just-opened document, parsing the PDF a
+  // second time and losing the first open's reading position.
+  const initialRouteConsumedRef = useRef(false);
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     async function setupLaunchListener() {
       try {
         const initialRoute = await invoke<LaunchRoutePayload>("cmd_get_initial_launch_route");
-        if (initialRoute) {
+        if (initialRoute && !initialRouteConsumedRef.current) {
+          initialRouteConsumedRef.current = true;
           handleLaunchRoutePayload(initialRoute);
         }
       } catch {
@@ -329,6 +344,15 @@ function App() {
       if (unlisten) unlisten();
     };
   }, [documents]);
+
+  // Task 2.9 in-app performance gate: the driver module is code-split and only
+  // ever loaded when VITE_PERF_MEASURE=1 (dev-only measurement runs).
+  useEffect(() => {
+    if (import.meta.env.VITE_PERF_MEASURE === '1') {
+      void import('./perf/inAppPerf').then((m) => m.runInAppPerfGate());
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -358,6 +382,8 @@ function App() {
   const openDocumentRequestId = useRef(0);
 
   async function openDocument(doc: DocumentRecord) {
+    // Task 2.9 gate mark (dev-only) so the in-app driver can attribute timing.
+    perfMark(`open.document:${doc.id}`);
     // Guard against interleaved opens (rapid library clicks or a launch-route
     // arriving mid-open): only the latest open request is allowed to mutate
     // active-document/session state, so a slower stale read cannot overwrite a
@@ -437,41 +463,10 @@ function App() {
       setVersionMismatchBannerVisible(false);
     }
 
-    // Text extraction runs only for the active document, so any still-active
-    // extraction job for another document would sit at 0% forever — supersede
-    // it honestly rather than leaving a spinner that never progresses.
-    for (const job of jobQueueManager.getJobs()) {
-      if (
-        job.document_id !== doc.id &&
-        (job.status === 'running' || job.status === 'pending')
-      ) {
-        jobQueueManager.cancelJob(job.id, 'Superseded: another document became active');
-      }
-    }
-
-    // Reuse a live extraction job for this document when one exists (e.g. a
-    // restart from the jobs drawer); otherwise queue a fresh one.
-    const existingJob = jobQueueManager
-      .getJobs()
-      .find(
-        (j) =>
-          j.document_id === doc.id &&
-          j.job_type === 'text_extraction' &&
-          (j.status === 'running' || j.status === 'pending')
-      );
-    if (existingJob) {
-      setActiveExtractionJobId(existingJob.id);
-    } else {
-      const extractionJob = createBackgroundJob({
-        document_id: doc.id,
-        job_type: "text_extraction",
-        total_pages: doc.page_count,
-        active_page: 1,
-      });
-      jobQueueManager.enqueueJob(extractionJob);
-      setActiveExtractionJobId(extractionJob.id);
-    }
-    setJobs(jobQueueManager.getJobs());
+    // The text-extraction job for the active document is managed by the
+    // `activeDocument?.id` effect below, so every open path (library click,
+    // launch route, import-complete, deep link) keeps the jobs drawer honest
+    // (FR-7.6) without duplicating the queue logic here.
   }
 
   // Real extraction progress reported by the reader's background pass. The
@@ -543,6 +538,48 @@ function App() {
   const handleUpdateCollections = (newCollections: CollectionItem[]) => {
     setCollections(newCollections);
   };
+
+  // Text extraction job management (FR-7.6), keyed off the ACTIVE DOCUMENT so
+  // every open path (library click, launch route, import-complete, deep link)
+  // reports an honest, cancellable job in the background jobs drawer. Any
+  // still-active extraction job for ANOTHER document would sit at 0% forever,
+  // so it is superseded here.
+  useEffect(() => {
+    if (!activeDocument) return;
+    const docId = activeDocument.id;
+    for (const job of jobQueueManager.getJobs()) {
+      if (
+        job.document_id !== docId &&
+        (job.status === 'running' || job.status === 'pending')
+      ) {
+        jobQueueManager.cancelJob(job.id, 'Superseded: another document became active');
+      }
+    }
+
+    // Reuse a live extraction job for this document when one exists (e.g. a
+    // restart from the jobs drawer); otherwise queue a fresh one.
+    const existingJob = jobQueueManager
+      .getJobs()
+      .find(
+        (j) =>
+          j.document_id === docId &&
+          j.job_type === 'text_extraction' &&
+          (j.status === 'running' || j.status === 'pending')
+      );
+    if (existingJob) {
+      setActiveExtractionJobId(existingJob.id);
+    } else {
+      const extractionJob = createBackgroundJob({
+        document_id: docId,
+        job_type: "text_extraction",
+        total_pages: activeDocument.page_count,
+        active_page: 1,
+      });
+      jobQueueManager.enqueueJob(extractionJob);
+      setActiveExtractionJobId(extractionJob.id);
+    }
+    setJobs(jobQueueManager.getJobs());
+  }, [activeDocument?.id]);
 
   const handleCancelJob = (jobId: string) => {
     jobQueueManager.cancelJob(jobId, "Cancelled by user from background jobs drawer");
@@ -941,10 +978,13 @@ function Reader(props: ReaderProps) {
     setCurrentPageSize(DEFAULT_PAGE_SIZE);
     extractionAbortRef.current?.abort();
 
+    // Task 2.9 in-app gate mark: dev-only no-op unless VITE_PERF_MEASURE=1.
+    perfMark(`load.start:${props.activeDocument.filepath.split("/").pop() ?? "unknown"}`);
     loadPdfDocument(props.activeDocument.filepath).then((info) => {
       if (!isMounted) return;
       if (info) {
         setLoadedPdf(info);
+        perfMark("load.end");
       } else {
         setPdfLoadFailed(true);
       }
@@ -971,6 +1011,8 @@ function Reader(props: ReaderProps) {
       signal: controller.signal,
       prioritizeFromPage: currentPageRef.current,
       onProgress: (processed, total) => {
+        // Task 2.9 in-app gate mark: dev-only no-op unless VITE_PERF_MEASURE=1.
+        perfMark(`extract.progress:${processed}:${total}`);
         if (jobId && (processed % 5 === 0 || processed === total)) {
           props.onJobProgress?.(jobId, processed);
         }
@@ -1053,7 +1095,11 @@ function Reader(props: ReaderProps) {
   ]);
 
   const searchMatches = useMemo(() => {
-    return performAdvancedSearch(pageTexts, searchQuery, searchOptions);
+    // Task 2.9 in-app gate marks: dev-only no-ops unless VITE_PERF_MEASURE=1.
+    perfMark("search.start");
+    const matches = performAdvancedSearch(pageTexts, searchQuery, searchOptions);
+    perfMark("search.end");
+    return matches;
   }, [searchQuery, searchOptions, pageTexts]);
 
   // A new query starts match traversal over, but never jumps the page on its

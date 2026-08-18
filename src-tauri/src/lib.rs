@@ -1,6 +1,8 @@
 pub mod db;
 pub mod import;
 pub mod launch;
+#[cfg(debug_assertions)]
+pub mod perf;
 
 use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
 use import::{
@@ -309,6 +311,10 @@ pub fn run() {
       import_copy_to_managed_library,
       verify_document_file_exists,
       db_get_pdf_bytes,
+      #[cfg(debug_assertions)]
+      perf::perf_rss_snapshot,
+      #[cfg(debug_assertions)]
+      perf::perf_write_report,
     ]);
 
   // OQ-18 (single-instance window): enforce one application instance and route
