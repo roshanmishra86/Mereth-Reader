@@ -288,6 +288,34 @@ export function buildBookmarkAnnotation(input: NewAnnotationInput): AnnotationRe
   return finalized(baseAnnotation(input, 'bookmark'));
 }
 
+/**
+ * Builds a record imported from an embedded PDF annotation (task 3.6,
+ * FR-9.9). Import is always an explicit, previewed action; the record keeps
+ * the `deterministic_transform` provenance because it is a deterministic
+ * transformation of the PDF's source annotation data — never silently
+ * presented as user authorship. Quote stays empty (PDFs store geometry, not
+ * guaranteed text); the embedded note text becomes the comment.
+ */
+export function buildImportedAnnotationRecord(input: {
+  documentId: string;
+  documentVersionId: string;
+  pageIndex: number;
+  pageLabel: string;
+  type: AnnotationType;
+  rects: NormalizedGeometry[];
+  quote?: string;
+  comment?: string;
+  color: string;
+}): AnnotationRecord {
+  const annotation = baseAnnotation(input, input.type);
+  annotation.rects = input.rects;
+  annotation.quote = input.quote ?? '';
+  annotation.comment = input.comment ?? '';
+  annotation.color = input.color;
+  annotation.provenance = 'deterministic_transform';
+  return finalized(annotation);
+}
+
 /** Builds the asset row for a written crop file (asset kind validated). */
 export function buildAreaAssetRecord(input: {
   id: string;

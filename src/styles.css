@@ -1192,3 +1192,244 @@
   border-color: #921300;
 }
 
+/* ---- Task 3.6: embedded (PDF-born) annotation overlays + import modal (FR-9.9) ---- */
+
+/* Source-style overlays: visually distinct from user annotations (dashed,
+   PDF's own colour, outline pins) — "still in the PDF", not "mine". */
+.embedded-annotation-layer {
+  pointer-events: none;
+}
+
+.embedded-annot-overlay {
+  pointer-events: auto;
+}
+
+.embedded-rect {
+  position: absolute;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+  border-bottom: 2px dashed transparent;
+}
+
+.embedded-rect-highlight {
+  border-bottom: 2px dashed rgba(32, 30, 29, 0.55);
+  outline: 1px dashed rgba(32, 30, 29, 0.4);
+  border-radius: 2px;
+}
+
+.embedded-rect-highlight:hover,
+.embedded-rect-underline:hover {
+  outline: 2px solid #ec3013;
+  outline-offset: 1px;
+}
+
+.embedded-rect-underline {
+  border-bottom: 3px double #9b9797;
+}
+
+.embedded-pin {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.embedded-pin-dot {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #9b9797;
+  border-radius: 50%;
+  background: rgba(243, 242, 242, 0.85);
+  color: #605d5d;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.embedded-pin:hover .embedded-pin-dot {
+  border-color: #ec3013;
+  color: #ec3013;
+}
+
+/* Right-pane summary row (FR-9.9 entry point). */
+.embedded-summary-row {
+  padding: 10px 12px;
+  border-top: 1px solid rgba(32, 30, 29, 0.25);
+  display: grid;
+  gap: 6px;
+}
+
+.embedded-summary-row small {
+  color: #605d5d;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+/* Import preview dialog. */
+.embedded-import-modal {
+  width: min(680px, 100%);
+  max-height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+}
+
+.embedded-import-modal h2 {
+  margin: 0 0 7px;
+}
+
+.embedded-import-modal > .destination-rule {
+  margin: 10px 0 12px;
+}
+
+.embedded-import-list {
+  overflow: auto;
+  flex: 1;
+  display: grid;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.embedded-import-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: 8px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid rgba(32, 30, 29, 0.3);
+  background: #eae9e9;
+}
+
+.embedded-import-row.status-duplicate {
+  border-left: 3px solid #d99b2b;
+}
+
+.embedded-import-row.status-unsupported {
+  border-left: 3px solid #9b9797;
+  opacity: 0.75;
+}
+
+.embedded-import-row.imported {
+  border-left: 3px solid #8fb583;
+}
+
+.embedded-import-check {
+  padding-top: 2px;
+}
+
+.embedded-import-check input {
+  accent-color: #ec3013;
+}
+
+.embedded-import-badge {
+  align-self: center;
+  padding: 3px 7px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  border-radius: 2px;
+  background: #f3f2f2;
+  color: #444141;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.embedded-import-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.embedded-import-main b {
+  font-size: 12px;
+}
+
+.embedded-import-main small {
+  color: #605d5d;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.embedded-import-main .embedded-import-provenance {
+  color: #444141;
+  font-size: 10px;
+}
+
+.embedded-import-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.embedded-import-status em {
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.embedded-import-status em.ok {
+  color: #3f7d3f;
+}
+
+.embedded-import-status em.warn {
+  color: #a97910;
+}
+
+.embedded-import-status em.muted {
+  color: #9b9797;
+}
+
+.embedded-import-swatch {
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  border-radius: 2px;
+}
+
+.embedded-import-reason {
+  grid-column: 2 / -1;
+  margin: 0;
+  color: #605d5d;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.embedded-import-summary {
+  margin-top: 10px;
+  color: #605d5d;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.embedded-import-backdrop .modal-close {
+  position: sticky;
+  top: 0;
+  float: right;
+}
+
+:root[data-theme="dark"] .embedded-import-row {
+  background: #262424;
+  border-color: rgba(243, 242, 242, 0.25);
+}
+
+:root[data-theme="dark"] .embedded-import-badge {
+  background: #323030;
+  color: #d7d3d3;
+}
+
+:root[data-theme="dark"] .embedded-import-main small,
+:root[data-theme="dark"] .embedded-import-reason {
+  color: #b9b4b4;
+}
+
+:root[data-theme="dark"] .embedded-import-summary {
+  color: #b9b4b4;
+}
+

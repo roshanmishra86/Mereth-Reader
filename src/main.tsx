@@ -43,6 +43,17 @@ import { ReaderCanvas } from "./components/ReaderCanvas";
 import { SearchOptions, performAdvancedSearch, getNextMatchIndex, DEFAULT_SEARCH_OPTIONS } from "./utils/searchUtils";
 import { parseOutlineTree } from "./utils/navigationUtils";
 import { resolveShortcutAction } from "./utils/shortcutUtils";
+import { getPdfPageEmbeddedAnnotations } from "./utils/pdfViewer";
+import {
+  ParsedEmbeddedAnnotation,
+  EmbeddedImportPreview,
+  buildEmbeddedImportRecord,
+  classifyEmbeddedAnnotations,
+  countImportPreviews,
+  mappedAnnotationTypeForSubtype,
+  matchPaletteKeyForRgb,
+} from "./utils/embeddedAnnotations";
+import { EmbeddedImportModal } from "./components/EmbeddedImportModal";
 import { ReaderToolbar } from "./components/ReaderToolbar";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { SettingsShortcuts } from "./components/SettingsShortcuts";
@@ -50,7 +61,7 @@ import { LibraryView } from "./components/LibraryView";
 import { JobQueueDrawer } from "./components/JobQueueDrawer";
 import { DuplicateConfirmModal } from "./components/DuplicateConfirmModal";
 import { CollectionItem } from "./utils/libraryUtils";
-import { BackgroundJob, JobQueueManager, createBackgroundJob } from "./utils/jobQueue";
+import { BackgroundJob, JobQueueManager, createBackgroundJob, prioritizePageWindow } from "./utils/jobQueue";
 import { DuplicateConfirmationState, checkDuplicateFingerprint, resolveDuplicateAction, DuplicateResolutionAction } from "./utils/duplicateCheck";
 import {
   ReadingSessionState,
@@ -1242,6 +1253,10 @@ type ReaderProps = {
   setRightOpen: (value: boolean) => void;
   setRightTab: (value: "annotations" | "note" | "ai") => void;
   setSelected: (value: string) => void;
+  /** Task 3.6 (FR-9.9): embedded PDF annotations present for the open doc. */
+  embeddedImportCounts?: { newCount: number; duplicateCount: number; unsupportedCount: number } | null;
+  embeddedImportDisabled?: boolean;
+  onOpenEmbeddedImport?: () => void;
 };
 
 function Reader(props: ReaderProps) {
@@ -1329,6 +1344,15 @@ function Reader(props: ReaderProps) {
     },
     []
   );
+  // ---- Task 3.6: embedded (PDF-born) annotations (FR-9.9) ----
+  // The background scan fills one page at a time; overlays and the import
+  // preview read from this map, so a 400-page document never blocks reading.
+  const [embeddedByPage, setEmbeddedByPage] = useState<Map<number, ParsedEmbeddedAnnotation[]>>(new Map());
+  const embeddedScanRef = useRef<{ documentId: string; cancelled: boolean } | null>(null);
+  /** sourceIds already imported this session — hidden from overlays/preview. */
+  const [embeddedImported, setEmbeddedImported] = useState<Set<string>>(new Set());
+  const [embeddedImportOpen, setEmbeddedImportOpen] = useState(false);
+  const [embeddedImportBusy, setEmbeddedImportBusy] = useState(false);
   // Mirrors so document-level listeners never capture stale state.
   const captureActiveRef = useRef(captureActive);
   useEffect(() => {
@@ -1440,6 +1464,49 @@ function Reader(props: ReaderProps) {
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadedPdf, extractionStatus]);
+
+  // Task 3.6 (FR-9.9): background scan for embedded (PDF-born) annotations.
+  // Batched and cancelled on document change; pages near the reading start
+  // are prioritized first (same window the text extractor uses).
+  useEffect(() => {
+    if (!loadedPdf || !props.activeDocument) return;
+    if (embeddedScanRef.current) embeddedScanRef.current.cancelled = true;
+    setEmbeddedByPage(new Map());
+    setEmbeddedImported(new Set());
+    const doc = loadedPdf.doc;
+    if (!doc || loadedPdf.numPages === 0) return;
+    const scan = { documentId: props.activeDocument.id, cancelled: false };
+    embeddedScanRef.current = scan;
+    const total = loadedPdf.numPages;
+    const order = prioritizePageWindow(total, 1, 3);
+    const BATCH = 6;
+    void (async () => {
+      for (let i = 0; i < order.length; i += BATCH) {
+        if (scan.cancelled) return;
+        const batch = order.slice(i, i + BATCH);
+        const results = await Promise.all(
+          batch.map(async (pageNumber): Promise<[number, ParsedEmbeddedAnnotation[]] | null> => {
+            if (scan.cancelled) return null;
+            return [pageNumber, await getPdfPageEmbeddedAnnotations(doc, pageNumber)];
+          })
+        );
+        if (scan.cancelled) return;
+        setEmbeddedByPage((prev) => {
+          const next = new Map(prev);
+          for (const entry of results) {
+            if (entry) next.set(entry[0], entry[1]);
+          }
+          return next;
+        });
+        if (i + BATCH < order.length) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+    })();
+    return () => {
+      scan.cancelled = true;
+    };
+  }, [loadedPdf?.doc, loadedPdf?.numPages, props.activeDocument?.id]);
 
   // Job drawer cancel/restart drives the extraction abort controller.
   const activeJobStatus = props.activeDocumentJob?.status;
@@ -2172,6 +2239,62 @@ function Reader(props: ReaderProps) {
     return map;
   }, [props.annotationsList]);
 
+  // Task 3.6 (FR-9.9): embedded overlays show only supported subtypes that
+  // have not been imported this session; the import preview lists every item
+  // (imported ones flagged) sorted by page for a stable dialog.
+  const embeddedOverlayByPage = useMemo(() => {
+    const map = new Map<number, ParsedEmbeddedAnnotation[]>();
+    for (const [page, list] of embeddedByPage) {
+      const visible = list.filter(
+        (item) => mappedAnnotationTypeForSubtype(item.subtype) !== null && !embeddedImported.has(item.sourceId)
+      );
+      if (visible.length > 0) map.set(page, visible);
+    }
+    return map;
+  }, [embeddedByPage, embeddedImported]);
+
+  const embeddedPreviews = useMemo(() => {
+    const items: ParsedEmbeddedAnnotation[] = [];
+    embeddedByPage.forEach((list) => items.push(...list));
+    items.sort((a, b) => a.pageIndex - b.pageIndex || a.subtype.localeCompare(b.subtype));
+    return classifyEmbeddedAnnotations(items, props.annotationsList);
+  }, [embeddedByPage, props.annotationsList]);
+
+  const embeddedCounts = useMemo(() => countImportPreviews(embeddedPreviews), [embeddedPreviews]);
+
+  /** Explicit FR-9.9 import: persist each confirmed record (undoable) and
+   * mark its sourceId imported so overlays/preview stop offering it. */
+  const handleEmbeddedImport = async (previews: EmbeddedImportPreview[]) => {
+    if (!props.currentVersionId || !props.activeDocument) return;
+    setEmbeddedImportBusy(true);
+    try {
+      const picked = previews.filter((p) => p.mappedType !== null);
+      for (const preview of picked) {
+        const record = buildEmbeddedImportRecord({
+          documentId: props.activeDocument.id,
+          documentVersionId: props.currentVersionId,
+          pageLabel: formatExtendedPageLabel(preview.item.pageIndex + 1, totalPages).displayLabel,
+          preview,
+          palette: props.palette,
+        });
+        await props.onAnnotationCreated(record); // persists, refreshes, records undo
+      }
+      if (picked.length > 0) {
+        setEmbeddedImported((prev) => {
+          const next = new Set(prev);
+          for (const preview of picked) next.add(preview.item.sourceId);
+          return next;
+        });
+        setEmbeddedImportOpen(false);
+      }
+    } catch {
+      // Persist errors surface through the annotation list not changing;
+      // the dialog stays open so the user can retry.
+    } finally {
+      setEmbeddedImportBusy(false);
+    }
+  };
+
   const handleToggleBookmark = useCallback(async () => {
     if (!loadedPdf || !props.currentVersionId) return;
     if (
@@ -2369,6 +2492,8 @@ function Reader(props: ReaderProps) {
                 selectedAnnotationId={props.selected}
                 palette={props.palette}
                 onSelectAnnotation={props.setSelected}
+                embeddedByPage={embeddedOverlayByPage}
+                onOpenEmbeddedImport={() => setEmbeddedImportOpen(true)}
               />
             )}
           </RendererErrorBoundary>
@@ -2436,10 +2561,29 @@ function Reader(props: ReaderProps) {
               onMouseDown={() => setIsResizingRight(true)}
               title="Drag to resize annotations pane"
             />
-            <RightPane {...props} rightPaneWidth={rightPaneWidth} />
+            <RightPane
+              {...props}
+              rightPaneWidth={rightPaneWidth}
+              embeddedImportCounts={embeddedCounts}
+              embeddedImportDisabled={!props.currentVersionId}
+              onOpenEmbeddedImport={() => setEmbeddedImportOpen(true)}
+            />
           </>
         )}
       </div>
+
+      {/* Task 3.6 (FR-9.9): explicit embedded-annotation import preview */}
+      {embeddedImportOpen && (
+        <EmbeddedImportModal
+          previews={embeddedPreviews}
+          importedSourceIds={embeddedImported}
+          pageLabelFor={(pageIndex) => formatExtendedPageLabel(pageIndex + 1, totalPages).displayLabel}
+          colorKeyFor={(preview) => matchPaletteKeyForRgb(preview.item.colorRgb, props.palette)}
+          busy={embeddedImportBusy}
+          onCancel={() => setEmbeddedImportOpen(false)}
+          onImport={(previews) => void handleEmbeddedImport(previews)}
+        />
+      )}
     </>
   );
 }
@@ -2529,6 +2673,29 @@ function RightPane(props: ReaderProps) {
               ))}
             </div>
           )}
+
+          {props.embeddedImportCounts &&
+            props.embeddedImportCounts.newCount + props.embeddedImportCounts.duplicateCount > 0 && (
+              <div className="embedded-summary-row">
+                <button
+                  className="wide-action"
+                  onClick={props.onOpenEmbeddedImport}
+                  disabled={props.embeddedImportDisabled}
+                  title={
+                    !props.embeddedImportDisabled
+                      ? `Preview ${props.embeddedImportCounts.newCount + props.embeddedImportCounts.duplicateCount} PDF annotations before importing — duplicates and provenance are shown first (FR-9.9)`
+                      : 'Document is still registering — retry in a moment'
+                  }
+                >
+                  <Glyph>≋</Glyph> Import {props.embeddedImportCounts.newCount + props.embeddedImportCounts.duplicateCount} embedded PDF notes
+                </button>
+                <small>
+                  This PDF carries its own annotations ({props.embeddedImportCounts.newCount} new ·{' '}
+                  {props.embeddedImportCounts.duplicateCount} overlap · {props.embeddedImportCounts.unsupportedCount} skipped).
+                  Import previews duplicates and provenance; the PDF is never modified.
+                </small>
+              </div>
+            )}
 
           <button
             className="wide-action"

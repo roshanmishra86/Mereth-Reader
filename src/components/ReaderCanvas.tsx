@@ -15,6 +15,7 @@ import {
 } from '../utils/viewModeUtils';
 import { PdfPageCanvas } from './PdfPageCanvas';
 import { AnnotationRecord, PaletteEntry } from '../utils/annotationTypes';
+import { ParsedEmbeddedAnnotation } from '../utils/embeddedAnnotations';
 import { AnnotationAssetVisual } from './PageAnnotationLayer';
 
 interface ReaderCanvasProps {
@@ -44,6 +45,9 @@ interface ReaderCanvasProps {
   /** User's semantic palette (FR-9.3). */
   palette?: PaletteEntry[];
   onSelectAnnotation?: (id: string) => void;
+  // Task 3.6 embedded (PDF-born) annotations (FR-9.9)
+  embeddedByPage?: Map<number, ParsedEmbeddedAnnotation[]>;
+  onOpenEmbeddedImport?: () => void;
 }
 
 interface RowLayout {
@@ -89,6 +93,8 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
     selectedAnnotationId,
     palette,
     onSelectAnnotation,
+    embeddedByPage,
+    onOpenEmbeddedImport,
   } = props;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -316,6 +322,8 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
                 selectedAnnotationId={selectedAnnotationId}
                 palette={palette}
                 onSelectAnnotation={onSelectAnnotation}
+                embeddedItems={embeddedByPage?.get(row.leftPage)}
+                onOpenEmbeddedImport={onOpenEmbeddedImport}
               />
               {row.rightPage !== undefined && (
                 <PdfPageCanvas
@@ -330,6 +338,8 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
                   selectedAnnotationId={selectedAnnotationId}
                   palette={palette}
                   onSelectAnnotation={onSelectAnnotation}
+                  embeddedItems={embeddedByPage?.get(row.rightPage)}
+                  onOpenEmbeddedImport={onOpenEmbeddedImport}
                 />
               )}
             </div>

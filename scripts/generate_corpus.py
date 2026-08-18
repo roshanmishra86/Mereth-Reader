@@ -307,6 +307,12 @@ def gen_embedded_annotations() -> Path:
             Type=pikepdf.Name.Annot,
             Subtype=pikepdf.Name.Highlight,
             Rect=pikepdf.Array([60, 690, 480, 712]),
+            # ISO 32000-1 §12.5.6.10: text markup annotations carry /QuadPoints
+            # (the normative geometry). pdf.js only enumerates highlight
+            # annotations that provide it — a rect-only highlight is dropped,
+            # so the fixture must be standards-compliant to be a real probe.
+            QuadPoints=pikepdf.Array([60, 712, 480, 712, 480, 690, 60, 690]),
+            F=pikepdf.Integer(4),  # Print flag, mirrors real PDF tools
             C=pikepdf.Array([1, 1, 0]),
             Contents=pikepdf.String("Highlighted by Mereth corpus generator"),
             T=pikepdf.String("Mereth"),

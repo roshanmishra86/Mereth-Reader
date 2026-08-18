@@ -3,7 +3,9 @@ import type * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { renderPdfPageToCanvas, cancelCanvasRender } from '../utils/pdfViewer';
 import { RotationAngle, PageSize } from '../utils/viewModeUtils';
 import { AnnotationRecord, PaletteEntry } from '../utils/annotationTypes';
+import { ParsedEmbeddedAnnotation } from '../utils/embeddedAnnotations';
 import { PageAnnotationLayer, AnnotationAssetVisual } from './PageAnnotationLayer';
+import { EmbeddedAnnotationLayer } from './EmbeddedAnnotationLayer';
 
 interface PdfPageCanvasProps {
   doc: pdfjsLib.PDFDocumentProxy;
@@ -22,6 +24,9 @@ interface PdfPageCanvasProps {
   /** User's semantic palette (FR-9.3). */
   palette?: PaletteEntry[];
   onSelectAnnotation?: (id: string) => void;
+  // Task 3.6 embedded (PDF-born) annotations (FR-9.9)
+  embeddedItems?: ParsedEmbeddedAnnotation[];
+  onOpenEmbeddedImport?: () => void;
 }
 
 /**
@@ -42,6 +47,8 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
   selectedAnnotationId,
   palette,
   onSelectAnnotation,
+  embeddedItems,
+  onOpenEmbeddedImport,
 }: PdfPageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
@@ -110,6 +117,16 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
           assetsByAnnotationId={annotationAssets ?? {}}
           palette={palette}
           onSelectAnnotation={(id) => onSelectAnnotation?.(id)}
+        />
+      )}
+      {embeddedItems && embeddedItems.length > 0 && baseSize && onOpenEmbeddedImport && (
+        <EmbeddedAnnotationLayer
+          pageNumber={pageNumber}
+          items={embeddedItems}
+          pageBaseSize={baseSize}
+          scale={scale}
+          rotation={rotation}
+          onOpenEmbeddedImport={onOpenEmbeddedImport}
         />
       )}
       {failed && (
