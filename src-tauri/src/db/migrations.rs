@@ -18,7 +18,7 @@ pub enum MigrationError {
 }
 
 /// The highest migration version this engine knows how to apply.
-const LATEST_MIGRATION_VERSION: i32 = 9;
+const LATEST_MIGRATION_VERSION: i32 = 11;
 
 /// Runs forward-only migrations.
 ///
@@ -678,6 +678,71 @@ pub fn run_migrations(conn: &mut Connection, db_dir: &Path, db_existed: bool) ->
       tx.execute(
         "INSERT INTO migration_metadata (version, applied_at, checksum)
        VALUES (9, datetime('now'), 'migration_9_provenance_adoption');",
+        [],
+      )?;
+
+      tx.commit()?;
+    }
+
+    if current_version < 10 {
+      let tx = conn.transaction()?;
+
+      // Task 3.3 (PRD FR-7.3): per-version page geometry.
+      //
+      // `document_versions` stores each version's fingerprint, page count, and
+      // — from this migration on — the page geometry the coordinates of that
+      // version's annotations were created against. Geometry is measured by
+      // the renderer (pdf.js viewports at scale 1) and stored as JSON
+      // (`[{"page":1,"width":612,"height":792}, …]`); Rust validates the array
+      // on every write. Existing version rows (there are none in the wild —
+      // no release has ever shipped) keep an empty array; the current version
+      // row is the one annotation coordinates refer to, so re-anchoring
+      // compares geometry across versions rather than reusing coordinates
+      // blindly (FR-7.3, RK-2).
+      tx.execute(
+        "ALTER TABLE document_versions ADD COLUMN page_geometry_json TEXT NOT NULL DEFAULT '[]';",
+        [],
+      )?;
+
+      tx.execute(
+        "CREATE INDEX IF NOT EXISTS idx_document_versions_document ON document_versions(document_id);",
+        [],
+      )?;
+
+      // Record migration 10 completion
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (10, datetime('now'), 'migration_10_version_page_geometry');",
+        [],
+      )?;
+
+      tx.commit()?;
+    }
+
+    if current_version < 11 {
+      let tx = conn.transaction()?;
+
+      // Task 3.3: the version-bound integrity checksum on annotations.
+      //
+      // R0.4's durable-anchor proof regenerates an annotation checksum bound
+      // to the document version id (documentVersionId + page + type +
+      // geometry + exactQuote) whenever an annotation is re-anchored to a new
+      // version; without a stored column the re-anchor flow could not record
+      // the new binding and any downstream integrity check would flag
+      // re-anchored annotations as tampered. `text_layer_checksum` stays the
+      // separate text-layer hash (FR-9.4); `checksum` is the integrity
+      // checksum that changes with the version binding. Empty string until
+      // annotations exist in the wild (none do — no release has shipped);
+      // task 3.4 fills it at creation time.
+      tx.execute(
+        "ALTER TABLE annotations ADD COLUMN checksum TEXT NOT NULL DEFAULT '';",
+        [],
+      )?;
+
+      // Record migration 11 completion
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (11, datetime('now'), 'migration_11_annotation_checksum');",
         [],
       )?;
 

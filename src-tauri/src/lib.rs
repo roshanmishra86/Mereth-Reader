@@ -6,6 +6,7 @@ pub mod perf;
 
 use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
 use db::annotations::{Annotation, AnnotationAsset};
+use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
 use import::{
   compute_file_metadata, copy_to_managed_documents, ensure_external_pdf_source,
   validate_pdf_filepath_basic, validate_pdf_path_for_record, FileMetadata,
@@ -349,6 +350,64 @@ fn db_delete_annotation_asset(
   db.delete_annotation_asset(&app_dir, &id)
 }
 
+// Task 3.3 document fingerprinting and version handling (FR-7.3, RK-2). The
+// open-time flow is: check_document_version_state → (on "changed") offer
+// re-anchoring → register_document_version + update_version_geometry once the
+// user decides → reanchor_annotation_to_version for quote-matched annotations.
+// Fingerprints and page counts are always recomputed server-side from the file.
+#[tauri::command]
+fn db_check_document_version_state(
+  document_id: String,
+  state: State<'_, AppState>,
+) -> Result<VersionCheckResult, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.check_document_version_state(&document_id)
+}
+
+#[tauri::command]
+fn db_register_document_version(
+  document_id: String,
+  state: State<'_, AppState>,
+) -> Result<DocumentVersion, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.register_document_version(&document_id)
+}
+
+#[tauri::command]
+fn db_update_version_geometry(
+  version_id: String,
+  geometry: Vec<PageGeometry>,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_version_geometry(&version_id, &geometry)
+}
+
+#[tauri::command]
+fn db_get_document_versions(
+  document_id: String,
+  state: State<'_, AppState>,
+) -> Result<Vec<DocumentVersion>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_document_versions(&document_id)
+}
+
+#[tauri::command]
+fn db_reanchor_annotation_to_version(
+  annotation_id: String,
+  new_version_id: String,
+  new_checksum: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.reanchor_annotation_to_version(&annotation_id, &new_version_id, &new_checksum)
+}
+
 #[tauri::command]
 fn verify_document_file_exists(document_id: String, state: State<'_, AppState>) -> Result<bool, String> {
   // Resolve the filepath server-side from the document id rather than accepting
@@ -419,6 +478,11 @@ pub fn run() {
       db_add_annotation_asset,
       db_get_annotation_assets,
       db_delete_annotation_asset,
+      db_check_document_version_state,
+      db_register_document_version,
+      db_update_version_geometry,
+      db_get_document_versions,
+      db_reanchor_annotation_to_version,
       cmd_get_initial_launch_route,
       import_compute_file_metadata,
       import_copy_to_managed_library,
