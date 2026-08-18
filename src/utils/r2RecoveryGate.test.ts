@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+// Async on purpose: a synchronous spawn would block this vitest worker's
+// event loop for the whole (cold) Rust build, tripping vitest's worker RPC
+// timeout ("Timeout calling onTaskUpdate") and failing the run even though
+// every test passes — exactly what happened on CI.
+const execFileAsync = promisify(execFile);
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -51,8 +58,8 @@ function storedAnnotation(overrides: Partial<StoredAnnotation> = {}): StoredAnno
 }
 
 /** Executes the live Rust durability gate and parses its measured samples. */
-function runRustDurabilityGate(): { medianMs: number; worstMs: number; samples: number[] } {
-  const out = execFileSync(
+async function runRustDurabilityGate(): Promise<{ medianMs: number; worstMs: number; samples: number[] }> {
+  const { stdout } = await execFileAsync(
     'cargo',
     [
       'test',
@@ -63,9 +70,9 @@ function runRustDurabilityGate(): { medianMs: number; worstMs: number; samples: 
       '--',
       '--nocapture',
     ],
-    { encoding: 'utf-8', timeout: 600_000 }
+    { encoding: 'utf-8', timeout: 600_000, maxBuffer: 64 * 1024 * 1024 }
   );
-  const match = /R2 DURABILITY median_ms=([-\d.]+) worst_ms=([-\d.]+) samples=(\[[^\]]*\])/.exec(out);
+  const match = /R2 DURABILITY median_ms=([-\d.]+) worst_ms=([-\d.]+) samples=(\[[^\]]*\])/.exec(stdout);
   if (!match) {
     throw new Error('Rust gate did not emit the R2 DURABILITY measurement line');
   }
@@ -194,12 +201,12 @@ describe('R2 gate evaluators (task 3.8)', () => {
 describe('R2 gate live run (PRD §9.3)', () => {
   // The live Rust durability gate recompiles/relinks the lib crate, so the
   // timeout budget covers a cold-ish cargo run, not just the measurement.
-  it('passes every gate target with measured numbers', () => {
+  it('passes every gate target with measured numbers', async () => {
     // ---- 1. Creation visibility (webview pipeline) ----
     const visibleSamples = measureCreationVisibilityPipeline(50);
 
     // ---- 2. Creation durability (live Rust typed insert @ 10k rows) ----
-    const durability = runRustDurabilityGate();
+    const durability = await runRustDurabilityGate();
 
     // ---- 3. Filtering 10,000 annotations ----
     const corpus = buildBenchmarkAnnotationCorpus(R2_BUDGETS.FILTER_ANNOTATION_COUNT);
