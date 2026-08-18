@@ -1,6 +1,7 @@
 pub mod annotations;
 pub mod migrations;
 pub mod provenance;
+pub mod versions;
 
 use migrations::run_migrations;
 use rusqlite::{params, Connection};
@@ -1282,7 +1283,7 @@ mod tests {
       let rows: i64 = conn
         .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
         .unwrap();
-      assert_eq!(rows, 9);
+      assert_eq!(rows, 11);
     }
   }
 
@@ -1338,6 +1339,31 @@ mod tests {
       ] {
         conn.execute(&format!("DROP TABLE IF EXISTS {table}"), []).unwrap();
       }
+      // Recreate document_versions in its genuine v3-era shape. Migrations
+      // 1-3 do not re-run (current_version is 3), so the table must look like
+      // a real v3-era table: no page_geometry_json (migration 10) and no
+      // index. Migration 10 then ALTERs it forward exactly as it would for a
+      // database that aged in the wild.
+      conn
+        .execute("DROP TABLE IF EXISTS document_versions", [])
+        .unwrap();
+      conn
+        .execute(
+          "CREATE TABLE document_versions (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            version_number INTEGER NOT NULL,
+            sha256_hash TEXT NOT NULL,
+            page_count INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            provenance TEXT NOT NULL CHECK(provenance IN (
+              'source_extracted', 'source_ocr', 'user_authored',
+              'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+            ))
+          )",
+          [],
+        )
+        .unwrap();
       conn
         .execute("DELETE FROM migration_metadata WHERE version > 3", [])
         .unwrap();
@@ -1353,7 +1379,7 @@ mod tests {
       let rows: i64 = conn
         .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
         .unwrap();
-      assert_eq!(rows, 9);
+      assert_eq!(rows, 11);
       drop(conn);
       // Pre-existing data survived the forward migration.
       let doc = db.get_document_by_id(&doc_id).unwrap().expect("document preserved");
@@ -1416,11 +1442,11 @@ mod tests {
       (
         "annotations",
         &[
-          "id", "document_id", "document_version_id", "annotation_type",
-          "page_index", "page_label", "rects_json", "quote", "prefix_text",
-          "suffix_text", "text_layer_checksum", "comment", "color", "tags",
-          "deleted_at", "created_at", "updated_at", "provenance",
-          "original_provenance",
+          "id", "document_id", "document_version_id", "checksum",
+          "annotation_type", "page_index", "page_label", "rects_json",
+          "quote", "prefix_text", "suffix_text", "text_layer_checksum",
+          "comment", "color", "tags", "deleted_at", "created_at",
+          "updated_at", "provenance", "original_provenance",
         ],
       ),
       (

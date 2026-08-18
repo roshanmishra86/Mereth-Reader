@@ -17,11 +17,19 @@ import {
   loadPdfDocument,
   extractPdfPageTexts,
   getPdfPageTextItems,
+  getPdfPageBaseSize,
   LoadedPdfInfo,
 } from "./utils/pdfViewer";
 import { ImportModal } from "./components/ImportModal";
 import { MissingFileBanner } from "./components/MissingFileBanner";
 import { DeepLinkRoute } from "./utils/launchRouting";
+import {
+  measurePdfPageGeometry,
+  selectReanchorActions,
+  VersionCheckResult,
+  DocumentVersionRecord,
+  StoredAnnotation,
+} from "./utils/versionAnchoring";
 import {
   LayoutMode,
   RotationAngle,
@@ -139,6 +147,22 @@ function App() {
   const [isPasswordRejected, setIsPasswordRejected] = useState(false);
   const [scannedPdfBannerVisible, setScannedPdfBannerVisible] = useState(false);
   const [versionMismatchBannerVisible, setVersionMismatchBannerVisible] = useState(false);
+
+  // Task 3.3 version handling (FR-7.3): real open-time fingerprint state.
+  // `versionStatus` is what the open check reported; `versionOffer` carries
+  // the previous version id while the re-anchoring offer is pending;
+  // `reanchorDecision` records the user's choice; `reanchorSummary` is the
+  // result of the re-anchoring pass.
+  const [versionStatus, setVersionStatus] = useState<VersionCheckResult["status"] | null>(null);
+  const [versionOffer, setVersionOffer] = useState<{
+    documentId: string;
+    previousVersionId: string | null;
+  } | null>(null);
+  const [reanchorDecision, setReanchorDecision] = useState<"reanchor" | "continue" | null>(null);
+  const [reanchorSummary, setReanchorSummary] = useState<{
+    reanchored: number;
+    detached: number;
+  } | null>(null);
 
   // Annotations, notes, and review prompts have no persistence until the R2–R4
   // milestones — they start empty rather than fabricated (U15).
@@ -457,9 +481,30 @@ function App() {
       setScannedPdfBannerVisible(false);
     }
 
-    if (doc.is_version_mismatch || doc.filepath.includes("mismatch")) {
-      setVersionMismatchBannerVisible(true);
-    } else {
+    // Task 3.3 (FR-7.3): compare the bytes at the known path against the
+    // version row annotations reference. A difference is treated as a new
+    // version and OFFERS re-anchoring — the app never reuses old coordinates
+    // silently. "Unregistered" (records created before 3.3) get their first
+    // version row once the document loads.
+    try {
+      const check = await invoke<VersionCheckResult>("db_check_document_version_state", {
+        documentId: doc.id,
+      });
+      if (openRequestId !== openDocumentRequestId.current) return;
+      setVersionStatus(check.status);
+      if (check.status === "changed") {
+        setVersionOffer({ documentId: doc.id, previousVersionId: check.current_version_id ?? null });
+        setReanchorDecision(null);
+        setVersionMismatchBannerVisible(true);
+      } else {
+        setVersionOffer(null);
+        setVersionMismatchBannerVisible(false);
+      }
+    } catch {
+      // Dev preview without the backend: nothing to report.
+      if (openRequestId !== openDocumentRequestId.current) return;
+      setVersionStatus(null);
+      setVersionOffer(null);
       setVersionMismatchBannerVisible(false);
     }
 
@@ -593,6 +638,38 @@ function App() {
     setJobs(jobQueueManager.getJobs());
     // invoke() returns a Promise — a sync try/catch can't catch a rejection.
     invoke("db_update_job", { id: jobId, status: "pending", error: null }).catch(() => {});
+  };
+
+  // Task 3.3: the re-anchoring offer actions. "Re-anchor" runs the quote-based
+  // re-anchoring pass inside the reader (where the extracted text lives) once
+  // the new version is registered; "continue" registers the new version and
+  // leaves annotations on the old one — detached by construction, never
+  // silently re-anchored.
+  const handleReanchorAnnotations = () => {
+    setReanchorDecision("reanchor");
+    setVersionMismatchBannerVisible(false);
+  };
+
+  const handleDismissVersionMismatchBanner = () => {
+    setReanchorDecision("continue");
+    setVersionMismatchBannerVisible(false);
+  };
+
+  const handleVersionRegistered = (documentId: string) => {
+    // The document fingerprint changed server-side; refresh the library copy
+    // so dedup and displays stay truthful.
+    invoke<DocumentRecord[]>("db_get_documents")
+      .then((docs) => {
+        if (docs && docs.length > 0) setDocuments(docs);
+      })
+      .catch(() => {});
+    setVersionStatus("unchanged");
+    setVersionOffer((offer) => (offer?.documentId === documentId ? null : offer));
+    setReanchorDecision(null);
+  };
+
+  const handleReanchorOutcome = (outcome: { reanchored: number; detached: number }) => {
+    setReanchorSummary(outcome);
   };
 
   function handleImportComplete(newDoc: DocumentRecord) {
@@ -739,12 +816,19 @@ function App() {
                 annotationsList={annotationsList}
                 scannedPdfBannerVisible={scannedPdfBannerVisible}
                 versionMismatchBannerVisible={versionMismatchBannerVisible}
+                versionStatus={versionStatus}
+                versionOffer={versionOffer}
+                reanchorDecision={reanchorDecision}
+                reanchorSummary={reanchorSummary}
                 activeDocumentJob={jobs.find((j) => j.id === activeExtractionJobId)}
                 onCancelJob={handleCancelJob}
                 onJobProgress={handleJobProgress}
                 onDismissScannedBanner={() => setScannedPdfBannerVisible(false)}
-                onDismissVersionMismatchBanner={() => setVersionMismatchBannerVisible(false)}
-                onReanchorAnnotations={() => setVersionMismatchBannerVisible(false)}
+                onDismissVersionMismatchBanner={handleDismissVersionMismatchBanner}
+                onReanchorAnnotations={handleReanchorAnnotations}
+                onVersionRegistered={handleVersionRegistered}
+                onReanchorOutcome={handleReanchorOutcome}
+                onDismissReanchorSummary={() => setReanchorSummary(null)}
                 onReturnToLibrary={() => setDestination("library")}
                 setAiOn={setAiOn}
                 setImportOpen={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
@@ -843,12 +927,19 @@ type ReaderProps = {
   annotationsList: Highlight[];
   scannedPdfBannerVisible?: boolean;
   versionMismatchBannerVisible?: boolean;
+  versionStatus?: VersionCheckResult["status"] | null;
+  versionOffer?: { documentId: string; previousVersionId: string | null } | null;
+  reanchorDecision?: "reanchor" | "continue" | null;
+  reanchorSummary?: { reanchored: number; detached: number } | null;
   activeDocumentJob?: BackgroundJob;
   onCancelJob?: (jobId: string) => void;
   onJobProgress?: (jobId: string, processedPages: number) => void;
   onDismissScannedBanner?: () => void;
   onDismissVersionMismatchBanner?: () => void;
   onReanchorAnnotations?: () => void;
+  onVersionRegistered?: (documentId: string) => void;
+  onReanchorOutcome?: (outcome: { reanchored: number; detached: number }) => void;
+  onDismissReanchorSummary?: () => void;
   onReturnToLibrary?: () => void;
   setAiOn: (value: boolean) => void;
   setImportOpen: (value: boolean) => void;
@@ -1037,6 +1128,101 @@ function Reader(props: ReaderProps) {
       setExtractionStatus((s) => (s === 'cancelled' || s === 'done' ? 'idle' : s));
     }
   }, [activeJobStatus]);
+
+  // Task 3.3 (FR-7.3): version registration follow-through, run once per open.
+  // - "unregistered" documents (records created before 3.3, or first import
+  //   before version rows existed) register v1 with measured geometry.
+  // - a "changed" document whose user chose to re-anchor waits for text
+  //   extraction (done or cancelled) so the quote match runs against the
+  //   fullest available text, then registers v2, moves quote-matched
+  //   annotations to it with recomputed checksums, and reports the outcome;
+  //   unmatched annotations stay on the old version — detached, never
+  //   silently reused.
+  // - "continue without re-anchoring" registers v2 and leaves every
+  //   annotation on the old version.
+  const versionRegistrationInFlightRef = useRef<string | null>(null);
+  useEffect(() => {
+    const docId = props.activeDocument.id;
+    if (!loadedPdf) return;
+    if (versionRegistrationInFlightRef.current === docId) return;
+
+    const status = props.versionStatus;
+    if (status === "missing") return;
+
+    const offerForThisDoc =
+      props.versionOffer !== null &&
+      props.versionOffer !== undefined &&
+      props.versionOffer.documentId === docId;
+    const decision = props.reanchorDecision;
+
+    const shouldRegister =
+      status === "unregistered" ||
+      (offerForThisDoc && status === "changed" && decision === "continue") ||
+      (offerForThisDoc && status === "changed" && decision === "reanchor" && extractionStatus !== "running");
+    if (!shouldRegister) return;
+
+    let cancelled = false;
+    versionRegistrationInFlightRef.current = docId;
+    (async () => {
+      try {
+        const version = await invoke<DocumentVersionRecord>("db_register_document_version", {
+          documentId: docId,
+        });
+        if (cancelled || versionRegistrationInFlightRef.current !== docId) return;
+
+        if (decision === "reanchor") {
+          const annotations = await invoke<StoredAnnotation[]>(
+            "db_get_annotations_for_document",
+            { documentId: docId, includeTrashed: false }
+          );
+          if (cancelled) return;
+          const pageTextByNumber = new Map(pageTexts.map((p) => [p.pageNumber, p.text]));
+          const plan = selectReanchorActions({
+            annotations,
+            newVersionId: version.id,
+            pageTextByNumber,
+          });
+          for (const action of plan.reanchor) {
+            await invoke("db_reanchor_annotation_to_version", {
+              annotationId: action.annotationId,
+              newVersionId: action.newVersionId,
+              newChecksum: action.newChecksum,
+            });
+          }
+          if (plan.reanchor.length + plan.detached.length > 0) {
+            props.onReanchorOutcome?.({
+              reanchored: plan.reanchor.length,
+              detached: plan.detached.length,
+            });
+          }
+        }
+
+        const geometry = await measurePdfPageGeometry(
+          loadedPdf.doc.numPages,
+          (page) => getPdfPageBaseSize(loadedPdf.doc, page)
+        );
+        if (cancelled || versionRegistrationInFlightRef.current !== docId) return;
+        await invoke("db_update_version_geometry", { versionId: version.id, geometry });
+        if (cancelled) return;
+        props.onVersionRegistered?.(docId);
+      } catch (err) {
+        console.error("Failed to register document version:", err);
+        versionRegistrationInFlightRef.current = null;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    loadedPdf,
+    props.activeDocument.id,
+    props.versionStatus,
+    props.versionOffer,
+    props.reanchorDecision,
+    extractionStatus,
+    pageTexts,
+  ]);
 
   // Fit-width / fit-page resolve from the measured viewport and the current
   // page's natural size. Custom zoom is the only stateful scale; fit modes
@@ -1427,6 +1613,20 @@ function Reader(props: ReaderProps) {
               onReanchor={() => props.onReanchorAnnotations?.()}
               onDismiss={() => props.onDismissVersionMismatchBanner?.()}
             />
+          )}
+
+          {props.reanchorSummary && (
+            <div className="reanchor-summary-banner" role="status">
+              <span>
+                {props.reanchorSummary.reanchored > 0
+                  ? `Re-anchored ${props.reanchorSummary.reanchored} annotation${props.reanchorSummary.reanchored === 1 ? "" : "s"} to the new version; `
+                  : ""}
+                {props.reanchorSummary.detached > 0
+                  ? `${props.reanchorSummary.detached} stayed on the old version (quote no longer matched).`
+                  : "All matched annotations are on the current version."}
+              </span>
+              <button onClick={() => props.onDismissReanchorSummary?.()}>Dismiss</button>
+            </div>
           )}
 
           {props.readingOnly && (

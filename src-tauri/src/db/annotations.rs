@@ -51,6 +51,11 @@ pub struct Annotation {
   pub id: String,
   pub document_id: String,
   pub document_version_id: String,
+  /// Version-bound integrity checksum (R0.4): binds document version id,
+  /// page, type, geometry, and exact quote. Re-anchoring to a new version
+  /// recomputes it (task 3.3); creation fills it (task 3.4).
+  #[serde(default)]
+  pub checksum: String,
   pub annotation_type: String,
   /// Zero-based physical page (FR-9.4).
   pub page_index: i64,
@@ -96,35 +101,36 @@ pub struct AnnotationAsset {
   pub provenance: String,
 }
 
-const ANNOTATION_COLS: &str = "id, document_id, document_version_id, annotation_type, \
+const ANNOTATION_COLS: &str = "id, document_id, document_version_id, checksum, annotation_type, \
   page_index, page_label, rects_json, quote, prefix_text, suffix_text, \
   text_layer_checksum, comment, color, tags, deleted_at, created_at, updated_at, provenance";
 
 fn map_row_to_annotation(row: &rusqlite::Row<'_>) -> rusqlite::Result<Annotation> {
-  let rects_json: String = row.get(6)?;
-  let tags_json: String = row.get(13)?;
+  let rects_json: String = row.get(7)?;
+  let tags_json: String = row.get(14)?;
   Ok(Annotation {
     id: row.get(0)?,
     document_id: row.get(1)?,
     document_version_id: row.get(2)?,
-    annotation_type: row.get(3)?,
-    page_index: row.get(4)?,
-    page_label: row.get(5)?,
+    checksum: row.get(3)?,
+    annotation_type: row.get(4)?,
+    page_index: row.get(5)?,
+    page_label: row.get(6)?,
     // Tolerant decode: rows written through this module are always valid JSON;
     // a corrupt value decodes to an empty shape rather than breaking the
     // whole row (the text-layer recovery path is a 2.8 concern).
     rects: serde_json::from_str(&rects_json).unwrap_or_default(),
-    quote: row.get(7)?,
-    prefix_text: row.get(8)?,
-    suffix_text: row.get(9)?,
-    text_layer_checksum: row.get(10)?,
-    comment: row.get(11)?,
-    color: row.get(12)?,
+    quote: row.get(8)?,
+    prefix_text: row.get(9)?,
+    suffix_text: row.get(10)?,
+    text_layer_checksum: row.get(11)?,
+    comment: row.get(12)?,
+    color: row.get(13)?,
     tags: serde_json::from_str(&tags_json).unwrap_or_default(),
-    deleted_at: row.get(14)?,
-    created_at: row.get(15)?,
-    updated_at: row.get(16)?,
-    provenance: row.get(17)?,
+    deleted_at: row.get(15)?,
+    created_at: row.get(16)?,
+    updated_at: row.get(17)?,
+    provenance: row.get(18)?,
   })
 }
 
@@ -310,8 +316,8 @@ impl Database {
           id, document_id, document_version_id, annotation_type, page_index,
           page_label, rects_json, quote, prefix_text, suffix_text,
           text_layer_checksum, comment, color, tags, deleted_at,
-          created_at, updated_at, provenance
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+          created_at, updated_at, provenance, checksum
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
           annotation.id,
           annotation.document_id,
@@ -331,6 +337,7 @@ impl Database {
           annotation.created_at,
           annotation.updated_at,
           annotation.provenance,
+          annotation.checksum,
         ],
       )
       .map_err(|e| e.to_string())?;
@@ -622,6 +629,7 @@ mod tests {
       id: Uuid::new_v4().to_string(),
       document_id: doc_id.to_string(),
       document_version_id: version_id.to_string(),
+      checksum: "checksum-v1".into(),
       annotation_type: "highlight".into(),
       page_index: 2,
       page_label: "iii".into(),
