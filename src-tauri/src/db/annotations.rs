@@ -1133,4 +1133,81 @@ mod tests {
     db.delete_document(&doc_id).unwrap();
     assert!(db.get_annotation_by_id("c1").unwrap().is_none());
   }
+
+  /// R2 gate (task 3.8, PRD §9.3): annotation creation must be durable
+  /// within 500 ms. This measures the REAL typed persistence path
+  /// (`db_add_annotation`) against a database that already holds 10,000
+  /// annotation rows — the same shape a long-reading user would have — and
+  /// enforces the budget here (Rust side), while printing the exact sample
+  /// list for the webview gate suite (`r2RecoveryGate.test.ts`) to parse
+  /// from cargo output and fold into the combined R2 report.
+  #[test]
+  fn test_db_add_annotation_durability_budget_at_10k_rows() {
+    let db = Database::in_memory().unwrap();
+    let (doc_id, version_id) = seed_document_and_version(&db);
+
+    // Bulk-seed 10,000 rows through one prepared statement using the exact
+    // 19-column shape the typed layer writes.
+    {
+      let conn = db.conn.lock().unwrap();
+      let mut stmt = conn
+        .prepare(
+          "INSERT INTO annotations (
+             id, document_id, document_version_id, annotation_type, page_index,
+             page_label, rects_json, quote, prefix_text, suffix_text,
+             text_layer_checksum, comment, color, tags, deleted_at,
+             created_at, updated_at, provenance, checksum
+           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+        )
+        .unwrap();
+      for i in 0..10_000 {
+        stmt
+          .execute(params![
+            format!("seed-{i}"),
+            doc_id,
+            version_id,
+            "highlight",
+            0,
+            "1",
+            "[{\"x\":0.1,\"y\":0.2,\"width\":0.6,\"height\":0.04}]",
+            format!("Quoted passage {i} about the fox"),
+            "",
+            "",
+            Option::<String>::None,
+            "",
+            "claim",
+            "[]",
+            Option::<String>::None,
+            "2026-08-18T00:00:00Z",
+            "2026-08-18T00:00:00Z",
+            "user_authored",
+            format!("checksum-{i}"),
+          ])
+          .unwrap();
+      }
+      let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM annotations", [], |r| r.get(0))
+        .unwrap();
+      assert_eq!(count, 10_000);
+    }
+
+    const SAMPLES: usize = 50;
+    let mut samples: Vec<f64> = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+      let annotation = sample_annotation(&doc_id, &version_id);
+      let start = std::time::Instant::now();
+      db.add_annotation(&annotation).unwrap();
+      samples.push(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median = samples[SAMPLES / 2];
+    let worst = samples[SAMPLES - 1];
+    // The webview gate suite parses this exact line from cargo output
+    // (stdout — stderr is discarded by execFileSync on success).
+    println!("R2 DURABILITY median_ms={median:.3} worst_ms={worst:.3} samples={samples:?}");
+    assert!(
+      median < 500.0,
+      "R2 gate: typed annotation insert median {median:.3} ms exceeds the durable budget of 500 ms"
+    );
+  }
 }
