@@ -254,7 +254,11 @@ pub fn validate_annotation(annotation: &Annotation) -> Result<(), String> {
   }
   let has_quote = !annotation.quote.trim().is_empty();
   match annotation.annotation_type.as_str() {
-    "highlight" | "underline" if !has_quote => {
+    // FR-9.4: user-authored text markup requires an exact quote. Imported
+    // (deterministic_transform) markup carries geometry from the PDF but no
+    // guaranteed text, so an empty quote is allowed for that provenance
+    // (FR-9.9); the geometry is the anchor instead.
+    "highlight" | "underline" if !has_quote && annotation.provenance != "deterministic_transform" => {
       return Err("Text highlight/underline annotations require an exact quote (FR-9.4)".to_string());
     }
     t if t != "highlight" && t != "underline" && has_quote => {
@@ -465,6 +469,132 @@ impl Database {
   }
 
   // ------------------------- annotation assets -------------------------
+
+  /// FR-9.7 atomic area-capture creation: writes the crop file AND inserts the
+  /// annotation + asset rows in a single call so the webview never makes
+  /// separate IPC round-trips that a process termination could leave half-
+  /// finished. The file is written first (atomic temp+rename); the DB inserts
+  /// run in one transaction; if either insert fails the file is removed so no
+  /// orphaned bitmap lingers. This is the only path by which area-capture
+  /// files and rows are created together — the separate `write_asset_file` +
+  /// `add_annotation` + `add_annotation_asset` sequence is no longer used for
+  /// new captures, eliminating the caller-supplied-path cleanup window.
+  pub fn create_area_capture(
+    &self,
+    app_dir: &Path,
+    annotation: &Annotation,
+    asset: &AnnotationAsset,
+    bytes: &[u8],
+  ) -> Result<(), String> {
+    const MAX_ASSET_BYTES: usize = 24 * 1024 * 1024;
+    if bytes.len() > MAX_ASSET_BYTES {
+      return Err(format!(
+        "Asset file exceeds the {} MB payload limit",
+        MAX_ASSET_BYTES / (1024 * 1024)
+      ));
+    }
+    // Validate both records up front so a typed error surfaces before any
+    // file or row is touched.
+    validate_annotation(annotation)?;
+    validate_asset_kind(&asset.asset_kind)?;
+    validate_provenance(&asset.provenance)?;
+    validate_asset_relative_path(&asset.relative_path)?;
+    if asset.width_px <= 0 || asset.height_px <= 0 {
+      return Err(format!(
+        "Asset dimensions must be positive, got {}x{}",
+        asset.width_px, asset.height_px
+      ));
+    }
+    // The asset's annotation_id and document_id must match the annotation.
+    if asset.annotation_id != annotation.id {
+      return Err(format!(
+        "Asset annotation_id '{}' does not match annotation id '{}'",
+        asset.annotation_id, annotation.id
+      ));
+    }
+    if asset.document_id != annotation.document_id {
+      return Err(format!(
+        "Asset document_id '{}' does not match annotation document_id '{}'",
+        asset.document_id, annotation.document_id
+      ));
+    }
+
+    // 1. Write the file (atomic temp + rename). If the DB inserts below fail,
+    //    this file is removed so no orphaned bitmap remains.
+    self.write_asset_file(app_dir, &asset.relative_path, bytes)?;
+
+    // 2. Insert the annotation + asset rows. If the asset insert fails after
+    //    the annotation insert succeeds, roll back the annotation row so no
+    //    area annotation lingers without its bitmap (FR-9.7).
+    let conn = self.conn.lock().unwrap();
+    let rects_json = serde_json::to_string(&annotation.rects).map_err(|e| e.to_string())?;
+    let tags_json = serde_json::to_string(&annotation.tags).map_err(|e| e.to_string())?;
+    let ann_result = conn.execute(
+      "INSERT INTO annotations (
+        id, document_id, document_version_id, annotation_type, page_index,
+        page_label, rects_json, quote, prefix_text, suffix_text,
+        text_layer_checksum, comment, color, tags, deleted_at,
+        created_at, updated_at, provenance, checksum
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+      params![
+        annotation.id,
+        annotation.document_id,
+        annotation.document_version_id,
+        annotation.annotation_type,
+        annotation.page_index,
+        annotation.page_label,
+        rects_json,
+        annotation.quote,
+        annotation.prefix_text,
+        annotation.suffix_text,
+        annotation.text_layer_checksum,
+        annotation.comment,
+        annotation.color,
+        tags_json,
+        annotation.deleted_at,
+        annotation.created_at,
+        annotation.updated_at,
+        annotation.provenance,
+        annotation.checksum,
+      ],
+    );
+    if let Err(e) = ann_result {
+      drop(conn);
+      let _ = self.remove_asset_file(app_dir, &asset.relative_path);
+      return Err(e.to_string());
+    }
+    let asset_result = conn.execute(
+      "INSERT INTO annotation_assets (
+        id, annotation_id, document_id, asset_kind, relative_path,
+        content_type, width_px, height_px, caption, created_at, provenance
+      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+      params![
+        asset.id,
+        asset.annotation_id,
+        asset.document_id,
+        asset.asset_kind,
+        asset.relative_path,
+        asset.content_type,
+        asset.width_px,
+        asset.height_px,
+        asset.caption,
+        asset.created_at,
+        asset.provenance,
+      ],
+    );
+    if let Err(e) = asset_result {
+      // Roll back the annotation row before releasing the lock.
+      let _ = conn.execute(
+        "DELETE FROM annotations WHERE id = ?1",
+        params![annotation.id],
+      );
+      drop(conn);
+      let _ = self.remove_asset_file(app_dir, &asset.relative_path);
+      return Err(e.to_string());
+    }
+    drop(conn);
+    Ok(())
+  }
 
   /// Inserts an asset row for an existing file. The file must already exist
   /// under `app-data/annotations/` — a row is never created for a dangling
@@ -779,6 +909,19 @@ mod tests {
     let mut no_quote = base.clone();
     no_quote.quote = "   ".into();
     assert!(db.add_annotation(&no_quote).is_err());
+
+    // FR-9.9: imported (deterministic_transform) highlight with empty quote
+    // is allowed — the PDF carries geometry, not guaranteed text.
+    let mut imported_no_quote = base.clone();
+    imported_no_quote.provenance = "deterministic_transform".into();
+    imported_no_quote.quote = "".into();
+    assert!(db.add_annotation(&imported_no_quote).is_ok());
+
+    // user_authored underline with empty quote is still rejected.
+    let mut user_underline_no_quote = base.clone();
+    user_underline_no_quote.annotation_type = "underline".into();
+    user_underline_no_quote.quote = "".into();
+    assert!(db.add_annotation(&user_underline_no_quote).is_err());
 
     let mut quote_on_bookmark = base.clone();
     quote_on_bookmark.annotation_type = "bookmark".into();
@@ -1096,12 +1239,88 @@ mod tests {
     assert!(app_dir.path().join("annotations").join("empty.png").exists());
   }
 
+  /// FR-9.7: the atomic `create_area_capture` writes the file and inserts both
+  /// rows in one call — no orphaned bitmap, no row-without-bitmap, and a failed
+  /// asset insert rolls back the annotation row and the file.
+  #[test]
+  fn test_create_area_capture_atomic() {
+    let db = Database::in_memory().unwrap();
+    let (doc_id, version_id) = seed_document_and_version(&db);
+    let app_dir = tempdir().unwrap();
+
+    let annotation = Annotation {
+      id: "ann-cap".into(),
+      document_id: doc_id.clone(),
+      document_version_id: version_id.clone(),
+      checksum: "ck".into(),
+      annotation_type: "area".into(),
+      page_index: 0,
+      page_label: "1".into(),
+      rects: vec![NormalizedRect { x: 0.1, y: 0.1, width: 0.4, height: 0.3 }],
+      quote: "".into(),
+      prefix_text: "".into(),
+      suffix_text: "".into(),
+      text_layer_checksum: None,
+      comment: "".into(),
+      color: "claim".into(),
+      tags: vec![],
+      deleted_at: None,
+      created_at: "2026-08-18T00:00:00Z".into(),
+      updated_at: "2026-08-18T00:00:00Z".into(),
+      provenance: "user_authored".into(),
+    };
+    let asset = AnnotationAsset {
+      id: "asset-cap".into(),
+      annotation_id: "ann-cap".into(),
+      document_id: doc_id.clone(),
+      asset_kind: "area_capture".into(),
+      relative_path: "annotations/asset-cap.png".into(),
+      content_type: "image/png".into(),
+      width_px: 640,
+      height_px: 480,
+      caption: "Fig".into(),
+      created_at: "2026-08-18T00:00:00Z".into(),
+      provenance: "user_authored".into(),
+    };
+
+    db.create_area_capture(app_dir.path(), &annotation, &asset, b"crop-bytes")
+      .unwrap();
+
+    // Both rows exist and the file is on disk.
+    assert!(db.get_annotation_by_id("ann-cap").unwrap().is_some());
+    assert_eq!(db.get_annotation_assets("ann-cap").unwrap().len(), 1);
+    assert_eq!(
+      fs::read(app_dir.path().join("annotations").join("asset-cap.png")).unwrap(),
+      b"crop-bytes"
+    );
+
+    // A mismatched annotation_id on the asset is rejected before any write.
+    let mut bad_asset = asset.clone();
+    bad_asset.id = "asset-bad".into();
+    bad_asset.annotation_id = "wrong".into();
+    bad_asset.relative_path = "annotations/asset-bad.png".into();
+    assert!(db
+      .create_area_capture(app_dir.path(), &annotation, &bad_asset, b"x")
+      .is_err());
+    assert!(!app_dir.path().join("annotations").join("asset-bad.png").exists());
+
+    // Oversized payload is rejected.
+    let huge = vec![0u8; 25 * 1024 * 1024];
+    let mut big_asset = asset.clone();
+    big_asset.id = "asset-big".into();
+    big_asset.relative_path = "annotations/asset-big.png".into();
+    assert!(db
+      .create_area_capture(app_dir.path(), &annotation, &big_asset, &huge)
+      .is_err());
+    assert!(!app_dir.path().join("annotations").join("asset-big.png").exists());
+  }
+
   #[test]
   fn test_fk_cascades_and_checks_fire_at_schema_level() {
     let db = Database::in_memory().unwrap();
     let (doc_id, version_id) = seed_document_and_version(&db);
 
-    // highlight with empty quote fails at the schema level.
+    // highlight with empty quote fails at the schema level for user_authored.
     let conn = db.conn.lock().unwrap();
     let res = conn.execute(
       "INSERT INTO annotations (id, document_id, document_version_id, annotation_type, page_index, quote, created_at, updated_at, provenance)
@@ -1109,6 +1328,15 @@ mod tests {
       params![doc_id, version_id],
     );
     assert!(res.is_err(), "highlight without quote must fail the CHECK");
+
+    // FR-9.9: imported (deterministic_transform) highlight with empty quote
+    // is allowed — the PDF carries geometry, not guaranteed text.
+    let ok_imported = conn.execute(
+      "INSERT INTO annotations (id, document_id, document_version_id, annotation_type, page_index, rects_json, quote, created_at, updated_at, provenance)
+       VALUES ('h-imported', ?1, ?2, 'highlight', 0, '[{\"x\":0.1,\"y\":0.1,\"width\":0.4,\"height\":0.03}]', '', 'now', 'now', 'deterministic_transform')",
+      params![doc_id, version_id],
+    );
+    assert!(ok_imported.is_ok(), "imported highlight without quote must pass the CHECK");
 
     // area with empty rects fails at the schema level.
     let res = conn.execute(
@@ -1126,24 +1354,28 @@ mod tests {
     );
     assert!(ok_comment.is_ok());
 
-    // Deleting the document cascades to its annotations.
+    // Deleting the document cascades to its annotations (h-imported + c1 = 2).
     drop(conn);
     let listed = db.get_annotations_for_document(&doc_id, true).unwrap();
-    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.len(), 2);
     db.delete_document(&doc_id).unwrap();
     assert!(db.get_annotation_by_id("c1").unwrap().is_none());
   }
 
   /// R2 gate (task 3.8, PRD §9.3): annotation creation must be durable
   /// within 500 ms. This measures the REAL typed persistence path
-  /// (`db_add_annotation`) against a database that already holds 10,000
-  /// annotation rows — the same shape a long-reading user would have — and
-  /// enforces the budget here (Rust side), while printing the exact sample
+  /// (`db_add_annotation`) against a FILE-BACKED database that already holds
+  /// 10,000 annotation rows — the same shape a long-reading user would have —
+  /// and enforces the budget here (Rust side), while printing the exact sample
   /// list for the webview gate suite (`r2RecoveryGate.test.ts`) to parse
-  /// from cargo output and fold into the combined R2 report.
+  /// from cargo output and fold into the combined R2 report. A file-backed
+  /// (disk) database is used instead of in-memory so the measurement includes
+  /// real WAL + fsync I/O — the shipped creation path, not an idealised
+  /// memory-only one that can pass while the disk path exceeds the budget.
   #[test]
   fn test_db_add_annotation_durability_budget_at_10k_rows() {
-    let db = Database::in_memory().unwrap();
+    let app_dir = tempdir().unwrap();
+    let db = Database::new(app_dir.path()).unwrap();
     let (doc_id, version_id) = seed_document_and_version(&db);
 
     // Bulk-seed 10,000 rows through one prepared statement using the exact

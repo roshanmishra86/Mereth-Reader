@@ -35,15 +35,6 @@ export function AreaCaptureLayer({ onComplete, onCancel }: AreaCaptureLayerProps
   const sessionRef = useRef<DragSession | null>(null);
   const [dragBoxCss, setDragBoxCss] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
 
-  const clipPoint = useCallback((clientX: number, clientY: number): ViewportRect | null => {
-    const session = sessionRef.current;
-    if (!session) return null;
-    const { pageBox } = session;
-    const left = Math.max(pageBox.left, Math.min(clientX, pageBox.right));
-    const top = Math.max(pageBox.top, Math.min(clientY, pageBox.bottom));
-    return { left, top, right: left, bottom: top };
-  }, []);
-
   const renderDrag = useCallback((box: ViewportRect) => {
     const session = sessionRef.current;
     if (!session) return;
@@ -55,54 +46,92 @@ export function AreaCaptureLayer({ onComplete, onCancel }: AreaCaptureLayerProps
     });
   }, []);
 
+  /**
+   * Finds the `.pdf-page` element beneath the pointer. The overlay covers the
+   * whole canvas container and receives the pointer event itself, so
+   * `e.target` is always the overlay — `closest('.pdf-page')` is null. We
+   * instead hit-test the page elements in the overlay's parent container by
+   * their viewport rects.
+   */
+  const pageElementAtPoint = useCallback(
+    (clientX: number, clientY: number): HTMLElement | null => {
+      const overlay = overlayRef.current;
+      const container = overlay?.parentElement;
+      if (!container) return null;
+      const pages = container.querySelectorAll<HTMLElement>('.pdf-page');
+      for (const page of pages) {
+        const r = page.getBoundingClientRect();
+        if (
+          clientX >= r.left &&
+          clientX <= r.right &&
+          clientY >= r.top &&
+          clientY <= r.bottom
+        ) {
+          return page;
+        }
+      }
+      return null;
+    },
+    []
+  );
+
   const handlePointerDown = useCallback(
     (e: React.PointerEvent) => {
       if (e.button !== 0) return;
-      const target = e.target as HTMLElement;
-      const pageEl = target.closest('.pdf-page') as HTMLElement | null;
       const overlay = overlayRef.current;
-      if (!pageEl || !overlay) return;
+      if (!overlay) return;
+      const pageEl = pageElementAtPoint(e.clientX, e.clientY);
+      if (!pageEl) return;
       const pageNumber = Number(pageEl.dataset.pageNumber ?? 0);
       if (!pageNumber) return;
       const rect = pageEl.getBoundingClientRect();
       const overlayRect = overlay.getBoundingClientRect();
-      const point = clipPoint(e.clientX, e.clientY);
-      if (!point) return;
+      const pageBox: PageBox = {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+      };
+      // Clip the initial point to the page before starting the session.
+      const point: ViewportRect = {
+        left: Math.max(pageBox.left, Math.min(e.clientX, pageBox.right)),
+        top: Math.max(pageBox.top, Math.min(e.clientY, pageBox.bottom)),
+        right: 0,
+        bottom: 0,
+      };
+      point.right = point.left;
+      point.bottom = point.top;
       sessionRef.current = {
         pageNumber,
-        pageBox: {
-          left: rect.left,
-          top: rect.top,
-          right: rect.right,
-          bottom: rect.bottom,
-          width: rect.width,
-          height: rect.height,
-        },
+        pageBox,
         offsetX: overlayRect.left,
         offsetY: overlayRect.top,
         current: point,
       };
       renderDrag(point);
     },
-    [clipPoint, renderDrag]
+    [pageElementAtPoint, renderDrag]
   );
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent) => {
       const session = sessionRef.current;
       if (!session) return;
-      const point = clipPoint(e.clientX, e.clientY);
-      if (!point) return;
+      const { pageBox, current } = session;
+      const left = Math.max(pageBox.left, Math.min(e.clientX, pageBox.right));
+      const top = Math.max(pageBox.top, Math.min(e.clientY, pageBox.bottom));
       const box: ViewportRect = {
-        left: Math.min(session.current.left, point.left),
-        top: Math.min(session.current.top, point.top),
-        right: Math.max(session.current.left, point.left),
-        bottom: Math.max(session.current.top, point.top),
+        left: Math.min(current.left, left),
+        top: Math.min(current.top, top),
+        right: Math.max(current.left, left),
+        bottom: Math.max(current.top, top),
       };
       session.current = box;
       renderDrag(box);
     },
-    [clipPoint, renderDrag]
+    [renderDrag]
   );
 
   const handlePointerUp = useCallback(() => {

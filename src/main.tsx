@@ -113,16 +113,14 @@ import { AnnotationAssetVisual } from "./components/PageAnnotationLayer";
 import { SelectionPopup, SelectionPopupAnchor } from "./components/SelectionPopup";
 import { AreaCaptureLayer, AreaCaptureResult } from "./components/AreaCaptureLayer";
 import {
-  addAnnotationAsset,
   createAnnotation,
+  createAreaCapture,
   loadAnnotationAssets,
   readAnnotationAssetBlob,
-  removeAnnotationAssetFile,
   restoreAnnotation,
   trashAnnotation,
   purgeAnnotation,
   updateAnnotationFields,
-  writeAnnotationAssetFile,
 } from "./utils/annotationIo";
 // Task 3.5 — palette configuration, in-session undo, quote/comment separation
 import { AnnotationEditor } from "./components/AnnotationEditor";
@@ -846,18 +844,13 @@ function App() {
 
   const handleAreaAnnotationCreated = async (
     annotation: AnnotationRecord,
-    asset: AnnotationAssetRecord
+    asset: AnnotationAssetRecord,
+    bytes: ArrayBuffer
   ) => {
-    await createAnnotation(annotation);
-    try {
-      await addAnnotationAsset(asset);
-    } catch (err) {
-      // Roll the annotation row back so a failed asset insert never leaves an
-      // area annotation without its bitmap (FR-9.7); the caller removes the
-      // written file (its own cleanup path).
-      await trashAnnotation(annotation.id).catch(() => {});
-      throw err;
-    }
+    // FR-9.7: a single atomic IPC call writes the crop file and inserts both
+    // the annotation and asset rows — no half-created captures, no
+    // caller-supplied-path cleanup (PRD §15.3).
+    await createAreaCapture(annotation, asset, bytes);
     await refreshAnnotations(annotation.document_id);
     undoManagerRef.current?.pushCreate(annotation.id);
     bumpUndoUI();
@@ -1223,7 +1216,7 @@ type ReaderProps = {
   palette: PaletteEntry[];
   /** Task 3.5 CRUD callbacks — each persists, refreshes, and records undo. */
   onAnnotationCreated: (record: AnnotationRecord) => Promise<void>;
-  onAreaAnnotationCreated: (annotation: AnnotationRecord, asset: AnnotationAssetRecord) => Promise<void>;
+  onAreaAnnotationCreated: (annotation: AnnotationRecord, asset: AnnotationAssetRecord, bytes: ArrayBuffer) => Promise<void>;
   onAnnotationUpdated: (id: string, color: string, comment: string, tags: string[]) => Promise<void>;
   onTrashAnnotation: (id: string) => Promise<void>;
   onRestoreAnnotation: (id: string) => Promise<void>;
@@ -2182,9 +2175,9 @@ function Reader(props: ReaderProps) {
       ctx.drawImage(canvas, srcX, srcY, srcW, srcH, 0, 0, outW, outH);
       const blob = await new Promise<Blob | null>((resolve) => off.toBlob(resolve, "image/png"));
       if (!blob) throw new Error("The capture could not be encoded.");
+      const bytes = await blob.arrayBuffer();
 
       const docId = props.activeDocument.id;
-      await writeAnnotationAssetFile(relativePath, await blob.arrayBuffer());
       const annotation = buildAreaAnnotation({
         documentId: docId,
         documentVersionId: props.currentVersionId,
@@ -2194,23 +2187,18 @@ function Reader(props: ReaderProps) {
         caption: areaCaption.trim(),
         color: popupColor,
       });
-      try {
-        const asset = buildAreaAssetRecord({
-          id: assetId,
-          annotationId: annotation.id,
-          documentId: docId,
-          relativePath,
-          widthPx: outW,
-          heightPx: outH,
-          caption: areaCaption.trim(),
-        });
-        // Persists annotation + asset (with rollback) and records undo.
-        await props.onAreaAnnotationCreated(annotation, asset);
-      } catch (err) {
-        // Half-created capture: remove the file so nothing orphaned remains.
-        await removeAnnotationAssetFile(relativePath).catch(() => {});
-        throw err;
-      }
+      const asset = buildAreaAssetRecord({
+        id: assetId,
+        annotationId: annotation.id,
+        documentId: docId,
+        relativePath,
+        widthPx: outW,
+        heightPx: outH,
+        caption: areaCaption.trim(),
+      });
+      // FR-9.7: a single atomic IPC call writes the file and inserts both rows
+      // — no half-created captures, no caller-supplied-path cleanup.
+      await props.onAreaAnnotationCreated(annotation, asset, bytes);
 
       setAreaPending(null);
       setCaptureActive(false);

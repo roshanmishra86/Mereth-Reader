@@ -60,25 +60,22 @@ export async function deleteAnnotationAsset(id: string): Promise<void> {
 }
 
 /**
- * Writes the crop bytes under `app-data/annotations/` (atomic, confined). The
- * asset row is created only afterwards via `addAnnotationAsset`, so a failed
- * write never leaves a dangling row (FR-9.7).
+ * FR-9.7 atomic area-capture creation: sends the crop bytes plus the annotation
+ * and asset records in a single IPC call. The Rust side writes the file and
+ * inserts both rows, rolling back on any failure — no orphaned bitmap, no
+ * row-without-bitmap, and no caller-supplied-path cleanup (PRD §15.3).
  */
-export async function writeAnnotationAssetFile(
-  relativePath: string,
+export async function createAreaCapture(
+  annotation: AnnotationRecord,
+  asset: AnnotationAssetRecord,
   bytes: ArrayBuffer | Uint8Array
 ): Promise<void> {
   const payload = bytes instanceof Uint8Array ? Array.from(bytes) : Array.from(new Uint8Array(bytes));
-  await invoke('db_write_annotation_asset_file', { relativePath, bytes: payload });
+  await invoke('db_create_area_capture', { annotation, asset, bytes: payload });
 }
 
 /** Resolves an asset row to a blob (raw bytes → Blob). */
 export async function readAnnotationAssetBlob(assetId: string): Promise<Blob> {
   const bytes = await invoke<number[]>('db_read_annotation_asset_file', { assetId });
   return new Blob([new Uint8Array(bytes)], { type: 'image/png' });
-}
-
-/** Removes a half-written crop file when row inserts failed (no-op if gone). */
-export async function removeAnnotationAssetFile(relativePath: string): Promise<void> {
-  await invoke('db_remove_annotation_asset_file', { relativePath });
 }

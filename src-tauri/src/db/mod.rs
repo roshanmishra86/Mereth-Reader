@@ -1283,7 +1283,7 @@ mod tests {
       let rows: i64 = conn
         .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
         .unwrap();
-      assert_eq!(rows, 11);
+      assert_eq!(rows, 12);
     }
   }
 
@@ -1379,7 +1379,7 @@ mod tests {
       let rows: i64 = conn
         .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
         .unwrap();
-      assert_eq!(rows, 11);
+      assert_eq!(rows, 12);
       drop(conn);
       // Pre-existing data survived the forward migration.
       let doc = db.get_document_by_id(&doc_id).unwrap().expect("document preserved");

@@ -324,7 +324,7 @@ describe('R2 gate live run (PRD §9.3)', () => {
       undoPaths,
       corpusVersion,
       methodology:
-        'median of repeated in-process runs (webview-node: 50 visibility + 20 filter samples; tauri-rust: 50 live typed inserts into a 10,000-row database); anchor/undo scenarios proven functionally against the shipped modules (annotationOverlay, annotationAnchor, versionAnchoring, annotationUndo, shortcutUtils) plus structural wiring scans',
+        'median of repeated in-process runs (webview-node: 50 visibility + 20 filter samples; tauri-rust: 50 live typed inserts into a FILE-BACKED 10,000-row database); visibility includes builder + checksum + IPC serialization + annotation-list rebuild/filter (refreshAnnotations proxy); durability uses a disk-backed database (real WAL + fsync I/O, not in-memory); anchor/undo scenarios proven functionally against the shipped modules (annotationOverlay, annotationAnchor, versionAnchoring, annotationUndo, shortcutUtils) plus structural wiring scans',
     });
 
     console.log(

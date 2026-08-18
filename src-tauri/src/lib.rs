@@ -350,32 +350,30 @@ fn db_delete_annotation_asset(
   db.delete_annotation_asset(&app_dir, &id)
 }
 
-// Task 3.4 asset file transport (FR-9.7): the webview never touches the file
-// system — it sends confined bytes for a new area capture and reads bytes back
-// through the typed asset row. The write is validated (relative path under
-// `app-data/annotations/`, 24 MB payload ceiling per §15.3 sidecar limits) and
-// lands atomically; the read resolves the path server-side from the row id, so
-// neither command can be used as an arbitrary-file oracle.
+// FR-9.7 atomic area-capture creation (task 3.4): the webview sends the crop
+// bytes plus the annotation and asset records in ONE call. The Rust side
+// writes the file and inserts both rows, rolling back on any failure so no
+// orphaned bitmap or row-without-bitmap can survive. This replaces the former
+// three-call sequence (write file → insert annotation → insert asset) whose
+// gaps a process termination could leave half-finished, and eliminates the
+// caller-supplied-path cleanup command (PRD §15.3: no caller-supplied paths).
 #[tauri::command]
-fn db_write_annotation_asset_file(
+fn db_create_area_capture(
   app_handle: tauri::AppHandle,
-  relative_path: String,
+  annotation: Annotation,
+  asset: AnnotationAsset,
   bytes: Vec<u8>,
   state: State<'_, AppState>,
 ) -> Result<(), String> {
-  const MAX_ASSET_BYTES: usize = 24 * 1024 * 1024;
-  if bytes.len() > MAX_ASSET_BYTES {
-    return Err(format!(
-      "Asset file exceeds the {} MB payload limit",
-      MAX_ASSET_BYTES / (1024 * 1024)
-    ));
-  }
   let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
   let lock = state.db.lock().unwrap();
   let db = lock.as_ref().ok_or("Database not initialized")?;
-  db.write_asset_file(&app_dir, &relative_path, &bytes)
+  db.create_area_capture(&app_dir, &annotation, &asset, &bytes)
 }
 
+// Task 3.4 asset file read transport (FR-9.7): the webview reads bytes back
+// through the typed asset row. The read resolves the path server-side from the
+// row id, so this cannot be used as an arbitrary-file oracle.
 #[tauri::command]
 fn db_read_annotation_asset_file(
   app_handle: tauri::AppHandle,
@@ -387,22 +385,6 @@ fn db_read_annotation_asset_file(
   let db = lock.as_ref().ok_or("Database not initialized")?;
   let bytes = db.read_asset_file(&app_dir, &asset_id)?;
   Ok(tauri::ipc::Response::new(bytes))
-}
-
-/// Cleanup path for a HALF-CREATED capture: removes the file written by
-/// `db_write_annotation_asset_file` when the subsequent annotation/asset row
-/// inserts failed. This is run with a confined, validated relative path only —
-/// it cannot be used to delete rows or files outside `app-data/annotations/`.
-#[tauri::command]
-fn db_remove_annotation_asset_file(
-  app_handle: tauri::AppHandle,
-  relative_path: String,
-  state: State<'_, AppState>,
-) -> Result<(), String> {
-  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
-  let lock = state.db.lock().unwrap();
-  let db = lock.as_ref().ok_or("Database not initialized")?;
-  db.remove_asset_file(&app_dir, &relative_path)
 }
 
 // Task 3.3 document fingerprinting and version handling (FR-7.3, RK-2). The
@@ -533,9 +515,8 @@ pub fn run() {
       db_add_annotation_asset,
       db_get_annotation_assets,
       db_delete_annotation_asset,
-      db_write_annotation_asset_file,
+      db_create_area_capture,
       db_read_annotation_asset_file,
-      db_remove_annotation_asset_file,
       db_check_document_version_state,
       db_register_document_version,
       db_update_version_geometry,
