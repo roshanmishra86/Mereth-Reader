@@ -203,10 +203,21 @@ describe('R2 gate live run (PRD §9.3)', () => {
   // timeout budget covers a cold-ish cargo run, not just the measurement.
   it('passes every gate target with measured numbers', async () => {
     // ---- 1. Creation visibility (webview pipeline) ----
-    const visibleSamples = measureCreationVisibilityPipeline(50);
+    const webviewSamples = measureCreationVisibilityPipeline(50);
 
     // ---- 2. Creation durability (live Rust typed insert @ 10k rows) ----
     const durability = await runRustDurabilityGate();
+
+    // The real visibility pipeline is sequential: the webview builds the
+    // record + serialises it (webviewSamples), THEN the Rust side inserts it
+    // into SQLite (durability.samples). The annotation is not visible until
+    // both complete (the production flow awaits createAnnotation before
+    // refreshing). Combine the two measurement sets per-iteration so the
+    // visibility metric reflects the real create+persist path — a slow insert
+    // pushes visibility past 100 ms here, not just in production.
+    const visibleSamples = webviewSamples.map(
+      (w, i) => Number((w + (durability.samples[i] ?? durability.medianMs)).toFixed(3))
+    );
 
     // ---- 3. Filtering 10,000 annotations ----
     const corpus = buildBenchmarkAnnotationCorpus(R2_BUDGETS.FILTER_ANNOTATION_COUNT);
@@ -324,7 +335,7 @@ describe('R2 gate live run (PRD §9.3)', () => {
       undoPaths,
       corpusVersion,
       methodology:
-        'median of repeated in-process runs (webview-node: 50 visibility + 20 filter samples; tauri-rust: 50 live typed inserts into a FILE-BACKED 10,000-row database); visibility includes builder + checksum + IPC serialization + annotation-list rebuild/filter (refreshAnnotations proxy); durability uses a disk-backed database (real WAL + fsync I/O, not in-memory); anchor/undo scenarios proven functionally against the shipped modules (annotationOverlay, annotationAnchor, versionAnchoring, annotationUndo, shortcutUtils) plus structural wiring scans',
+        'median of repeated in-process runs (webview-node: 50 webview-side visibility samples; tauri-rust: 50 live typed inserts into a FILE-BACKED 10,000-row database); visibility metric combines webview builder+checksum+serialization samples with the live Rust insert samples per-iteration (the production flow awaits createAnnotation before refreshing, so a slow insert delays visibility); durability uses a disk-backed database (real WAL + fsync I/O, not in-memory); anchor/undo scenarios proven functionally against the shipped modules (annotationOverlay, annotationAnchor, versionAnchoring, annotationUndo, shortcutUtils) plus structural wiring scans',
     });
 
     console.log(

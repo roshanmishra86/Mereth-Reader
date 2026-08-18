@@ -474,11 +474,12 @@ impl Database {
   /// annotation + asset rows in a single call so the webview never makes
   /// separate IPC round-trips that a process termination could leave half-
   /// finished. The file is written first (atomic temp+rename); the DB inserts
-  /// run in one transaction; if either insert fails the file is removed so no
-  /// orphaned bitmap lingers. This is the only path by which area-capture
-  /// files and rows are created together — the separate `write_asset_file` +
-  /// `add_annotation` + `add_annotation_asset` sequence is no longer used for
-  /// new captures, eliminating the caller-supplied-path cleanup window.
+  /// run in a SINGLE SQLite transaction so a crash between them rolls both
+  /// back automatically — an area annotation can never exist without its
+  /// asset row. If the transaction fails or is killed before commit, SQLite
+  /// discards the uncommitted rows; the orphaned bitmap is cleaned up at the
+  /// next startup by `reconcile_orphaned_asset_files`. This is the only path
+  /// by which area-capture files and rows are created together.
   pub fn create_area_capture(
     &self,
     app_dir: &Path,
@@ -519,81 +520,136 @@ impl Database {
       ));
     }
 
-    // 1. Write the file (atomic temp + rename). If the DB inserts below fail,
-    //    this file is removed so no orphaned bitmap remains.
+    // 1. Write the file (atomic temp + rename). If the DB transaction below
+    //    fails, this file is removed. If the process is killed before the
+    //    transaction commits, the file is orphaned but the DB has no rows —
+    //    `reconcile_orphaned_asset_files` removes it at the next startup.
     self.write_asset_file(app_dir, &asset.relative_path, bytes)?;
 
-    // 2. Insert the annotation + asset rows. If the asset insert fails after
-    //    the annotation insert succeeds, roll back the annotation row so no
-    //    area annotation lingers without its bitmap (FR-9.7).
-    let conn = self.conn.lock().unwrap();
+    // 2. Insert the annotation + asset rows in a SINGLE transaction. A crash
+    //    before commit rolls both inserts back automatically (SQLite discards
+    //    uncommitted pages on WAL replay); an error after the annotation insert
+    //    but before the asset insert drops the transaction, so no area
+    //    annotation can ever exist without its asset row (FR-9.7).
+    let mut conn = self.conn.lock().unwrap();
     let rects_json = serde_json::to_string(&annotation.rects).map_err(|e| e.to_string())?;
     let tags_json = serde_json::to_string(&annotation.tags).map_err(|e| e.to_string())?;
-    let ann_result = conn.execute(
-      "INSERT INTO annotations (
-        id, document_id, document_version_id, annotation_type, page_index,
-        page_label, rects_json, quote, prefix_text, suffix_text,
-        text_layer_checksum, comment, color, tags, deleted_at,
-        created_at, updated_at, provenance, checksum
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
-      params![
-        annotation.id,
-        annotation.document_id,
-        annotation.document_version_id,
-        annotation.annotation_type,
-        annotation.page_index,
-        annotation.page_label,
-        rects_json,
-        annotation.quote,
-        annotation.prefix_text,
-        annotation.suffix_text,
-        annotation.text_layer_checksum,
-        annotation.comment,
-        annotation.color,
-        tags_json,
-        annotation.deleted_at,
-        annotation.created_at,
-        annotation.updated_at,
-        annotation.provenance,
-        annotation.checksum,
-      ],
-    );
-    if let Err(e) = ann_result {
-      drop(conn);
-      let _ = self.remove_asset_file(app_dir, &asset.relative_path);
-      return Err(e.to_string());
-    }
-    let asset_result = conn.execute(
-      "INSERT INTO annotation_assets (
-        id, annotation_id, document_id, asset_kind, relative_path,
-        content_type, width_px, height_px, caption, created_at, provenance
-      ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-      params![
-        asset.id,
-        asset.annotation_id,
-        asset.document_id,
-        asset.asset_kind,
-        asset.relative_path,
-        asset.content_type,
-        asset.width_px,
-        asset.height_px,
-        asset.caption,
-        asset.created_at,
-        asset.provenance,
-      ],
-    );
-    if let Err(e) = asset_result {
-      // Roll back the annotation row before releasing the lock.
-      let _ = conn.execute(
-        "DELETE FROM annotations WHERE id = ?1",
-        params![annotation.id],
-      );
-      drop(conn);
-      let _ = self.remove_asset_file(app_dir, &asset.relative_path);
-      return Err(e.to_string());
-    }
+    let tx_result: Result<(), String> = {
+      let tx = conn.transaction().map_err(|e| e.to_string())?;
+      tx.execute(
+        "INSERT INTO annotations (
+          id, document_id, document_version_id, annotation_type, page_index,
+          page_label, rects_json, quote, prefix_text, suffix_text,
+          text_layer_checksum, comment, color, tags, deleted_at,
+          created_at, updated_at, provenance, checksum
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+        params![
+          annotation.id,
+          annotation.document_id,
+          annotation.document_version_id,
+          annotation.annotation_type,
+          annotation.page_index,
+          annotation.page_label,
+          rects_json,
+          annotation.quote,
+          annotation.prefix_text,
+          annotation.suffix_text,
+          annotation.text_layer_checksum,
+          annotation.comment,
+          annotation.color,
+          tags_json,
+          annotation.deleted_at,
+          annotation.created_at,
+          annotation.updated_at,
+          annotation.provenance,
+          annotation.checksum,
+        ],
+      ).map_err(|e| e.to_string())?;
+      tx.execute(
+        "INSERT INTO annotation_assets (
+          id, annotation_id, document_id, asset_kind, relative_path,
+          content_type, width_px, height_px, caption, created_at, provenance
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+          asset.id,
+          asset.annotation_id,
+          asset.document_id,
+          asset.asset_kind,
+          asset.relative_path,
+          asset.content_type,
+          asset.width_px,
+          asset.height_px,
+          asset.caption,
+          asset.created_at,
+          asset.provenance,
+        ],
+      ).map_err(|e| e.to_string())?;
+      tx.commit().map_err(|e| e.to_string())?;
+      Ok(())
+    };
     drop(conn);
+
+    if let Err(e) = tx_result {
+      // The transaction was rolled back — no rows exist. Remove the orphaned
+      // file so no bitmap lingers without its rows.
+      let _ = self.remove_asset_file(app_dir, &asset.relative_path);
+      return Err(e);
+    }
     Ok(())
+  }
+
+  /// FR-9.7 crash recovery: removes asset files in `app-data/annotations/`
+  /// that have no matching `relative_path` in the `annotation_assets` table.
+  /// Called at startup so a process kill between the file write and the DB
+  /// transaction commit (in `create_area_capture`) never leaves a permanent
+  /// orphaned bitmap. A file that IS referenced by a row is never touched.
+  pub fn reconcile_orphaned_asset_files(&self, app_dir: &Path) -> Result<usize, String> {
+    let annotations_dir = app_dir.join(ASSET_ROOT_COMPONENT);
+    if !annotations_dir.exists() {
+      return Ok(0);
+    }
+
+    // Collect every relative_path stored in the database.
+    let known_paths: std::collections::HashSet<String> = {
+      let conn = self.conn.lock().unwrap();
+      let mut stmt = conn
+        .prepare("SELECT relative_path FROM annotation_assets")
+        .map_err(|e| e.to_string())?;
+      let paths = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+      paths
+    };
+
+    let mut removed = 0;
+    let entries = fs::read_dir(&annotations_dir).map_err(|e| e.to_string())?;
+    for entry in entries.filter_map(|e| e.ok()) {
+      let path = entry.path();
+      // Only scan files (skip subdirectories and temp files from in-progress writes).
+      if !path.is_file() {
+        continue;
+      }
+      let file_name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => continue,
+      };
+      // Skip temp files from atomic writes (`.name.tmp-uuid`).
+      if file_name.starts_with('.') && file_name.contains(".tmp-") {
+        continue;
+      }
+      let relative_path = format!("{ASSET_ROOT_COMPONENT}/{file_name}");
+      if !known_paths.contains(&relative_path) {
+        if let Err(e) = fs::remove_file(&path) {
+          // Best-effort: log the error but continue cleaning other orphans.
+          eprintln!("reconcile_orphaned_asset_files: failed to remove orphaned asset '{}': {e}", path.display());
+        } else {
+          removed += 1;
+        }
+      }
+    }
+    Ok(removed)
   }
 
   /// Inserts an asset row for an existing file. The file must already exist
@@ -1313,6 +1369,160 @@ mod tests {
       .create_area_capture(app_dir.path(), &annotation, &big_asset, &huge)
       .is_err());
     assert!(!app_dir.path().join("annotations").join("asset-big.png").exists());
+  }
+
+  /// FR-9.7: a failed asset insert must roll back the annotation insert too
+  /// (the two inserts run in a single transaction, not autocommit). This test
+  /// forces a duplicate asset PK so the annotation insert succeeds but the
+  /// asset insert fails — the transaction must discard both.
+  #[test]
+  fn test_create_area_capture_transaction_rolls_back_on_duplicate_asset() {
+    let db = Database::in_memory().unwrap();
+    let (doc_id, version_id) = seed_document_and_version(&db);
+    let app_dir = tempdir().unwrap();
+
+    let annotation = Annotation {
+      id: "ann-tx".into(),
+      document_id: doc_id.clone(),
+      document_version_id: version_id.clone(),
+      checksum: "ck".into(),
+      annotation_type: "area".into(),
+      page_index: 0,
+      page_label: "1".into(),
+      rects: vec![NormalizedRect { x: 0.1, y: 0.1, width: 0.4, height: 0.3 }],
+      quote: "".into(),
+      prefix_text: "".into(),
+      suffix_text: "".into(),
+      text_layer_checksum: None,
+      comment: "".into(),
+      color: "claim".into(),
+      tags: vec![],
+      deleted_at: None,
+      created_at: "2026-08-18T00:00:00Z".into(),
+      updated_at: "2026-08-18T00:00:00Z".into(),
+      provenance: "user_authored".into(),
+    };
+    let asset = AnnotationAsset {
+      id: "asset-tx".into(),
+      annotation_id: "ann-tx".into(),
+      document_id: doc_id.clone(),
+      asset_kind: "area_capture".into(),
+      relative_path: "annotations/asset-tx.png".into(),
+      content_type: "image/png".into(),
+      width_px: 640,
+      height_px: 480,
+      caption: "".into(),
+      created_at: "2026-08-18T00:00:00Z".into(),
+      provenance: "user_authored".into(),
+    };
+
+    // First call succeeds — both rows + file are created.
+    db.create_area_capture(app_dir.path(), &annotation, &asset, b"first")
+      .unwrap();
+
+    // Second call with a DIFFERENT annotation id but the SAME asset id.
+    // The annotation insert succeeds (new PK) but the asset insert fails
+    // (duplicate PK) — the transaction must roll back the annotation too.
+    let mut ann2 = annotation.clone();
+    ann2.id = "ann-tx-2".into();
+    ann2.rects = vec![NormalizedRect { x: 0.2, y: 0.2, width: 0.3, height: 0.2 }];
+    let result = db.create_area_capture(app_dir.path(), &ann2, &asset, b"second");
+    assert!(result.is_err(), "duplicate asset PK must error");
+
+    // The second annotation was rolled back — it must not exist.
+    assert!(
+      db.get_annotation_by_id("ann-tx-2").unwrap().is_none(),
+      "transaction must roll back the annotation insert when the asset insert fails"
+    );
+    // The first annotation is untouched.
+    assert!(db.get_annotation_by_id("ann-tx").unwrap().is_some());
+    // The first call's asset row still references the file.
+    let assets = db.get_annotation_assets("ann-tx").unwrap();
+    assert_eq!(assets.len(), 1);
+    assert_eq!(assets[0].id, "asset-tx");
+  }
+
+  /// FR-9.7 crash recovery: `reconcile_orphaned_asset_files` removes files in
+  /// `annotations/` that have no matching `annotation_assets` row, while
+  /// leaving referenced files untouched.
+  #[test]
+  fn test_reconcile_orphaned_asset_files() {
+    let db = Database::in_memory().unwrap();
+    let (doc_id, version_id) = seed_document_and_version(&db);
+    let app_dir = tempdir().unwrap();
+    fs::create_dir_all(app_dir.path().join(ASSET_ROOT_COMPONENT)).unwrap();
+
+    // A referenced file: write it + create the rows via create_area_capture.
+    let annotation = Annotation {
+      id: "ann-recon".into(),
+      document_id: doc_id.clone(),
+      document_version_id: version_id.clone(),
+      checksum: "ck".into(),
+      annotation_type: "area".into(),
+      page_index: 0,
+      page_label: "1".into(),
+      rects: vec![NormalizedRect { x: 0.1, y: 0.1, width: 0.4, height: 0.3 }],
+      quote: "".into(),
+      prefix_text: "".into(),
+      suffix_text: "".into(),
+      text_layer_checksum: None,
+      comment: "".into(),
+      color: "claim".into(),
+      tags: vec![],
+      deleted_at: None,
+      created_at: "2026-08-18T00:00:00Z".into(),
+      updated_at: "2026-08-18T00:00:00Z".into(),
+      provenance: "user_authored".into(),
+    };
+    let asset = AnnotationAsset {
+      id: "asset-recon".into(),
+      annotation_id: "ann-recon".into(),
+      document_id: doc_id.clone(),
+      asset_kind: "area_capture".into(),
+      relative_path: "annotations/asset-recon.png".into(),
+      content_type: "image/png".into(),
+      width_px: 100,
+      height_px: 100,
+      caption: "".into(),
+      created_at: "2026-08-18T00:00:00Z".into(),
+      provenance: "user_authored".into(),
+    };
+    db.create_area_capture(app_dir.path(), &annotation, &asset, b"keep")
+      .unwrap();
+
+    // An orphaned file: write it directly (simulates a crash after file write
+    // but before DB transaction commit).
+    fs::write(
+      app_dir.path().join("annotations").join("orphan.png"),
+      b"orphan",
+    )
+    .unwrap();
+
+    // A temp file from an in-progress atomic write — must be skipped.
+    fs::write(
+      app_dir.path().join("annotations").join(".crop.png.tmp-abc"),
+      b"tmp",
+    )
+    .unwrap();
+
+    let removed = db.reconcile_orphaned_asset_files(app_dir.path()).unwrap();
+    assert_eq!(removed, 1, "exactly the orphaned file must be removed");
+
+    // The referenced file is untouched.
+    assert!(app_dir.path().join("annotations").join("asset-recon.png").exists());
+    // The orphan is gone.
+    assert!(!app_dir.path().join("annotations").join("orphan.png").exists());
+    // The temp file was skipped (still there — a concurrent write may finalise it).
+    assert!(app_dir.path().join("annotations").join(".crop.png.tmp-abc").exists());
+
+    // Running again is a no-op (idempotent).
+    let removed2 = db.reconcile_orphaned_asset_files(app_dir.path()).unwrap();
+    assert_eq!(removed2, 0);
+
+    // Missing annotations/ directory is a clean no-op.
+    let empty_dir = tempdir().unwrap();
+    let removed3 = db.reconcile_orphaned_asset_files(empty_dir.path()).unwrap();
+    assert_eq!(removed3, 0);
   }
 
   #[test]

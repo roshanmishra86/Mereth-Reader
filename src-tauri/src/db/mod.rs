@@ -188,10 +188,18 @@ impl Database {
 
     run_migrations(&mut conn, &db_dir, db_existed).map_err(|e| e.to_string())?;
 
-    Ok(Database {
+    let db = Database {
       conn: Arc::new(Mutex::new(conn)),
       app_dir: app_dir.to_path_buf(),
-    })
+    };
+
+    // FR-9.7 crash recovery: remove asset files orphaned by a process kill
+    // between the file write and the DB transaction commit in
+    // `create_area_capture`. This runs at every startup so an orphaned bitmap
+    // never survives past the next open.
+    db.reconcile_orphaned_asset_files(&db.app_dir)?;
+
+    Ok(db)
   }
 
   pub fn in_memory() -> Result<Self, String> {
