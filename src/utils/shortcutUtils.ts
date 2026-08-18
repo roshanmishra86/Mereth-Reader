@@ -216,6 +216,30 @@ export const SHORTCUT_LIST: KeyboardShortcut[] = [
     description: 'Draft a retrieval review prompt from selected text',
     match: (e) => (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'm',
   },
+  {
+    id: 'annot.areaCapture',
+    name: 'Area Capture',
+    category: 'Annotations & Notes',
+    keys: 'Alt + A',
+    description: 'Toggle one-drag area capture mode; drag across a figure or page region',
+    match: (e) => e.altKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'a',
+  },
+  {
+    id: 'annot.bookmark',
+    name: 'Bookmark Current Page',
+    category: 'Annotations & Notes',
+    keys: 'Alt + B',
+    description: 'Add a bookmark annotation to the current page',
+    match: (e) => e.altKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'b',
+  },
+  {
+    id: 'annot.undo',
+    name: 'Undo Last Annotation Action',
+    category: 'Annotations & Notes',
+    keys: 'Ctrl + Z',
+    description: 'Undo the most recent annotation create, edit, or trash action (FR-9.8)',
+    match: (e) => (e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z',
+  },
 ];
 
 /**

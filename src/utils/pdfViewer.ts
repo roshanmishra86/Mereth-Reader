@@ -23,6 +23,7 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import { PageTextContent, OutlineItem, PDFTextItem } from './pdfUtils';
 import { prioritizePageWindow } from './jobQueue';
+import { mapPdfJsAnnotationData, ParsedEmbeddedAnnotation } from './embeddedAnnotations';
 
 // Configure worker using legacy worker build for cross-environment compatibility
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
@@ -200,6 +201,57 @@ export async function getPdfPageBaseSize(
     return size;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Task 3.6 (FR-9.9): page provider interface for embedded-annotation mapping,
+ * kept narrow so the mapper is unit-testable with a fake page in Node while
+ * the real pdf.js page satisfies it structurally.
+ */
+export interface EmbeddedAnnotationPageLike {
+  getAnnotations(): Promise<Array<Record<string, unknown>>>;
+  /** Media box in PDF space: [minX, minY, maxX, maxY]. */
+  view: number[];
+  /** The page's own /Rotate value. */
+  rotate: number;
+}
+
+/** Maps one pdf.js page object's annotations into ParsedEmbeddedAnnotation[]. */
+export async function mapPdfPageEmbeddedAnnotations(
+  page: EmbeddedAnnotationPageLike,
+  pageIndex: number
+): Promise<ParsedEmbeddedAnnotation[]> {
+  const raw = await page.getAnnotations();
+  const view = page.view ?? [0, 0, 0, 0];
+  const mediaWidth = Math.max(1, view[2] - view[0]);
+  const mediaHeight = Math.max(1, view[3] - view[1]);
+  const rotate = page.rotate ?? 0;
+  const out: ParsedEmbeddedAnnotation[] = [];
+  for (const item of raw) {
+    const mapped = mapPdfJsAnnotationData(
+      item,
+      { mediaWidth, mediaHeight, rotate, mediaX: view[0], mediaY: view[1], pageIndex }
+    );
+    if (mapped) out.push(mapped);
+  }
+  return out;
+}
+
+/**
+ * Embedded (PDF-born) annotations for one page (task 3.6, FR-9.9). Never
+ * throws — malformed annotation dictionaries degrade to an empty list.
+ */
+export async function getPdfPageEmbeddedAnnotations(
+  doc: pdfjsLib.PDFDocumentProxy,
+  pageNumber: number
+): Promise<ParsedEmbeddedAnnotation[]> {
+  if (pageNumber < 1 || pageNumber > doc.numPages) return [];
+  try {
+    const page = await doc.getPage(pageNumber);
+    return await mapPdfPageEmbeddedAnnotations(page as unknown as EmbeddedAnnotationPageLike, pageNumber - 1);
+  } catch {
+    return [];
   }
 }
 

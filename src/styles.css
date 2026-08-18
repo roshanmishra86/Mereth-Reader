@@ -698,3 +698,862 @@
   margin-top: 6px;
 }
 
+/* ============================================================
+   Task 3.4 — annotation overlays and creation UI (PRD R2 / FR-9)
+   ============================================================ */
+
+/* Durable overlay layer: rects re-derive from normalized geometry against
+   the current scale/rotation (FR-9.4). Pointer-transparent so selection and
+   scrolling pass through; interactive affordances re-enable it themselves. */
+.annotation-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.annotation-rect {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+}
+
+.annotation-highlight {
+  mix-blend-mode: multiply;
+}
+
+.annotation-underline {
+  border-bottom: 2px solid;
+  background: transparent;
+}
+
+.annotation-overlay.selected .annotation-rect {
+  outline: 2px solid #ec3013;
+  outline-offset: 1px;
+}
+
+/* Area capture crop: the stored bitmap, positioned at its stored rect. */
+.annotation-area {
+  position: absolute;
+  pointer-events: auto;
+  display: block;
+  padding: 0;
+  border: 1px solid rgba(32, 30, 29, 0.55);
+  background: #fff;
+  overflow: visible;
+  cursor: pointer;
+  text-align: left;
+}
+
+.annotation-area img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+
+.annotation-area .area-loading {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: #9b9797;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: #eae9e9;
+}
+
+.annotation-area .area-caption {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -17px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #444141;
+  font-size: 10px;
+}
+
+.annotation-area.selected {
+  outline: 2px solid #ec3013;
+  outline-offset: 2px;
+}
+
+/* Anchored comment pin (FR-9.1): a small marker at the anchor rect. */
+.annotation-pin {
+  position: absolute;
+  z-index: 3;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #f3f2f2;
+  box-shadow: 0 0 0 1px rgba(32, 30, 29, 0.55), 0 1px 3px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  pointer-events: auto;
+  display: grid;
+  place-items: center;
+}
+
+.annotation-pin .pin-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+.annotation-pin.selected {
+  outline: 2px solid #ec3013;
+  outline-offset: 1px;
+}
+
+/* Bookmark flag in the page's top-right corner. */
+.annotation-bookmark {
+  position: absolute;
+  z-index: 3;
+  top: 0 !important;
+  right: 0 !important;
+  left: auto;
+  width: 18px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 0 3px 3px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  display: grid;
+  place-items: start center;
+}
+
+.annotation-bookmark span {
+  display: block;
+  width: 14px;
+  height: 18px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%);
+  border: 1px solid rgba(0, 0, 0, 0.3);
+}
+
+.annotation-bookmark.selected span {
+  outline: 2px solid #ec3013;
+  outline-offset: 1px;
+}
+
+/* Compact selection popover (FR-9.2): colours, comment, one-tap actions. */
+.selection-popup {
+  position: absolute;
+  z-index: 20;
+  width: 252px;
+  padding: 10px;
+  background: #f3f2f2;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  border-top: 3px solid #ec3013;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+  display: grid;
+  gap: 8px;
+}
+
+.popup-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #605d5d;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.popup-close {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: #605d5d;
+  padding: 0 2px;
+}
+
+.popup-close:hover {
+  color: #201e1d;
+}
+
+.popup-swatches {
+  display: flex;
+  gap: 6px;
+}
+
+.popup-swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.popup-swatch.selected {
+  border-color: #201e1d;
+  outline: 1px solid #f3f2f2;
+  outline-offset: -1px;
+}
+
+.popup-swatch:disabled {
+  cursor: default;
+}
+
+.popup-field {
+  display: grid;
+  gap: 4px;
+}
+
+.popup-field > span {
+  color: #605d5d;
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.popup-field textarea {
+  width: 100%;
+  min-height: 44px;
+  padding: 6px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #eae9e9;
+  resize: vertical;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #201e1d;
+}
+
+.popup-error {
+  margin: 0;
+  color: #ae1800;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.popup-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.popup-actions .button.compact {
+  flex: 1;
+  min-width: 72px;
+}
+
+.popup-actions .button.compact:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.popup-lock {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #605d5d;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.popup-lock input {
+  accent-color: #ec3013;
+  margin: 0;
+}
+
+/* Area capture mode: full-container drag surface (FR-9.2). */
+.area-capture-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  cursor: crosshair;
+  background: rgba(32, 30, 29, 0.06);
+}
+
+.area-drag-box {
+  position: absolute;
+  border: 1px solid #ec3013;
+  background: rgba(236, 48, 19, 0.12);
+  z-index: 16;
+  pointer-events: none;
+}
+
+/* Area capture caption prompt (FR-9.2/9.7). */
+.area-caption-popover {
+  position: absolute;
+  z-index: 21;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 300px;
+  padding: 13px;
+  background: #f3f2f2;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  border-top: 3px solid #ec3013;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
+  display: grid;
+  gap: 9px;
+}
+
+.area-caption-popover .eyebrow {
+  margin-bottom: 0;
+}
+
+.area-caption-popover .popup-actions {
+  justify-content: flex-end;
+}
+
+/* ---- Task 3.5: annotation editor, trash, palette settings (FR-9.3/9.5/9.8) ---- */
+
+.pane-heading-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.pane-heading .pane-heading-actions button {
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #eae9e9;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 2px;
+}
+
+.pane-heading .pane-heading-actions button:hover:not(:disabled) {
+  background: #d7d3d3;
+}
+
+.pane-heading .pane-heading-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.annotation-editor {
+  margin: 8px 12px;
+  padding: 11px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  border-left: 3px solid #ec3013;
+  background: #eae9e9;
+  display: grid;
+  gap: 10px;
+}
+
+.annotation-editor .pane-heading {
+  padding: 0;
+}
+
+.editor-quote {
+  margin: 0;
+  padding: 9px 10px;
+  border-left: 3px solid #8fb583;
+  background: #f3f2f2;
+  color: #444141;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 120px;
+  overflow: auto;
+}
+
+.editor-field {
+  display: grid;
+  gap: 4px;
+}
+
+.editor-field-label {
+  color: #605d5d;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.annotation-editor textarea,
+.annotation-editor input[type="text"] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #f3f2f2;
+  color: #201e1d;
+  font-size: 12px;
+}
+
+.annotation-editor textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.button.danger-ghost {
+  background: transparent;
+  border-color: #ae1800;
+  color: #ae1800;
+}
+
+.button.danger-ghost:hover {
+  background: #ffd9d2;
+}
+
+.button.danger {
+  background: #ae1800;
+  border-color: #ae1800;
+  color: #fff;
+}
+
+.button.danger:hover {
+  background: #921300;
+}
+
+.trash-section {
+  margin-top: 6px;
+  border-top: 2px solid rgba(32, 30, 29, 0.2);
+}
+
+.trash-item {
+  align-items: center;
+}
+
+.trash-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+/* FR-9.3 palette editor inside Settings → Annotations. */
+.palette-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(32, 30, 29, 0.15);
+}
+
+.palette-row:last-of-type {
+  border-bottom: 0;
+}
+
+.palette-color-field input[type="color"] {
+  width: 34px;
+  height: 26px;
+  padding: 1px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #eae9e9;
+  cursor: pointer;
+}
+
+.palette-label-input {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #f3f2f2;
+  color: #201e1d;
+  font-size: 12px;
+}
+
+.palette-key {
+  color: #8a8585;
+  font-size: 10px;
+}
+
+:root[data-theme="dark"] .annotation-editor {
+  background: #262424;
+  border-color: rgba(243, 242, 242, 0.25);
+}
+
+:root[data-theme="dark"] .editor-quote {
+  background: #323030;
+  color: #d7d3d3;
+}
+
+:root[data-theme="dark"] .annotation-editor textarea,
+:root[data-theme="dark"] .annotation-editor input[type="text"],
+:root[data-theme="dark"] .palette-label-input {
+  background: #323030;
+  color: #f3f2f2;
+  border-color: rgba(243, 242, 242, 0.25);
+}
+
+:root[data-theme="dark"] .button.danger-ghost {
+  border-color: #ff7a63;
+  color: #ff7a63;
+}
+
+:root[data-theme="dark"] .button.danger {
+  background: #921300;
+  border-color: #921300;
+}
+
+/* ---- Task 3.6: embedded (PDF-born) annotation overlays + import modal (FR-9.9) ---- */
+
+/* Source-style overlays: visually distinct from user annotations (dashed,
+   PDF's own colour, outline pins) — "still in the PDF", not "mine". */
+.embedded-annotation-layer {
+  pointer-events: none;
+}
+
+.embedded-annot-overlay {
+  pointer-events: auto;
+}
+
+.embedded-rect {
+  position: absolute;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+  border-bottom: 2px dashed transparent;
+}
+
+.embedded-rect-highlight {
+  border-bottom: 2px dashed rgba(32, 30, 29, 0.55);
+  outline: 1px dashed rgba(32, 30, 29, 0.4);
+  border-radius: 2px;
+}
+
+.embedded-rect-highlight:hover,
+.embedded-rect-underline:hover {
+  outline: 2px solid #ec3013;
+  outline-offset: 1px;
+}
+
+.embedded-rect-underline {
+  border-bottom: 3px double #9b9797;
+}
+
+.embedded-pin {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.embedded-pin-dot {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 2px solid #9b9797;
+  border-radius: 50%;
+  background: rgba(243, 242, 242, 0.85);
+  color: #605d5d;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.embedded-pin:hover .embedded-pin-dot {
+  border-color: #ec3013;
+  color: #ec3013;
+}
+
+/* Right-pane summary row (FR-9.9 entry point). */
+.embedded-summary-row {
+  padding: 10px 12px;
+  border-top: 1px solid rgba(32, 30, 29, 0.25);
+  display: grid;
+  gap: 6px;
+}
+
+.embedded-summary-row small {
+  color: #605d5d;
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+/* Import preview dialog. */
+.embedded-import-modal {
+  width: min(680px, 100%);
+  max-height: calc(100vh - 40px);
+  display: flex;
+  flex-direction: column;
+}
+
+.embedded-import-modal h2 {
+  margin: 0 0 7px;
+}
+
+.embedded-import-modal > .destination-rule {
+  margin: 10px 0 12px;
+}
+
+.embedded-import-list {
+  overflow: auto;
+  flex: 1;
+  display: grid;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.embedded-import-row {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  gap: 8px;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid rgba(32, 30, 29, 0.3);
+  background: #eae9e9;
+}
+
+.embedded-import-row.status-duplicate {
+  border-left: 3px solid #d99b2b;
+}
+
+.embedded-import-row.status-unsupported {
+  border-left: 3px solid #9b9797;
+  opacity: 0.75;
+}
+
+.embedded-import-row.imported {
+  border-left: 3px solid #8fb583;
+}
+
+.embedded-import-check {
+  padding-top: 2px;
+}
+
+.embedded-import-check input {
+  accent-color: #ec3013;
+}
+
+.embedded-import-badge {
+  align-self: center;
+  padding: 3px 7px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  border-radius: 2px;
+  background: #f3f2f2;
+  color: #444141;
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.embedded-import-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.embedded-import-main b {
+  font-size: 12px;
+}
+
+.embedded-import-main small {
+  color: #605d5d;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.embedded-import-main .embedded-import-provenance {
+  color: #444141;
+  font-size: 10px;
+}
+
+.embedded-import-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.embedded-import-status em {
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.embedded-import-status em.ok {
+  color: #3f7d3f;
+}
+
+.embedded-import-status em.warn {
+  color: #a97910;
+}
+
+.embedded-import-status em.muted {
+  color: #9b9797;
+}
+
+.embedded-import-swatch {
+  width: 12px;
+  height: 12px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  border-radius: 2px;
+}
+
+.embedded-import-reason {
+  grid-column: 2 / -1;
+  margin: 0;
+  color: #605d5d;
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.embedded-import-summary {
+  margin-top: 10px;
+  color: #605d5d;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.embedded-import-backdrop .modal-close {
+  position: sticky;
+  top: 0;
+  float: right;
+}
+
+:root[data-theme="dark"] .embedded-import-row {
+  background: #262424;
+  border-color: rgba(243, 242, 242, 0.25);
+}
+
+:root[data-theme="dark"] .embedded-import-badge {
+  background: #323030;
+  color: #d7d3d3;
+}
+
+:root[data-theme="dark"] .embedded-import-main small,
+:root[data-theme="dark"] .embedded-import-reason {
+  color: #b9b4b4;
+}
+
+:root[data-theme="dark"] .embedded-import-summary {
+  color: #b9b4b4;
+}
+
+/* ---- Task 3.7: annotation sidebar search + filters (FR-9.6) ---- */
+.annotation-filters {
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px 10px;
+  border-bottom: 1px solid rgba(32, 30, 29, 0.25);
+}
+
+.filter-search,
+.filter-tags,
+.filter-pages input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #f3f2f2;
+  color: #201e1d;
+  font-size: 11.5px;
+}
+
+.filter-search:focus,
+.filter-tags:focus,
+.filter-pages input:focus {
+  outline: 1px solid #ec3013;
+  border-color: #ec3013;
+}
+
+.filter-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px solid rgba(32, 30, 29, 0.35);
+  border-radius: 10px;
+  background: #eae9e9;
+  color: #605d5d;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.filter-chip .annotation-swatch {
+  width: 8px;
+  height: 8px;
+  margin: 0;
+  border-radius: 2px;
+}
+
+.filter-chip.on {
+  border-color: #ec3013;
+  background: #fff2ef;
+  color: #201e1d;
+}
+
+.filter-chip:focus-visible {
+  outline: 1px solid #ec3013;
+}
+
+.filter-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: #605d5d;
+  font-size: 10.5px;
+}
+
+.filter-pages input {
+  width: 58px;
+  padding: 4px 6px;
+}
+
+.filter-status select {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 1px solid rgba(32, 30, 29, 0.4);
+  background: #f3f2f2;
+  color: #201e1d;
+  font-size: 10.5px;
+}
+
+.filter-clear {
+  justify-self: start;
+  border: 0;
+  background: none;
+  color: #ae1800;
+  font-size: 10.5px;
+  font-weight: 800;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.filter-empty {
+  padding: 12px;
+  margin: 0;
+}
+
+:root[data-theme="dark"] .filter-search,
+:root[data-theme="dark"] .filter-tags,
+:root[data-theme="dark"] .filter-pages input,
+:root[data-theme="dark"] .filter-status select {
+  background: #323030;
+  color: #f3f2f2;
+  border-color: rgba(243, 242, 242, 0.25);
+}
+
+:root[data-theme="dark"] .filter-chip {
+  background: #262424;
+  border-color: rgba(243, 242, 242, 0.3);
+  color: #b9b4b4;
+}
+
+:root[data-theme="dark"] .filter-chip.on {
+  background: #3a2826;
+  border-color: #ec3013;
+  color: #f3f2f2;
+}
+

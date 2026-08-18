@@ -14,6 +14,9 @@ import {
   RotationAngle,
 } from '../utils/viewModeUtils';
 import { PdfPageCanvas } from './PdfPageCanvas';
+import { AnnotationRecord, PaletteEntry } from '../utils/annotationTypes';
+import { ParsedEmbeddedAnnotation } from '../utils/embeddedAnnotations';
+import { AnnotationAssetVisual } from './PageAnnotationLayer';
 
 interface ReaderCanvasProps {
   doc: pdfjsLib.PDFDocumentProxy;
@@ -35,6 +38,16 @@ interface ReaderCanvasProps {
   onPageSizeMeasured: (pageNumber: number, baseSize: PageSize) => void;
   onScrollPositionChange: (scrollTop: number) => void;
   onCopySelection?: () => void;
+  // Task 3.4 durable annotation overlays (FR-9.4)
+  annotationsByPage?: Map<number, AnnotationRecord[]>;
+  annotationAssets?: Record<string, AnnotationAssetVisual>;
+  selectedAnnotationId?: string | null;
+  /** User's semantic palette (FR-9.3). */
+  palette?: PaletteEntry[];
+  onSelectAnnotation?: (id: string) => void;
+  // Task 3.6 embedded (PDF-born) annotations (FR-9.9)
+  embeddedByPage?: Map<number, ParsedEmbeddedAnnotation[]>;
+  onOpenEmbeddedImport?: () => void;
 }
 
 interface RowLayout {
@@ -75,6 +88,13 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
     onPageSizeMeasured,
     onScrollPositionChange,
     onCopySelection,
+    annotationsByPage,
+    annotationAssets,
+    selectedAnnotationId,
+    palette,
+    onSelectAnnotation,
+    embeddedByPage,
+    onOpenEmbeddedImport,
   } = props;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -296,6 +316,14 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
                 scale={scale}
                 rotation={rotation}
                 onRendered={handlePageRendered}
+                annotations={annotationsByPage?.get(row.leftPage)}
+                baseSize={baseSizesRef.current.get(row.leftPage) ?? representativeSize}
+                annotationAssets={annotationAssets}
+                selectedAnnotationId={selectedAnnotationId}
+                palette={palette}
+                onSelectAnnotation={onSelectAnnotation}
+                embeddedItems={embeddedByPage?.get(row.leftPage)}
+                onOpenEmbeddedImport={onOpenEmbeddedImport}
               />
               {row.rightPage !== undefined && (
                 <PdfPageCanvas
@@ -304,6 +332,14 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
                   scale={scale}
                   rotation={rotation}
                   onRendered={handlePageRendered}
+                  annotations={annotationsByPage?.get(row.rightPage)}
+                  baseSize={baseSizesRef.current.get(row.rightPage) ?? representativeSize}
+                  annotationAssets={annotationAssets}
+                  selectedAnnotationId={selectedAnnotationId}
+                  palette={palette}
+                  onSelectAnnotation={onSelectAnnotation}
+                  embeddedItems={embeddedByPage?.get(row.rightPage)}
+                  onOpenEmbeddedImport={onOpenEmbeddedImport}
                 />
               )}
             </div>

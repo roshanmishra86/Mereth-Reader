@@ -43,6 +43,18 @@ import { ReaderCanvas } from "./components/ReaderCanvas";
 import { SearchOptions, performAdvancedSearch, getNextMatchIndex, DEFAULT_SEARCH_OPTIONS } from "./utils/searchUtils";
 import { parseOutlineTree } from "./utils/navigationUtils";
 import { resolveShortcutAction } from "./utils/shortcutUtils";
+import { getPdfPageEmbeddedAnnotations } from "./utils/pdfViewer";
+import {
+  ParsedEmbeddedAnnotation,
+  EmbeddedImportPreview,
+  buildEmbeddedImportRecord,
+  classifyEmbeddedAnnotations,
+  countImportPreviews,
+  mappedAnnotationTypeForSubtype,
+  matchPaletteKeyForRgb,
+} from "./utils/embeddedAnnotations";
+import { EmbeddedImportModal } from "./components/EmbeddedImportModal";
+import { AnnotationFilters, EMPTY_ANNOTATION_FILTERS, applyAnnotationFilters } from "./utils/annotationFilter";
 import { ReaderToolbar } from "./components/ReaderToolbar";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { SettingsShortcuts } from "./components/SettingsShortcuts";
@@ -50,7 +62,7 @@ import { LibraryView } from "./components/LibraryView";
 import { JobQueueDrawer } from "./components/JobQueueDrawer";
 import { DuplicateConfirmModal } from "./components/DuplicateConfirmModal";
 import { CollectionItem } from "./utils/libraryUtils";
-import { BackgroundJob, JobQueueManager, createBackgroundJob } from "./utils/jobQueue";
+import { BackgroundJob, JobQueueManager, createBackgroundJob, prioritizePageWindow } from "./utils/jobQueue";
 import { DuplicateConfirmationState, checkDuplicateFingerprint, resolveDuplicateAction, DuplicateResolutionAction } from "./utils/duplicateCheck";
 import {
   ReadingSessionState,
@@ -80,9 +92,55 @@ import { RendererErrorBoundary } from "./components/RendererErrorBoundary";
 import { MalformedDocumentView } from "./components/MalformedDocumentView";
 import { EmptyState } from "./components/EmptyState";
 import { validatePdfPassword } from "./utils/recoveryUtils";
+import { formatExtendedPageLabel } from "./utils/navigationUtils";
+// Task 3.4 annotation creation and durable anchors (PRD R2)
+import {
+  AnnotationRecord,
+  AnnotationAssetRecord,
+  ANNOTATION_TYPES,
+  PaletteEntry,
+  DEFAULT_ANNOTATION_PALETTE,
+  DEFAULT_ANNOTATION_COLOR,
+  buildAreaAnnotation,
+  buildAreaAssetRecord,
+  buildBookmarkAnnotation,
+  buildCommentAnnotation,
+  buildTextAnnotation,
+  paletteColorFor,
+  paletteLabelFor,
+} from "./utils/annotationTypes";
+import { AnnotationAssetVisual } from "./components/PageAnnotationLayer";
+import { SelectionPopup, SelectionPopupAnchor } from "./components/SelectionPopup";
+import { AreaCaptureLayer, AreaCaptureResult } from "./components/AreaCaptureLayer";
+import {
+  createAnnotation,
+  createAreaCapture,
+  loadAnnotationAssets,
+  readAnnotationAssetBlob,
+  restoreAnnotation,
+  trashAnnotation,
+  purgeAnnotation,
+  updateAnnotationFields,
+} from "./utils/annotationIo";
+// Task 3.5 — palette configuration, in-session undo, quote/comment separation
+import { AnnotationEditor } from "./components/AnnotationEditor";
+import { SettingsAnnotations } from "./components/SettingsAnnotations";
+import { AnnotationUndoManager } from "./utils/annotationUndo";
+import {
+  ANNOTATION_PALETTE_SETTING_KEY,
+  parsePalette,
+  serializePalette,
+} from "./utils/annotationPalette";
+import {
+  PageBox,
+  ViewportRect,
+  buildQuoteContext,
+  computeTextLayerChecksum,
+  dragBoxToNormalized,
+  mergeSelectionRects,
+} from "./utils/annotationAnchor";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
-type Highlight = { id: string; color: string; label: string; quote: string; page: string };
 
 interface LaunchRoutePayload {
   is_single_instance?: boolean;
@@ -107,6 +165,21 @@ const nav = [
   ["notes", "Notes", "✎"],
   ["review", "Review", "↻"],
 ] as const;
+
+/** Loads a document's annotations in one pass: active rows + trashed rows. */
+async function loadAnnotationSets(documentId: string): Promise<{
+  active: AnnotationRecord[];
+  trashed: AnnotationRecord[];
+}> {
+  const [active, withTrash] = await Promise.all([
+    invoke<AnnotationRecord[]>("db_get_annotations_for_document", { documentId, includeTrashed: false }),
+    invoke<AnnotationRecord[]>("db_get_annotations_for_document", { documentId, includeTrashed: true }),
+  ]);
+  return {
+    active: active ?? [],
+    trashed: (withTrash ?? []).filter((a) => a.deleted_at !== null),
+  };
+}
 
 function Glyph({ children }: { children: string }) {
   return <span className="glyph" aria-hidden="true">{children}</span>;
@@ -164,14 +237,28 @@ function App() {
     detached: number;
   } | null>(null);
 
-  // Annotations, notes, and review prompts have no persistence until the R2–R4
-  // milestones — they start empty rather than fabricated (U15).
-  const [annotationsList] = useState<Highlight[]>([]);
+  // Task 3.4: annotations are real records loaded from SQLite per open
+  // document; notes and review prompts arrive with their R3/R4 milestones —
+  // nothing is fabricated (U15).
+  const [annotationsList, setAnnotationsList] = useState<AnnotationRecord[]>([]);
+  // Task 3.5: recoverable trash records (FR-9.8) — loaded alongside the active
+  // list so Restore/Purge stay truthful without hiding what is recoverable.
+  const [trashedAnnotations, setTrashedAnnotations] = useState<AnnotationRecord[]>([]);
   const [notesList] = useState<Array<{ id: string; title: string; type: string }>>([]);
   const [reviewPromptsList] = useState<Array<{ id: string; prompt: string }>>([]);
+  // The current version row's id — creation-time checksums bind to it and
+  // re-anchoring switches it; null until registration/refresh completes.
+  const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
+  // Task 3.5: the user's semantic palette (FR-9.3), loaded from settings.
+  const [palette, setPalette] = useState<PaletteEntry[]>(DEFAULT_ANNOTATION_PALETTE);
+  // In-session undo (FR-9.8): the manager holds the inverse information; the
+  // counter drives the UI's can-undo affordance.
+  const undoManagerRef = useRef<AnnotationUndoManager | null>(null);
+  if (!undoManagerRef.current) undoManagerRef.current = new AnnotationUndoManager();
+  const [undoCount, setUndoCount] = useState(0);
 
   const activeAnnotation = useMemo(
-    () => annotationsList.find((annotation) => annotation.id === selected) ?? annotationsList[0] ?? { id: "none", color: "yellow", label: "Evidence", quote: "No active highlight selected", page: "1" },
+    () => annotationsList.find((annotation) => annotation.id === selected) ?? annotationsList[0] ?? null,
     [selected, annotationsList],
   );
 
@@ -305,6 +392,10 @@ function App() {
           if (settingRows && settingRows.length > 0) {
             const loaded = parseSettingsRows(settingRows);
             setAppearance(loaded);
+            // Task 3.5 (FR-9.3): the semantic palette rides the settings
+            // table as one JSON value; corrupt values fall back to defaults.
+            const paletteRow = settingRows.find((row) => row.key === ANNOTATION_PALETTE_SETTING_KEY);
+            if (paletteRow) setPalette(parsePalette(paletteRow.value));
           }
         } catch {
           // Fallback if settings table unpopulated
@@ -404,6 +495,12 @@ function App() {
   // Monotonic id for in-flight openDocument calls so a stale async open can
   // detect that a newer one superseded it and bail out before mutating state.
   const openDocumentRequestId = useRef(0);
+  // Mirror of the active document for async handlers that need to scope their
+  // refreshes (e.g. version registration completing for the open document).
+  const activeDocumentRef = useRef<DocumentRecord | null>(null);
+  useEffect(() => {
+    activeDocumentRef.current = activeDocument;
+  }, [activeDocument]);
 
   async function openDocument(doc: DocumentRecord) {
     // Task 2.9 gate mark (dev-only) so the in-app driver can attribute timing.
@@ -414,6 +511,10 @@ function App() {
     // newer document's session and the debounced save effect cannot persist one
     // document's page/zoom into another's session row.
     const openRequestId = ++openDocumentRequestId.current;
+    // Whether this open switches documents — only then is the previous
+    // document's selection cleared (a deep link re-opening the SAME document
+    // keeps its annotation selection).
+    const switchingDocument = activeDocumentRef.current?.id !== doc.id;
 
     let fileExists = true;
     try {
@@ -507,6 +608,39 @@ function App() {
       setVersionOffer(null);
       setVersionMismatchBannerVisible(false);
     }
+
+    // Task 3.4 (FR-9.4): creation-time checksums bind to the current version
+    // row, so resolve the latest version and load the document's active
+    // annotations before the reader can create any. Both are guarded by the
+    // open-request id so a stale open cannot attach another document's
+    // version/annotations to the active reader.
+    try {
+      const versions = await invoke<DocumentVersionRecord[]>("db_get_document_versions", {
+        documentId: doc.id,
+      });
+      if (openRequestId !== openDocumentRequestId.current) return;
+      const latest = versions[versions.length - 1] ?? null;
+      const latestId = latest?.id ?? null;
+      setCurrentVersionId(latestId);
+      if (latestId) {
+        const sets = await loadAnnotationSets(doc.id);
+        if (openRequestId !== openDocumentRequestId.current) return;
+        setAnnotationsList(sets.active);
+        setTrashedAnnotations(sets.trashed);
+      } else {
+        setAnnotationsList([]);
+        setTrashedAnnotations([]);
+      }
+    } catch {
+      if (openRequestId !== openDocumentRequestId.current) return;
+      setCurrentVersionId(null);
+      setAnnotationsList([]);
+      setTrashedAnnotations([]);
+    }
+
+    // A fresh open never shows the previous document's selection.
+    if (openRequestId !== openDocumentRequestId.current) return;
+    if (switchingDocument) setSelected("");
 
     // The text-extraction job for the active document is managed by the
     // `activeDocument?.id` effect below, so every open path (library click,
@@ -666,6 +800,141 @@ function App() {
     setVersionStatus("unchanged");
     setVersionOffer((offer) => (offer?.documentId === documentId ? null : offer));
     setReanchorDecision(null);
+
+    // Task 3.4: the current version id may have just been created (first open
+    // of a pre-3.3 record) or moved (re-anchor pass) — refresh it and the
+    // annotation rows (re-anchor rewrites their version bindings).
+    if (documentId === activeDocumentRef.current?.id) {
+      invoke<DocumentVersionRecord[]>("db_get_document_versions", { documentId })
+        .then((versions) => {
+          const latest = versions[versions.length - 1] ?? null;
+          setCurrentVersionId(latest?.id ?? null);
+        })
+        .catch(() => {});
+      loadAnnotationSets(documentId)
+        .then((sets) => {
+          setAnnotationsList(sets.active);
+          setTrashedAnnotations(sets.trashed);
+        })
+        .catch(() => {});
+    }
+  };
+
+  // ---- Task 3.5: annotation CRUD through the typed IPC, with in-session
+  // undo (FR-9.8). Every mutation refreshes BOTH lists so the annotations
+  // pane and the trash section stay truthful. ----
+
+  const refreshAnnotations = useCallback(async (documentId: string) => {
+    const sets = await loadAnnotationSets(documentId);
+    if (activeDocumentRef.current?.id !== documentId) return; // stale doc closed
+    setAnnotationsList(sets.active);
+    setTrashedAnnotations(sets.trashed);
+  }, []);
+
+  const bumpUndoUI = () => {
+    setUndoCount(undoManagerRef.current?.size ?? 0);
+  };
+
+  const handleAnnotationCreated = async (record: AnnotationRecord) => {
+    await createAnnotation(record);
+    await refreshAnnotations(record.document_id);
+    undoManagerRef.current?.pushCreate(record.id);
+    bumpUndoUI();
+  };
+
+  const handleAreaAnnotationCreated = async (
+    annotation: AnnotationRecord,
+    asset: AnnotationAssetRecord,
+    bytes: ArrayBuffer
+  ) => {
+    // FR-9.7: a single atomic IPC call writes the crop file and inserts both
+    // the annotation and asset rows — no half-created captures, no
+    // caller-supplied-path cleanup (PRD §15.3).
+    await createAreaCapture(annotation, asset, bytes);
+    await refreshAnnotations(annotation.document_id);
+    undoManagerRef.current?.pushCreate(annotation.id);
+    bumpUndoUI();
+  };
+
+  const handleAnnotationUpdated = async (id: string, color: string, comment: string, tags: string[]) => {
+    const existing = annotationsList.find((a) => a.id === id);
+    if (!existing) return;
+    const previous = { color: existing.color, comment: existing.comment, tags: existing.tags };
+    await updateAnnotationFields(id, color, comment, tags);
+    await refreshAnnotations(existing.document_id);
+    // FR-9.5: the quote and anchors are untouched by this path by design.
+    undoManagerRef.current?.pushEdit(id, previous);
+    bumpUndoUI();
+  };
+
+  const handleTrashAnnotation = async (id: string) => {
+    const existing = annotationsList.find((a) => a.id === id);
+    if (!existing) return;
+    await trashAnnotation(id);
+    await refreshAnnotations(existing.document_id);
+    // Undo of trash is restore; setSelected may point at the trashed row.
+    undoManagerRef.current?.pushTrash(id);
+    bumpUndoUI();
+    if (selected === id) setSelected("");
+  };
+
+  const handleRestoreAnnotation = async (id: string) => {
+    const existing = trashedAnnotations.find((a) => a.id === id);
+    if (!existing) return;
+    await restoreAnnotation(id);
+    await refreshAnnotations(existing.document_id);
+  };
+
+  const handlePurgeAnnotation = async (id: string) => {
+    const existing = trashedAnnotations.find((a) => a.id === id);
+    if (!existing) return;
+    await purgeAnnotation(id);
+    await refreshAnnotations(existing.document_id);
+    if (selected === id) setSelected("");
+  };
+
+  const handleUndoAnnotation = async () => {
+    const manager = undoManagerRef.current;
+    if (!manager || !manager.canUndo) return;
+    const action = manager.pop();
+    if (!action) return;
+    try {
+      if (action.kind === "create") {
+        await trashAnnotation(action.annotationId);
+      } else if (action.kind === "edit") {
+        await updateAnnotationFields(
+          action.annotationId,
+          action.previous.color,
+          action.previous.comment,
+          action.previous.tags
+        );
+      } else {
+        await restoreAnnotation(action.annotationId);
+      }
+      if (activeDocumentRef.current) {
+        await refreshAnnotations(activeDocumentRef.current.id);
+      }
+    } catch {
+      // Failed inverse: put the action back so the user can retry.
+      manager.replay(action);
+    }
+    bumpUndoUI();
+    if (selected !== "" && action.kind === "create") setSelected("");
+  };
+
+  const handleSavePalette = (next: PaletteEntry[]) => {
+    setPalette(next);
+    try {
+      const serialized = serializePalette(next);
+      invoke("db_save_settings", {
+        key: ANNOTATION_PALETTE_SETTING_KEY,
+        value: serialized,
+      }).catch(() => {
+        // Dev preview fallback — palette still applies for the session.
+      });
+    } catch {
+      // Invalid palette was already blocked by the editor; keep defaults.
+    }
   };
 
   const handleReanchorOutcome = (outcome: { reanchored: number; detached: number }) => {
@@ -814,6 +1083,18 @@ function App() {
                 targetPage={targetPage}
                 onTargetPageConsumed={() => setTargetPage(undefined)}
                 annotationsList={annotationsList}
+                currentVersionId={currentVersionId}
+                trashedAnnotations={trashedAnnotations}
+                palette={palette}
+                onAnnotationCreated={handleAnnotationCreated}
+                onAreaAnnotationCreated={handleAreaAnnotationCreated}
+                onAnnotationUpdated={handleAnnotationUpdated}
+                onTrashAnnotation={handleTrashAnnotation}
+                onRestoreAnnotation={handleRestoreAnnotation}
+                onPurgeAnnotation={handlePurgeAnnotation}
+                onUndoAnnotation={handleUndoAnnotation}
+                undoCount={undoCount}
+                onJumpToAnnotation={(pageIndex) => setTargetPage(pageIndex + 1)}
                 scannedPdfBannerVisible={scannedPdfBannerVisible}
                 versionMismatchBannerVisible={versionMismatchBannerVisible}
                 versionStatus={versionStatus}
@@ -866,6 +1147,8 @@ function App() {
             setAiOn={setAiOn}
             appearance={appearance}
             onUpdateAppearance={handleUpdateAppearance}
+            palette={palette}
+            onSavePalette={handleSavePalette}
           />
         )}
       </section>
@@ -910,7 +1193,7 @@ function App() {
 
 type ReaderProps = {
   aiOn: boolean;
-  activeAnnotation: Highlight;
+  activeAnnotation: AnnotationRecord | null;
   activeDocument: DocumentRecord;
   activeSession: ReadingSessionState | null;
   appearance: AppearancePreferences;
@@ -924,7 +1207,23 @@ type ReaderProps = {
   onTargetPageConsumed?: () => void;
   totalPages: number;
   rightPaneWidth?: number;
-  annotationsList: Highlight[];
+  annotationsList: AnnotationRecord[];
+  /** Task 3.4: the version row new annotations bind to (null until registered). */
+  currentVersionId: string | null;
+  /** Task 3.5: recoverable trash rows for the open document (FR-9.8). */
+  trashedAnnotations: AnnotationRecord[];
+  /** Task 3.5: the user's semantic palette (FR-9.3). */
+  palette: PaletteEntry[];
+  /** Task 3.5 CRUD callbacks — each persists, refreshes, and records undo. */
+  onAnnotationCreated: (record: AnnotationRecord) => Promise<void>;
+  onAreaAnnotationCreated: (annotation: AnnotationRecord, asset: AnnotationAssetRecord, bytes: ArrayBuffer) => Promise<void>;
+  onAnnotationUpdated: (id: string, color: string, comment: string, tags: string[]) => Promise<void>;
+  onTrashAnnotation: (id: string) => Promise<void>;
+  onRestoreAnnotation: (id: string) => Promise<void>;
+  onPurgeAnnotation: (id: string) => Promise<void>;
+  onUndoAnnotation: () => Promise<void>;
+  undoCount: number;
+  onJumpToAnnotation?: (pageIndex: number) => void;
   scannedPdfBannerVisible?: boolean;
   versionMismatchBannerVisible?: boolean;
   versionStatus?: VersionCheckResult["status"] | null;
@@ -949,6 +1248,13 @@ type ReaderProps = {
   setRightOpen: (value: boolean) => void;
   setRightTab: (value: "annotations" | "note" | "ai") => void;
   setSelected: (value: string) => void;
+  /** Task 3.6 (FR-9.9): embedded PDF annotations present for the open doc. */
+  embeddedImportCounts?: { newCount: number; duplicateCount: number; unsupportedCount: number } | null;
+  embeddedImportDisabled?: boolean;
+  onOpenEmbeddedImport?: () => void;
+  /** Task 3.7 (FR-9.6): annotation linkage sets (populated by R3/R4 linking). */
+  linkedAnnotationIds?: ReadonlySet<string>;
+  rememberedAnnotationIds?: ReadonlySet<string>;
 };
 
 function Reader(props: ReaderProps) {
@@ -1012,6 +1318,44 @@ function Reader(props: ReaderProps) {
   // within the same millisecond for back-to-back navigations, which would
   // silently drop the second one (ReaderCanvas's scroll effect keys off nonce).
   const navNonceRef = useRef(0);
+
+  // ---- Task 3.4: annotation creation state (FR-9.1/FR-9.2/FR-9.4) ----
+  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
+  const [selectionPopup, setSelectionPopup] = useState<(SelectionPopupAnchor & { pageBox: PageBox }) | null>(null);
+  const [popupColor, setPopupColor] = useState(DEFAULT_ANNOTATION_COLOR);
+  const [popupComment, setPopupComment] = useState("");
+  const [popupLocked, setPopupLocked] = useState(false);
+  const [popupBusy, setPopupBusy] = useState(false);
+  const [popupError, setPopupError] = useState<string | null>(null);
+  const [captureActive, setCaptureActive] = useState(false);
+  const [areaPending, setAreaPending] = useState<AreaCaptureResult | null>(null);
+  const [areaCaption, setAreaCaption] = useState("");
+  const [areaSaving, setAreaSaving] = useState(false);
+  const [areaError, setAreaError] = useState<string | null>(null);
+  // Object URLs for area-capture crops, keyed by annotation id. Cleaned up on
+  // unmount so long reading sessions do not leak blob URLs.
+  const [annotationAssets, setAnnotationAssets] = useState<Record<string, AnnotationAssetVisual>>({});
+  const objectUrlsRef = useRef<string[]>([]);
+  useEffect(
+    () => () => {
+      for (const url of objectUrlsRef.current) URL.revokeObjectURL(url);
+    },
+    []
+  );
+  // ---- Task 3.6: embedded (PDF-born) annotations (FR-9.9) ----
+  // The background scan fills one page at a time; overlays and the import
+  // preview read from this map, so a 400-page document never blocks reading.
+  const [embeddedByPage, setEmbeddedByPage] = useState<Map<number, ParsedEmbeddedAnnotation[]>>(new Map());
+  const embeddedScanRef = useRef<{ documentId: string; cancelled: boolean } | null>(null);
+  /** sourceIds already imported this session — hidden from overlays/preview. */
+  const [embeddedImported, setEmbeddedImported] = useState<Set<string>>(new Set());
+  const [embeddedImportOpen, setEmbeddedImportOpen] = useState(false);
+  const [embeddedImportBusy, setEmbeddedImportBusy] = useState(false);
+  // Mirrors so document-level listeners never capture stale state.
+  const captureActiveRef = useRef(captureActive);
+  useEffect(() => {
+    captureActiveRef.current = captureActive;
+  }, [captureActive]);
 
   const totalPages = loadedPdf?.numPages || props.totalPages || 1;
 
@@ -1118,6 +1462,49 @@ function Reader(props: ReaderProps) {
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadedPdf, extractionStatus]);
+
+  // Task 3.6 (FR-9.9): background scan for embedded (PDF-born) annotations.
+  // Batched and cancelled on document change; pages near the reading start
+  // are prioritized first (same window the text extractor uses).
+  useEffect(() => {
+    if (!loadedPdf || !props.activeDocument) return;
+    if (embeddedScanRef.current) embeddedScanRef.current.cancelled = true;
+    setEmbeddedByPage(new Map());
+    setEmbeddedImported(new Set());
+    const doc = loadedPdf.doc;
+    if (!doc || loadedPdf.numPages === 0) return;
+    const scan = { documentId: props.activeDocument.id, cancelled: false };
+    embeddedScanRef.current = scan;
+    const total = loadedPdf.numPages;
+    const order = prioritizePageWindow(total, 1, 3);
+    const BATCH = 6;
+    void (async () => {
+      for (let i = 0; i < order.length; i += BATCH) {
+        if (scan.cancelled) return;
+        const batch = order.slice(i, i + BATCH);
+        const results = await Promise.all(
+          batch.map(async (pageNumber): Promise<[number, ParsedEmbeddedAnnotation[]] | null> => {
+            if (scan.cancelled) return null;
+            return [pageNumber, await getPdfPageEmbeddedAnnotations(doc, pageNumber)];
+          })
+        );
+        if (scan.cancelled) return;
+        setEmbeddedByPage((prev) => {
+          const next = new Map(prev);
+          for (const entry of results) {
+            if (entry) next.set(entry[0], entry[1]);
+          }
+          return next;
+        });
+        if (i + BATCH < order.length) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+    })();
+    return () => {
+      scan.cancelled = true;
+    };
+  }, [loadedPdf?.doc, loadedPdf?.numPages, props.activeDocument?.id]);
 
   // Job drawer cancel/restart drives the extraction abort controller.
   const activeJobStatus = props.activeDocumentJob?.status;
@@ -1407,6 +1794,14 @@ function Reader(props: ReaderProps) {
   // Keyboard shortcut listener for Reader canvas actions (FR-8.7)
   useEffect(() => {
     const handleShortcutKeyDown = (e: KeyboardEvent) => {
+      // Escape always dismisses the compact annotation surfaces (FR-9.2).
+      if (e.key === "Escape") {
+        setSelectionPopup(null);
+        setAreaPending(null);
+        setAreaError(null);
+        setAreaCaption("");
+        setCaptureActive(false);
+      }
       const target = e.target as HTMLElement;
       if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
         return;
@@ -1483,6 +1878,15 @@ function Reader(props: ReaderProps) {
         case 'annot.highlight.green':
           if (props.annotationsList.length > 1) props.setSelected(props.annotationsList[1].id);
           break;
+        case 'annot.areaCapture':
+          setCaptureActive((prev) => !prev);
+          break;
+        case 'annot.bookmark':
+          void handleToggleBookmark();
+          break;
+        case 'annot.undo':
+          void props.onUndoAnnotation();
+          break;
         case 'annot.remember':
           if (props.annotationsList.length > 0) props.setPromptOpen(true);
           break;
@@ -1506,6 +1910,405 @@ function Reader(props: ReaderProps) {
       setCopyWarning(extraction.isLowConfidence && extraction.warning ? extraction.warning : null);
     });
   }, [loadedPdf]);
+
+  // ---- Task 3.4: selection popover (FR-9.2) ----
+  // The popover tracks `selectionchange`, but a collapse caused by clicking a
+  // popover control must not yank the popover away before the click lands —
+  // clicks inside the popup set suppress, which skips the hide.
+  const popupSuppressRef = useRef(false);
+  useEffect(() => {
+    let raf = 0;
+    const handler = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        if (popupSuppressRef.current) {
+          popupSuppressRef.current = false;
+          return;
+        }
+        const container = canvasContainerRef.current;
+        if (!container || !props.currentVersionId || captureActiveRef.current) {
+          setSelectionPopup(null);
+          return;
+        }
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+          setSelectionPopup(null);
+          return;
+        }
+        const anchorNode = sel.anchorNode;
+        if (!anchorNode) {
+          setSelectionPopup(null);
+          return;
+        }
+        const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode.parentElement;
+        const pageEl = anchorEl?.closest(".pdf-page") as HTMLElement | null;
+        if (!pageEl || !pageEl.closest(".reader-canvas-container")) {
+          setSelectionPopup(null);
+          return;
+        }
+        const pageNumber = Number(pageEl.dataset.pageNumber ?? 0);
+        if (!pageNumber) {
+          setSelectionPopup(null);
+          return;
+        }
+        const pageRect = pageEl.getBoundingClientRect();
+        const pageBox: PageBox = {
+          left: pageRect.left,
+          top: pageRect.top,
+          right: pageRect.right,
+          bottom: pageRect.bottom,
+          width: pageRect.width,
+          height: pageRect.height,
+        };
+        let minL = Number.POSITIVE_INFINITY;
+        let minT = Number.POSITIVE_INFINITY;
+        let maxR = Number.NEGATIVE_INFINITY;
+        let maxB = Number.NEGATIVE_INFINITY;
+        for (let i = 0; i < sel.rangeCount; i++) {
+          const range = sel.getRangeAt(i);
+          for (const cr of range.getClientRects()) {
+            if (cr.bottom <= pageBox.top || cr.top >= pageBox.bottom || cr.right <= pageBox.left || cr.left >= pageBox.right) continue;
+            minL = Math.min(minL, Math.max(cr.left, pageBox.left));
+            minT = Math.min(minT, Math.max(cr.top, pageBox.top));
+            maxR = Math.max(maxR, Math.min(cr.right, pageBox.right));
+            maxB = Math.max(maxB, Math.min(cr.bottom, pageBox.bottom));
+          }
+        }
+        if (!Number.isFinite(minL) || minL >= maxR || minT >= maxB) {
+          setSelectionPopup(null);
+          return;
+        }
+        const containerRect = container.getBoundingClientRect();
+        setSelectionPopup({
+          left: maxR - containerRect.left + 10,
+          top: maxB - containerRect.top + 8,
+          pageNumber,
+          pageBox,
+        });
+      });
+    };
+    document.addEventListener("selectionchange", handler);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener("selectionchange", handler);
+    };
+  }, [props.currentVersionId]);
+
+  // Task 3.4: create a highlight/underline/comment from the current DOM
+  // selection (FR-9.1/9.2/9.4). Anchors are re-measured at save time so the
+  // stored rects always match what the user last selected.
+  const handleCreateFromSelection = async (type: "highlight" | "underline" | "comment") => {
+    const popup = selectionPopup;
+    if (!popup || !loadedPdf || !props.currentVersionId) {
+      setSelectionPopup(null);
+      return;
+    }
+    setPopupBusy(true);
+    setPopupError(null);
+    try {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+        throw new Error("The selection collapsed — select the text again.");
+      }
+      const rects: ViewportRect[] = [];
+      for (let i = 0; i < sel.rangeCount; i++) {
+        const range = sel.getRangeAt(i);
+        for (const cr of range.getClientRects()) {
+          if (cr.bottom <= popup.pageBox.top || cr.top >= popup.pageBox.bottom || cr.right <= popup.pageBox.left || cr.left >= popup.pageBox.right) continue;
+          rects.push({
+            left: Math.max(cr.left, popup.pageBox.left),
+            top: Math.max(cr.top, popup.pageBox.top),
+            right: Math.min(cr.right, popup.pageBox.right),
+            bottom: Math.min(cr.bottom, popup.pageBox.bottom),
+          });
+        }
+      }
+      const normalized = mergeSelectionRects(rects, popup.pageBox, rotation);
+      if (normalized.length === 0) {
+        throw new Error("The selection is empty on this page.");
+      }
+      const quote = sel.toString().replace(/\s+/g, " ").trim();
+      if (!quote) {
+        throw new Error("No readable text selected.");
+      }
+
+      // FR-9.4 anchor fields from the real text layer: prefix/suffix context
+      // and the text-layer checksum (same ordered text re-anchoring matches).
+      const items = await getPdfPageTextItems(loadedPdf.doc, popup.pageNumber);
+      const ordered = extractOrderedText(items);
+      const { prefix, suffix } = buildQuoteContext(ordered.text, quote);
+      const textLayerChecksum = await computeTextLayerChecksum(ordered.text);
+      const pageLabel = formatExtendedPageLabel(popup.pageNumber, totalPages).displayLabel;
+      const docId = props.activeDocument.id;
+
+      if (type === "comment") {
+        if (!popupComment.trim()) {
+          throw new Error("Write the comment text first.");
+        }
+        const record = buildCommentAnnotation({
+          documentId: docId,
+          documentVersionId: props.currentVersionId,
+          pageIndex: popup.pageNumber - 1,
+          pageLabel,
+          rects: normalized,
+          comment: popupComment.trim(),
+          color: popupColor,
+        });
+        await props.onAnnotationCreated(record);
+      } else {
+        const record = buildTextAnnotation({
+          documentId: docId,
+          documentVersionId: props.currentVersionId,
+          pageIndex: popup.pageNumber - 1,
+          pageLabel,
+          type,
+          rects: normalized,
+          quote,
+          prefix,
+          suffix,
+          textLayerChecksum,
+          color: popupColor,
+          comment: popupComment.trim(),
+        });
+        await props.onAnnotationCreated(record);
+      }
+
+      if (popupLocked) {
+        // FR-9.2 locked mode: keep the popup armed for the next selection.
+        popupSuppressRef.current = true;
+        window.getSelection()?.removeAllRanges();
+        setPopupComment("");
+      } else {
+        setSelectionPopup(null);
+      }
+    } catch (err) {
+      setPopupError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPopupBusy(false);
+    }
+  };
+
+  // Task 3.4: resolve area-crop assets into object URLs for the overlay.
+  useEffect(() => {
+    const areaAnnotations = props.annotationsList.filter((a) => a.annotation_type === "area");
+    const missing = areaAnnotations.filter((a) => !annotationAssets[a.id]);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const next: Record<string, AnnotationAssetVisual> = {};
+      for (const annotation of missing) {
+        if (cancelled) break;
+        try {
+          const assets = await loadAnnotationAssets(annotation.id);
+          const first = assets[0];
+          if (!first) continue;
+          const blob = await readAnnotationAssetBlob(first.id);
+          const url = URL.createObjectURL(blob);
+          objectUrlsRef.current.push(url);
+          next[annotation.id] = { url, caption: first.caption };
+        } catch {
+          // Asset unavailable (e.g. file removed on disk) — the overlay shows
+          // its loading placeholder honestly instead of a broken image.
+        }
+      }
+      if (!cancelled) setAnnotationAssets((prev) => ({ ...prev, ...next }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.annotationsList]);
+
+  // Task 3.4: one-drag area capture completion → caption prompt → crop save
+  // (FR-9.2/9.7). The crop is drawn from the rendered page bitmap (rotation
+  // included), capped at 1280 px, written atomically by Rust, then the
+  // annotation and asset rows are inserted — a failed insert removes the file
+  // so no orphaned bitmap ever lingers.
+  const handleAreaCaptureComplete = (result: AreaCaptureResult) => {
+    setAreaPending(result);
+    setAreaCaption("");
+    setAreaError(null);
+  };
+
+  const handleAreaCaptureCancel = () => {
+    setCaptureActive(false);
+    setAreaPending(null);
+    setAreaError(null);
+    setAreaCaption("");
+  };
+
+  const handleSaveAreaCapture = async () => {
+    const pending = areaPending;
+    if (!pending || !loadedPdf || !props.currentVersionId) return;
+    setAreaSaving(true);
+    setAreaError(null);
+    const assetId = crypto.randomUUID();
+    const relativePath = `annotations/${assetId}.png`;
+    try {
+      const pageEl = canvasContainerRef.current?.querySelector(
+        `.pdf-page[data-page-number="${pending.pageNumber}"]`
+      ) as HTMLElement | null;
+      const canvas = pageEl?.querySelector("canvas") as HTMLCanvasElement | null;
+      if (!pageEl || !canvas) {
+        throw new Error("The page is no longer visible — scroll back and try again.");
+      }
+      const box = pending.box;
+      const ratioX = canvas.width / pending.pageBox.width;
+      const ratioY = canvas.height / pending.pageBox.height;
+      const srcX = Math.max(0, (box.left - pending.pageBox.left) * ratioX);
+      const srcY = Math.max(0, (box.top - pending.pageBox.top) * ratioY);
+      const srcW = Math.min(canvas.width - srcX, Math.max(0, (box.right - box.left) * ratioX));
+      const srcH = Math.min(canvas.height - srcY, Math.max(0, (box.bottom - box.top) * ratioY));
+      if (srcW < 2 || srcH < 2) {
+        throw new Error("The capture area is too small.");
+      }
+      const maxSide = 1280;
+      const shrink = Math.min(1, maxSide / Math.max(srcW, srcH));
+      const outW = Math.max(1, Math.round(srcW * shrink));
+      const outH = Math.max(1, Math.round(srcH * shrink));
+      const off = document.createElement("canvas");
+      off.width = outW;
+      off.height = outH;
+      const ctx = off.getContext("2d");
+      if (!ctx) throw new Error("Canvas is unavailable.");
+      ctx.clearRect(0, 0, outW, outH);
+      ctx.drawImage(canvas, srcX, srcY, srcW, srcH, 0, 0, outW, outH);
+      const blob = await new Promise<Blob | null>((resolve) => off.toBlob(resolve, "image/png"));
+      if (!blob) throw new Error("The capture could not be encoded.");
+      const bytes = await blob.arrayBuffer();
+
+      const docId = props.activeDocument.id;
+      const annotation = buildAreaAnnotation({
+        documentId: docId,
+        documentVersionId: props.currentVersionId,
+        pageIndex: pending.pageNumber - 1,
+        pageLabel: formatExtendedPageLabel(pending.pageNumber, totalPages).displayLabel,
+        rect: dragBoxToNormalized(box, pending.pageBox, rotation),
+        caption: areaCaption.trim(),
+        color: popupColor,
+      });
+      const asset = buildAreaAssetRecord({
+        id: assetId,
+        annotationId: annotation.id,
+        documentId: docId,
+        relativePath,
+        widthPx: outW,
+        heightPx: outH,
+        caption: areaCaption.trim(),
+      });
+      // FR-9.7: a single atomic IPC call writes the file and inserts both rows
+      // — no half-created captures, no caller-supplied-path cleanup.
+      await props.onAreaAnnotationCreated(annotation, asset, bytes);
+
+      setAreaPending(null);
+      setCaptureActive(false);
+      setAreaCaption("");
+    } catch (err) {
+      setAreaError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAreaSaving(false);
+    }
+  };
+
+  // Task 3.4: bookmark creation for the current page (FR-9.1). Bookmark
+  // removal is a trash operation and lands with the task 3.5 trash UI.
+  const currentPageBookmarked = useMemo(
+    () =>
+      props.annotationsList.some(
+        (a) => a.annotation_type === "bookmark" && a.page_index === currentPage - 1
+      ),
+    [props.annotationsList, currentPage]
+  );
+
+  // Overlay lookup: active annotations grouped by 1-based renderer page.
+  const annotationsByPage = useMemo(() => {
+    const map = new Map<number, AnnotationRecord[]>();
+    for (const annotation of props.annotationsList) {
+      const page = annotation.page_index + 1;
+      const list = map.get(page) ?? [];
+      list.push(annotation);
+      map.set(page, list);
+    }
+    return map;
+  }, [props.annotationsList]);
+
+  // Task 3.6 (FR-9.9): embedded overlays show only supported subtypes that
+  // have not been imported this session; the import preview lists every item
+  // (imported ones flagged) sorted by page for a stable dialog.
+  const embeddedOverlayByPage = useMemo(() => {
+    const map = new Map<number, ParsedEmbeddedAnnotation[]>();
+    for (const [page, list] of embeddedByPage) {
+      const visible = list.filter(
+        (item) => mappedAnnotationTypeForSubtype(item.subtype) !== null && !embeddedImported.has(item.sourceId)
+      );
+      if (visible.length > 0) map.set(page, visible);
+    }
+    return map;
+  }, [embeddedByPage, embeddedImported]);
+
+  const embeddedPreviews = useMemo(() => {
+    const items: ParsedEmbeddedAnnotation[] = [];
+    embeddedByPage.forEach((list) => items.push(...list));
+    items.sort((a, b) => a.pageIndex - b.pageIndex || a.subtype.localeCompare(b.subtype));
+    return classifyEmbeddedAnnotations(items, props.annotationsList);
+  }, [embeddedByPage, props.annotationsList]);
+
+  const embeddedCounts = useMemo(() => countImportPreviews(embeddedPreviews), [embeddedPreviews]);
+
+  /** Explicit FR-9.9 import: persist each confirmed record (undoable) and
+   * mark its sourceId imported so overlays/preview stop offering it. */
+  const handleEmbeddedImport = async (previews: EmbeddedImportPreview[]) => {
+    if (!props.currentVersionId || !props.activeDocument) return;
+    setEmbeddedImportBusy(true);
+    try {
+      const picked = previews.filter((p) => p.mappedType !== null);
+      for (const preview of picked) {
+        const record = buildEmbeddedImportRecord({
+          documentId: props.activeDocument.id,
+          documentVersionId: props.currentVersionId,
+          pageLabel: formatExtendedPageLabel(preview.item.pageIndex + 1, totalPages).displayLabel,
+          preview,
+          palette: props.palette,
+        });
+        await props.onAnnotationCreated(record); // persists, refreshes, records undo
+      }
+      if (picked.length > 0) {
+        setEmbeddedImported((prev) => {
+          const next = new Set(prev);
+          for (const preview of picked) next.add(preview.item.sourceId);
+          return next;
+        });
+        setEmbeddedImportOpen(false);
+      }
+    } catch {
+      // Persist errors surface through the annotation list not changing;
+      // the dialog stays open so the user can retry.
+    } finally {
+      setEmbeddedImportBusy(false);
+    }
+  };
+
+  const handleToggleBookmark = useCallback(async () => {
+    if (!loadedPdf || !props.currentVersionId) return;
+    if (
+      props.annotationsList.some(
+        (a) => a.annotation_type === "bookmark" && a.page_index === currentPage - 1
+      )
+    ) {
+      return;
+    }
+    try {
+      const record = buildBookmarkAnnotation({
+        documentId: props.activeDocument.id,
+        documentVersionId: props.currentVersionId,
+        pageIndex: currentPage - 1,
+        pageLabel: formatExtendedPageLabel(currentPage, totalPages).displayLabel,
+      });
+      await props.onAnnotationCreated(record);
+    } catch {
+      // Creation errors surface through the list not changing; retry is safe.
+    }
+  }, [currentPage, loadedPdf, props.activeDocument.id, props.annotationsList, props.currentVersionId, props.onAnnotationCreated, totalPages]);
 
   return (
     <>
@@ -1543,6 +2346,10 @@ function Reader(props: ReaderProps) {
           aiOn={props.aiOn}
           onToggleAi={() => props.setAiOn(!props.aiOn)}
           onOpenPdf={() => props.setImportOpen(true)}
+          areaCaptureActive={captureActive}
+          onToggleAreaCapture={() => setCaptureActive((prev) => !prev)}
+          currentPageBookmarked={currentPageBookmarked}
+          onToggleBookmark={() => void handleToggleBookmark()}
         />
       )}
 
@@ -1564,7 +2371,7 @@ function Reader(props: ReaderProps) {
           </>
         )}
 
-        <div className="reader-canvas-container">
+        <div className="reader-canvas-container" ref={canvasContainerRef}>
           {props.appearance.pageDimming !== "0%" && (
             <div
               className="page-dimming-overlay"
@@ -1604,7 +2411,7 @@ function Reader(props: ReaderProps) {
           {props.scannedPdfBannerVisible && (
             <ScannedPdfBanner
               onDismiss={() => props.onDismissScannedBanner?.()}
-              onActivateAreaCapture={() => props.setSelected('recall')}
+              onActivateAreaCapture={() => setCaptureActive(true)}
             />
           )}
 
@@ -1673,9 +2480,71 @@ function Reader(props: ReaderProps) {
                 onPageSizeMeasured={handlePageSizeMeasured}
                 onScrollPositionChange={handleScrollPositionChange}
                 onCopySelection={handleCopySelection}
+                annotationsByPage={annotationsByPage}
+                annotationAssets={annotationAssets}
+                selectedAnnotationId={props.selected}
+                palette={props.palette}
+                onSelectAnnotation={props.setSelected}
+                embeddedByPage={embeddedOverlayByPage}
+                onOpenEmbeddedImport={() => setEmbeddedImportOpen(true)}
               />
             )}
           </RendererErrorBoundary>
+
+          {/* Task 3.4: compact selection popover (FR-9.2) */}
+          {selectionPopup && !captureActive && (
+            <SelectionPopup
+              anchor={selectionPopup}
+              palette={props.palette}
+              color={popupColor}
+              onColorChange={setPopupColor}
+              comment={popupComment}
+              onCommentChange={setPopupComment}
+              locked={popupLocked}
+              onToggleLocked={() => setPopupLocked((prev) => !prev)}
+              busy={popupBusy}
+              error={popupError}
+              onCreate={(type) => void handleCreateFromSelection(type)}
+              onClose={() => {
+                setSelectionPopup(null);
+                setPopupError(null);
+              }}
+            />
+          )}
+
+          {/* Task 3.4: one-drag area capture (FR-9.2) */}
+          {captureActive && !areaPending && (
+            <AreaCaptureLayer
+              onComplete={handleAreaCaptureComplete}
+              onCancel={() => setCaptureActive(false)}
+            />
+          )}
+
+          {/* Task 3.4: area capture caption prompt (FR-9.2/9.7) */}
+          {areaPending && !areaSaving && (
+            <div className="area-caption-popover" role="dialog" aria-label="Save area capture">
+              <span className="eyebrow">Area capture · p. {areaPending.pageNumber}</span>
+              <label className="popup-field">
+                <span>Optional caption</span>
+                <textarea
+                  value={areaCaption}
+                  onChange={(e) => setAreaCaption(e.target.value)}
+                  placeholder="e.g. Figure 3 — the retention curve"
+                  aria-label="Area capture caption"
+                  autoFocus
+                />
+              </label>
+              {areaError && <p className="popup-error" role="alert">{areaError}</p>}
+              <div className="popup-actions">
+                <button className="button compact" onClick={() => setAreaPending(null)}>
+                  Discard
+                </button>
+                <button className="button compact primary" onClick={() => void handleSaveAreaCapture()}>
+                  Save capture
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {props.rightOpen && !props.readingOnly && (
@@ -1685,10 +2554,29 @@ function Reader(props: ReaderProps) {
               onMouseDown={() => setIsResizingRight(true)}
               title="Drag to resize annotations pane"
             />
-            <RightPane {...props} rightPaneWidth={rightPaneWidth} />
+            <RightPane
+              {...props}
+              rightPaneWidth={rightPaneWidth}
+              embeddedImportCounts={embeddedCounts}
+              embeddedImportDisabled={!props.currentVersionId}
+              onOpenEmbeddedImport={() => setEmbeddedImportOpen(true)}
+            />
           </>
         )}
       </div>
+
+      {/* Task 3.6 (FR-9.9): explicit embedded-annotation import preview */}
+      {embeddedImportOpen && (
+        <EmbeddedImportModal
+          previews={embeddedPreviews}
+          importedSourceIds={embeddedImported}
+          pageLabelFor={(pageIndex) => formatExtendedPageLabel(pageIndex + 1, totalPages).displayLabel}
+          colorKeyFor={(preview) => matchPaletteKeyForRgb(preview.item.colorRgb, props.palette)}
+          busy={embeddedImportBusy}
+          onCancel={() => setEmbeddedImportOpen(false)}
+          onImport={(previews) => void handleEmbeddedImport(previews)}
+        />
+      )}
     </>
   );
 }
@@ -1696,38 +2584,267 @@ function Reader(props: ReaderProps) {
 function RightPane(props: ReaderProps) {
   const tabs: Array<[typeof props.rightTab, string]> = [["annotations", "Annotations"], ["note", "Note"], ["ai", "AI"]];
   const list = props.annotationsList || [];
+  // ---- Task 3.7 (FR-9.6): sidebar search + filters, reset per document ----
+  const [annotationFilters, setAnnotationFilters] = useState<AnnotationFilters>(EMPTY_ANNOTATION_FILTERS);
+  useEffect(() => {
+    setAnnotationFilters(EMPTY_ANNOTATION_FILTERS);
+  }, [props.activeDocument.id]);
+  const filtersActive =
+    annotationFilters.searchText.trim() !== '' ||
+    annotationFilters.types.length > 0 ||
+    annotationFilters.paletteKeys.length > 0 ||
+    annotationFilters.tags.some((t) => t.trim() !== '') ||
+    annotationFilters.pageFrom !== null ||
+    annotationFilters.pageTo !== null ||
+    annotationFilters.noteStatus !== 'all' ||
+    annotationFilters.rememberStatus !== 'all';
+  const filteredList = useMemo(
+    () =>
+      applyAnnotationFilters(list, annotationFilters, {
+        linkedIds: props.linkedAnnotationIds,
+        rememberedIds: props.rememberedAnnotationIds,
+      }),
+    [list, annotationFilters, props.linkedAnnotationIds, props.rememberedAnnotationIds]
+  );
+  const patchFilters = (patch: Partial<AnnotationFilters>) =>
+    setAnnotationFilters((prev) => ({ ...prev, ...patch }));
+
   return (
     <aside className="right-pane" style={props.rightPaneWidth ? { width: `${props.rightPaneWidth}px` } : undefined}>
       <div className="pane-tabs">{tabs.map(([id, label]) => <button key={id} className={props.rightTab === id ? "pane-tab active" : "pane-tab"} onClick={() => props.setRightTab(id)}>{label}{id === "ai" && <i className={props.aiOn ? "dot on" : "dot"} />}</button>)}</div>
       {props.rightTab === "annotations" && (
         <div className="annotation-list">
           <div className="pane-heading">
-            <span>All {list.length}</span>
-            <button><Glyph>•••</Glyph></button>
+            <span>All {list.length}{filtersActive ? ` · ${filteredList.length} shown` : ''}</span>
+            <span className="pane-heading-actions">
+              <button
+                onClick={() => void props.onUndoAnnotation()}
+                disabled={props.undoCount === 0}
+                title={props.undoCount === 0 ? 'Nothing to undo yet' : `Undo last annotation action (${props.undoCount} available)`}
+              >
+                ↶ Undo
+              </button>
+            </span>
           </div>
+
+          {/* Task 3.7 (FR-9.6): search + filters — pure semantics from
+              annotationFilter.ts, benchmarked at 10k items. */}
+          <div className="annotation-filters">
+            <input
+              className="filter-search"
+              type="search"
+              placeholder="Search quotes and comments…"
+              value={annotationFilters.searchText}
+              onChange={(e) => patchFilters({ searchText: e.target.value })}
+              aria-label="Search annotation quote and comment text"
+            />
+            <div className="filter-chip-row" role="group" aria-label="Filter by annotation type">
+              {ANNOTATION_TYPES.map((type) => {
+                const on = annotationFilters.types.includes(type);
+                return (
+                  <button
+                    key={type}
+                    type="button"
+                    className={`filter-chip${on ? ' on' : ''}`}
+                    aria-pressed={on}
+                    onClick={() =>
+                      patchFilters({
+                        types: on
+                          ? annotationFilters.types.filter((t) => t !== type)
+                          : [...annotationFilters.types, type],
+                      })
+                    }
+                  >
+                    {type}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="filter-chip-row" role="group" aria-label="Filter by colour label">
+              {props.palette.map((entry) => {
+                const on = annotationFilters.paletteKeys.includes(entry.key);
+                return (
+                  <button
+                    key={entry.key}
+                    type="button"
+                    className={`filter-chip${on ? ' on' : ''}`}
+                    aria-pressed={on}
+                    title={entry.label}
+                    onClick={() =>
+                      patchFilters({
+                        paletteKeys: on
+                          ? annotationFilters.paletteKeys.filter((k) => k !== entry.key)
+                          : [...annotationFilters.paletteKeys, entry.key],
+                      })
+                    }
+                  >
+                    <i className="annotation-swatch" style={{ background: entry.color }} />
+                    {entry.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="filter-row">
+              <input
+                className="filter-tags"
+                type="text"
+                placeholder="Tags: claim, chapter-3"
+                value={annotationFilters.tags.join(', ')}
+                onChange={(e) => patchFilters({ tags: e.target.value.split(',').map((t) => t.trim()).filter(Boolean) })}
+                aria-label="Filter by tags (comma separated)"
+              />
+            </div>
+            <div className="filter-row filter-pages">
+              <span>Pages</span>
+              <input
+                type="number"
+                min={1}
+                placeholder="from"
+                value={annotationFilters.pageFrom ?? ''}
+                onChange={(e) =>
+                  patchFilters({ pageFrom: e.target.value === '' ? null : Math.max(1, Number(e.target.value)) })
+                }
+                aria-label="Filter from page"
+              />
+              <span>–</span>
+              <input
+                type="number"
+                min={1}
+                placeholder="to"
+                value={annotationFilters.pageTo ?? ''}
+                onChange={(e) =>
+                  patchFilters({ pageTo: e.target.value === '' ? null : Math.max(1, Number(e.target.value)) })
+                }
+                aria-label="Filter to page"
+              />
+            </div>
+            <div className="filter-row filter-status">
+              <select
+                value={annotationFilters.noteStatus}
+                onChange={(e) => patchFilters({ noteStatus: e.target.value as AnnotationFilters['noteStatus'] })}
+                aria-label="Filter by note status"
+              >
+                <option value="all">Any note status</option>
+                <option value="linked">Linked to a note</option>
+                <option value="not-linked">Not linked to a note</option>
+              </select>
+              <select
+                value={annotationFilters.rememberStatus}
+                onChange={(e) => patchFilters({ rememberStatus: e.target.value as AnnotationFilters['rememberStatus'] })}
+                aria-label="Filter by Remember status"
+              >
+                <option value="all">Any Remember status</option>
+                <option value="remembered">Remembered</option>
+                <option value="not-remembered">Not remembered</option>
+              </select>
+            </div>
+            {filtersActive && (
+              <button
+                type="button"
+                className="filter-clear"
+                onClick={() => setAnnotationFilters(EMPTY_ANNOTATION_FILTERS)}
+              >
+                ✕ Clear filters
+              </button>
+            )}
+          </div>
+
           {list.length === 0 ? (
             <EmptyState viewType="annotations" />
+          ) : filteredList.length === 0 ? (
+            <p className="dimmed filter-empty">No annotations match these filters.</p>
           ) : (
-            list.map((item) => (
+            filteredList.map((item) => (
               <button
                 key={item.id}
                 className={props.selected === item.id ? "annotation-item active" : "annotation-item"}
-                onClick={() => props.setSelected(item.id)}
+                onClick={() => {
+                  props.setSelected(item.id);
+                  props.onJumpToAnnotation?.(item.page_index);
+                }}
+                title={item.annotation_type === 'comment' ? item.comment : item.quote || paletteLabelFor(item.color, props.palette)}
               >
-                <i className={`annotation-swatch ${item.color}`} />
+                <i className="annotation-swatch" style={{ background: paletteColorFor(item.color, props.palette) }} />
                 <span>
-                  <b>{item.label}</b>
-                  <small>p. {item.page}</small>
-                  <q>{item.quote}</q>
+                  <b>{paletteLabelFor(item.color, props.palette)} · {item.annotation_type}</b>
+                  <small>p. {item.page_label || item.page_index + 1}</small>
+                  <q>{item.annotation_type === 'area' ? 'Area capture' : item.annotation_type === 'bookmark' ? 'Bookmark' : item.comment || item.quote}</q>
                 </span>
               </button>
             ))
           )}
+
+          {props.activeAnnotation && (
+            <AnnotationEditor
+              annotation={props.activeAnnotation}
+              palette={props.palette}
+              onSave={(id, color, comment, tags) => void props.onAnnotationUpdated(id, color, comment, tags)}
+              onTrash={(id) => void props.onTrashAnnotation(id)}
+            />
+          )}
+
+          {props.trashedAnnotations.length > 0 && (
+            <div className="trash-section">
+              <div className="pane-heading">
+                <span>Trash · {props.trashedAnnotations.length} recoverable</span>
+              </div>
+              {props.trashedAnnotations.map((item) => (
+                <div key={item.id} className="annotation-item trash-item">
+                  <i className="annotation-swatch" style={{ background: paletteColorFor(item.color, props.palette) }} />
+                  <span>
+                    <b>{paletteLabelFor(item.color, props.palette)} · {item.annotation_type}</b>
+                    <small>p. {item.page_label || item.page_index + 1}</small>
+                    <q>{item.annotation_type === 'area' ? 'Area capture' : item.annotation_type === 'bookmark' ? 'Bookmark' : item.comment || item.quote}</q>
+                  </span>
+                  <span className="trash-actions">
+                    <button
+                      className="button micro"
+                      onClick={() => void props.onRestoreAnnotation(item.id)}
+                      title="Restore from trash (FR-9.8)"
+                    >
+                      Restore
+                    </button>
+                    <button
+                      className="button micro danger"
+                      onClick={() => void props.onPurgeAnnotation(item.id)}
+                      title="Purge permanently — this cannot be undone"
+                    >
+                      Purge
+                    </button>
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {props.embeddedImportCounts &&
+            props.embeddedImportCounts.newCount + props.embeddedImportCounts.duplicateCount > 0 && (
+              <div className="embedded-summary-row">
+                <button
+                  className="wide-action"
+                  onClick={props.onOpenEmbeddedImport}
+                  disabled={props.embeddedImportDisabled}
+                  title={
+                    !props.embeddedImportDisabled
+                      ? `Preview ${props.embeddedImportCounts.newCount + props.embeddedImportCounts.duplicateCount} PDF annotations before importing — duplicates and provenance are shown first (FR-9.9)`
+                      : 'Document is still registering — retry in a moment'
+                  }
+                >
+                  <Glyph>≋</Glyph> Import {props.embeddedImportCounts.newCount + props.embeddedImportCounts.duplicateCount} embedded PDF notes
+                </button>
+                <small>
+                  This PDF carries its own annotations ({props.embeddedImportCounts.newCount} new ·{' '}
+                  {props.embeddedImportCounts.duplicateCount} overlap · {props.embeddedImportCounts.unsupportedCount} skipped).
+                  Import previews duplicates and provenance; the PDF is never modified.
+                </small>
+              </div>
+            )}
+
           <button
             className="wide-action"
             onClick={() => props.setPromptOpen(true)}
-            disabled={list.length === 0}
-            title={list.length === 0 ? 'No annotation selected yet — highlight text first (annotation tools arrive with the R2 milestone)' : undefined}
+            disabled={!props.activeAnnotation}
+            title={!props.activeAnnotation ? 'Select a passage and annotate it first' : 'Draft a retrieval review prompt (R4 milestone)'}
           >
             <Glyph>▰</Glyph> Remember selected evidence
           </button>
@@ -1744,16 +2861,24 @@ function RightPane(props: ReaderProps) {
                 milestone; this build does not fabricate example notes.
               </p>
             </>
-          ) : (
+          ) : props.activeAnnotation ? (
             <>
-              <h2>{props.activeAnnotation.label}</h2>
+              <h2>{paletteLabelFor(props.activeAnnotation.color)} · {props.activeAnnotation.annotation_type}</h2>
               <p className="evidence-block">
-                “{props.activeAnnotation.quote}”
-                <small>— {props.documentName.replace(".pdf", "")}, p. {props.activeAnnotation.page}</small>
+                {props.activeAnnotation.annotation_type === 'highlight' || props.activeAnnotation.annotation_type === 'underline'
+                  ? `“${props.activeAnnotation.quote}”`
+                  : props.activeAnnotation.annotation_type === 'comment'
+                    ? props.activeAnnotation.comment
+                    : props.activeAnnotation.annotation_type === 'area'
+                      ? 'Area capture'
+                      : 'Bookmark'}
+                <small>— {props.documentName.replace(".pdf", "")}, p. {props.activeAnnotation.page_label || props.activeAnnotation.page_index + 1}</small>
               </p>
               <textarea aria-label="Note content" placeholder="Write your own prose here — it stays separate from the quoted evidence." />
               <button className="wide-action">Add evidence block</button>
             </>
+          ) : (
+            <p className="dimmed">Select an annotation to preview it here.</p>
           )}
         </div>
       )}
@@ -1807,6 +2932,8 @@ function SettingsView({
   setAiOn,
   appearance,
   onUpdateAppearance,
+  palette,
+  onSavePalette,
 }: {
   aiOn: boolean;
   setAiOn: (value: boolean) => void;
@@ -1815,8 +2942,10 @@ function SettingsView({
     key: K,
     value: AppearancePreferences[K]
   ) => void;
+  palette: PaletteEntry[];
+  onSavePalette: (palette: PaletteEntry[]) => void;
 }) {
-  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance'>('privacy');
+  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance' | 'annotations'>('privacy');
 
   return (
     <section className="settings-view">
@@ -1842,8 +2971,14 @@ function SettingsView({
         >
           Appearance
         </b>
+        <b
+          className={settingTab === 'annotations' ? 'selected-setting' : ''}
+          onClick={() => setSettingTab('annotations')}
+          style={{ cursor: 'pointer' }}
+        >
+          Annotations
+        </b>
         <b>Reading</b>
-        <b>Annotations</b>
         <b>Review</b>
         <b>Storage</b>
         <b>Export</b>
@@ -1853,6 +2988,8 @@ function SettingsView({
           <SettingsShortcuts />
         ) : settingTab === 'appearance' ? (
           <SettingsAppearance preferences={appearance} onUpdatePreference={onUpdateAppearance} />
+        ) : settingTab === 'annotations' ? (
+          <SettingsAnnotations palette={palette} onSavePalette={onSavePalette} />
         ) : (
           <>
             <span className="eyebrow">Your local boundary</span>
@@ -1890,8 +3027,18 @@ function SettingsView({
   );
 }
 
-function PromptDialog({ close, evidence }: { close: () => void; evidence: Highlight }) {
-  return <div className="modal-backdrop" role="presentation"><section className="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><button className="modal-close" onClick={close} aria-label="Close"><Glyph>×</Glyph></button><span className="eyebrow">Draft · not scheduled</span><h2 id="prompt-title">New retrieval prompt</h2><p>Nothing enters the review queue until you approve it. Every prompt keeps a link to its evidence.</p><p className="evidence-block">“{evidence.quote}”<small>Linked evidence · p. {evidence.page}</small></p><label className="field-label">Prompt<textarea placeholder="Write the question your future self should answer from memory…" /></label><label className="field-label">Your answer — you write or rewrite this<textarea placeholder="Write the answer in your own words…" /></label><div className="prompt-check"><b>Prompt check — advisory, never blocking</b><span>✓ Focused — one retrieval task.</span><span>✓ Requires recall — no recognition options.</span><span>! Cue — name the source context if you will need it later.</span></div><div className="modal-actions"><button className="wide-action" onClick={close}>Save as draft</button><button className="wide-action primary" onClick={close}>Approve prompt</button></div></section></div>;
+function PromptDialog({ close, evidence }: { close: () => void; evidence: AnnotationRecord | null }) {
+  const evidenceLabel = evidence
+    ? evidence.annotation_type === 'highlight' || evidence.annotation_type === 'underline'
+      ? `“${evidence.quote}”`
+      : evidence.annotation_type === 'comment'
+        ? evidence.comment
+        : evidence.annotation_type === 'area'
+          ? 'Area capture'
+          : 'Bookmark'
+    : '';
+  const evidencePage = evidence ? `p. ${evidence.page_label || evidence.page_index + 1}` : '';
+  return <div className="modal-backdrop" role="presentation"><section className="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><button className="modal-close" onClick={close} aria-label="Close"><Glyph>×</Glyph></button><span className="eyebrow">Draft · not scheduled</span><h2 id="prompt-title">New retrieval prompt</h2><p>Nothing enters the review queue until you approve it. Every prompt keeps a link to its evidence.</p>{evidence ? <p className="evidence-block">{evidenceLabel}<small>Linked evidence · {evidencePage}</small></p> : <p className="dimmed">Select an annotation first — prompts must link to source evidence (FR-11.3).</p>}<label className="field-label">Prompt<textarea placeholder="Write the question your future self should answer from memory…" /></label><label className="field-label">Your answer — you write or rewrite this<textarea placeholder="Write the answer in your own words…" /></label><div className="prompt-check"><b>Prompt check — advisory, never blocking</b><span>✓ Focused — one retrieval task.</span><span>✓ Requires recall — no recognition options.</span><span>! Cue — name the source context if you will need it later.</span></div><div className="modal-actions"><button className="wide-action" onClick={close}>Save as draft</button><button className="wide-action primary" onClick={close}>Approve prompt</button></div></section></div>;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);

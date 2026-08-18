@@ -46,6 +46,12 @@ interface ReaderToolbarProps {
   aiOn: boolean;
   onToggleAi: () => void;
   onOpenPdf: () => void;
+
+  // Task 3.4 annotation tools (FR-9.1/9.2)
+  areaCaptureActive: boolean;
+  onToggleAreaCapture: () => void;
+  currentPageBookmarked: boolean;
+  onToggleBookmark: () => void;
 }
 
 export function ReaderToolbar(props: ReaderToolbarProps) {
@@ -209,6 +215,29 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
         title={formatControlTooltip('Rotate 90° Clockwise', 'view.rotate.cw')}
       >
         ↻ {props.rotation !== 0 && `${props.rotation}°`}
+      </button>
+
+      <div className="toolbar-rule" />
+
+      {/* Annotation Tools — one-drag area capture and page bookmarks (FR-9.1/9.2) */}
+      <button
+        className={`outline-button ${props.areaCaptureActive ? 'active' : ''}`}
+        onClick={props.onToggleAreaCapture}
+        title={formatControlTooltip('Area Capture — drag across a figure or region', 'annot.areaCapture')}
+        aria-pressed={props.areaCaptureActive}
+      >
+        ▭ Capture area
+      </button>
+      <button
+        className={`outline-button ${props.currentPageBookmarked ? 'active' : ''}`}
+        onClick={props.onToggleBookmark}
+        title={formatControlTooltip(
+          props.currentPageBookmarked ? 'This page is bookmarked' : 'Bookmark this page',
+          'annot.bookmark'
+        )}
+        aria-pressed={props.currentPageBookmarked}
+      >
+        {props.currentPageBookmarked ? '▮ Bookmarked' : '▯ Bookmark'}
       </button>
 
       <div className="toolbar-rule" />

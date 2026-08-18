@@ -18,7 +18,7 @@ pub enum MigrationError {
 }
 
 /// The highest migration version this engine knows how to apply.
-const LATEST_MIGRATION_VERSION: i32 = 11;
+const LATEST_MIGRATION_VERSION: i32 = 12;
 
 /// Runs forward-only migrations.
 ///
@@ -301,7 +301,7 @@ pub fn run_migrations(conn: &mut Connection, db_dir: &Path, db_existed: bool) ->
             'ai_draft', 'user_adopted_ai', 'deterministic_transform'
           )),
           CHECK (
-            (annotation_type IN ('highlight','underline') AND length(quote) > 0)
+            (annotation_type IN ('highlight','underline') AND (length(quote) > 0 OR provenance = 'deterministic_transform'))
             OR (annotation_type NOT IN ('highlight','underline') AND length(quote) = 0)
           ),
           CHECK (annotation_type <> 'area' OR length(rects_json) > 2)
@@ -747,6 +747,92 @@ pub fn run_migrations(conn: &mut Connection, db_dir: &Path, db_existed: bool) ->
       )?;
 
       tx.commit()?;
+    }
+
+    if current_version < 12 {
+      // FR-9.9: allow embedded-annotation imports (deterministic_transform
+      // provenance) to store highlight/underline markup without a text quote.
+      // The PDF carries geometry, not guaranteed extractable text, so the quote
+      // — required for user-authored text markup (FR-9.4) — is optional for
+      // imported markup. SQLite CHECK constraints cannot be altered in place,
+      // so the annotations table is recreated with the relaxed CHECK. No
+      // release has shipped, so existing rows (if any in dev databases) are
+      // copied verbatim; foreign keys are disabled for the recreation because
+      // annotation_assets references this table.
+      conn.execute("PRAGMA foreign_keys = OFF", [])?;
+      let tx = conn.transaction()?;
+
+      tx.execute(
+        &format!(
+          "CREATE TABLE annotations_new (
+          id TEXT PRIMARY KEY,
+          document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+          annotation_type TEXT NOT NULL CHECK (annotation_type IN (
+            'highlight', 'underline', 'area', 'comment', 'bookmark'
+          )),
+          page_index INTEGER NOT NULL CHECK (page_index >= 0),
+          page_label TEXT NOT NULL DEFAULT '',
+          rects_json TEXT NOT NULL DEFAULT '[]',
+          quote TEXT NOT NULL DEFAULT '',
+          prefix_text TEXT NOT NULL DEFAULT '',
+          suffix_text TEXT NOT NULL DEFAULT '',
+          text_layer_checksum TEXT,
+          comment TEXT NOT NULL DEFAULT '',
+          color TEXT NOT NULL DEFAULT '',
+          tags TEXT NOT NULL DEFAULT '[]',
+          deleted_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          provenance TEXT NOT NULL CHECK(provenance IN (
+            'source_extracted', 'source_ocr', 'user_authored',
+            'ai_draft', 'user_adopted_ai', 'deterministic_transform'
+          )),
+          checksum TEXT NOT NULL DEFAULT '',
+          original_provenance TEXT
+            CHECK ({ORIGINAL_PROVENANCE_SET_CHECK})
+            CHECK ({ADOPTION_CONSISTENCY_CHECK}),
+          CHECK (
+            (annotation_type IN ('highlight','underline') AND (length(quote) > 0 OR provenance = 'deterministic_transform'))
+            OR (annotation_type NOT IN ('highlight','underline') AND length(quote) = 0)
+          ),
+          CHECK (annotation_type <> 'area' OR length(rects_json) > 2)
+        );"
+        ),
+        [],
+      )?;
+
+      tx.execute(
+        "INSERT INTO annotations_new (
+          id, document_id, document_version_id, annotation_type, page_index,
+          page_label, rects_json, quote, prefix_text, suffix_text,
+          text_layer_checksum, comment, color, tags, deleted_at,
+          created_at, updated_at, provenance, checksum, original_provenance
+        )
+        SELECT
+          id, document_id, document_version_id, annotation_type, page_index,
+          page_label, rects_json, quote, prefix_text, suffix_text,
+          text_layer_checksum, comment, color, tags, deleted_at,
+          created_at, updated_at, provenance, checksum, original_provenance
+        FROM annotations;",
+        [],
+      )?;
+
+      tx.execute("DROP TABLE annotations;", [])?;
+      tx.execute("ALTER TABLE annotations_new RENAME TO annotations;", [])?;
+      tx.execute("CREATE INDEX IF NOT EXISTS idx_annotations_document ON annotations(document_id);", [])?;
+      tx.execute("CREATE INDEX IF NOT EXISTS idx_annotations_version ON annotations(document_version_id);", [])?;
+      tx.execute("CREATE INDEX IF NOT EXISTS idx_annotations_type ON annotations(annotation_type);", [])?;
+      tx.execute("CREATE INDEX IF NOT EXISTS idx_annotations_trash ON annotations(deleted_at);", [])?;
+
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+       VALUES (12, datetime('now'), 'migration_12_imported_markup_empty_quote');",
+        [],
+      )?;
+
+      tx.commit()?;
+      conn.execute("PRAGMA foreign_keys = ON", [])?;
     }
   }
 

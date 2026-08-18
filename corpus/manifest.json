@@ -123,7 +123,7 @@
     "filename": "embedded_annotations.pdf",
     "category": "embedded_annotations",
     "source_licence": "CC0 / Public Domain",
-    "sha256": "bc64e18aae7b70345d3f3d7622ed7069002488f958761588a2fc30ef8b30af36",
+    "sha256": "8636a8ae004f40453e496c8e54fe6b69dce70ee1379f9094c9e4e11e51bcc63f",
     "page_count": 1,
     "expected_capability": "Text/sticky-note and Highlight annotation parsing",
     "failure_mode": null,
