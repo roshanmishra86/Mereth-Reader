@@ -162,6 +162,7 @@ import type { PromptRepairResult } from "./utils/promptRepair";
 import { hasRepeatedFailures } from "./utils/promptRepair";
 import { createNote, listNotes } from "./utils/notesIo";
 import { createDefaultNoteRecord } from "./utils/notesTypes";
+import { SessionSynthesisModal } from "./components/SessionSynthesisModal";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
 
@@ -242,6 +243,7 @@ function App() {
   const [isPasswordRejected, setIsPasswordRejected] = useState(false);
   const [scannedPdfBannerVisible, setScannedPdfBannerVisible] = useState(false);
   const [versionMismatchBannerVisible, setVersionMismatchBannerVisible] = useState(false);
+  const [sessionSynthesisOpen, setSessionSynthesisOpen] = useState(false);
 
   // Task 4.4 (FR-11.1): Prompt Editor Modal for Remember actions
   const [promptEditorModal, setPromptEditorModal] = useState<{
@@ -277,6 +279,25 @@ function App() {
     }
   };
 
+  const handleReturnToLibrary = () => {
+    if (activeDocument && annotationsList.length > 0) {
+      setSessionSynthesisOpen(true);
+    }
+    setDestination("library");
+  };
+
+  const handleSaveSynthesisNote = async (title: string, bodyMarkdown: string) => {
+    if (!activeDocument) return;
+    const note = createDefaultNoteRecord({
+      note_type: 'scratch',
+      title,
+      body_markdown: bodyMarkdown,
+      document_id: activeDocument.id,
+    });
+    await createNote(note);
+    setNotesList((prev) => [{ id: note.id, title: note.title, type: note.note_type }, ...prev]);
+  };
+
   // Task 3.3 version handling (FR-7.3): real open-time fingerprint state.
   // `versionStatus` is what the open check reported; `versionOffer` carries
   // the previous version id while the re-anchoring offer is pending;
@@ -300,7 +321,7 @@ function App() {
   // Task 3.5: recoverable trash records (FR-9.8) — loaded alongside the active
   // list so Restore/Purge stay truthful without hiding what is recoverable.
   const [trashedAnnotations, setTrashedAnnotations] = useState<AnnotationRecord[]>([]);
-  const [notesList] = useState<Array<{ id: string; title: string; type: string }>>([]);
+  const [notesList, setNotesList] = useState<Array<{ id: string; title: string; type: string }>>([]);
   const [reviewPromptsList] = useState<Array<{ id: string; prompt: string }>>([]);
   // The current version row's id — creation-time checksums bind to it and
   // re-anchoring switches it; null until registration/refresh completes.
@@ -1194,7 +1215,7 @@ function App() {
             ) : activeDocument.is_malformed ? (
               <MalformedDocumentView
                 document={activeDocument}
-                onReturnToLibrary={() => setDestination("library")}
+                onReturnToLibrary={handleReturnToLibrary}
                 onDeleteRecord={handleDeleteRecord}
               />
             ) : (
@@ -1240,7 +1261,7 @@ function App() {
                 onVersionRegistered={handleVersionRegistered}
                 onReanchorOutcome={handleReanchorOutcome}
                 onDismissReanchorSummary={() => setReanchorSummary(null)}
-                onReturnToLibrary={() => setDestination("library")}
+                onReturnToLibrary={handleReturnToLibrary}
                 setAiOn={setAiOn}
                 setImportOpen={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
                 setLeftOpen={setLeftOpen}
@@ -1330,6 +1351,12 @@ function App() {
         initialPrompt={promptEditorModal.initialPrompt}
         sourceContext={promptEditorModal.sourceContext}
         onSaved={handlePromptSaved}
+      />
+      <SessionSynthesisModal
+        isOpen={sessionSynthesisOpen}
+        annotations={annotationsList}
+        onClose={() => setSessionSynthesisOpen(false)}
+        onSaveNote={handleSaveSynthesisNote}
       />
     </main>
   );

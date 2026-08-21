@@ -296,8 +296,9 @@ Items the C8 audit found missing or false in the shipping render path. Each was 
   - Acceptance: daily budget, pause, priority, reschedule, and stop-reviewing all present; over-budget reviews stay due without punishment or streak pressure (FR-11.11, Principle 10); repeated failure offers add-a-cue, split, narrow, or retire rather than shrinking the interval forever (FR-11.12); a backlog never blocks reading or note-taking.
   - Verification note (2026-08-21): `src/utils/queueControls.ts` models daily card/time budgets, pause/resume, priority, reschedule, retire, due filtering, and calm backlog preservation with no streak state. `src/utils/promptRepair.ts` detects repeated failures at threshold 3 and builds add-cue, split, narrow, and retire repair actions. `SettingsReview` is reachable from Settings > Review, and `PromptRepairModal` is offered from the real review flow after repeated Again outcomes; applying a repair updates or retires the current prompt, while split creates a new draft for explicit later adoption. `pnpm exec vitest run src/utils/queueControls.test.ts src/utils/promptRepair.test.ts` exits 0 (5/5 tests); `npx tsc --noEmit` exits 0.
 
-- [ ] **4.7 — Reading-session synthesis.**
+- [x] **4.7 — Reading-session synthesis.**
   - Acceptance: at session end, offer — never force — the four source-hidden recall questions of PRD §11.4, revealing that session's annotations only after the attempt.
+  - Verification note (2026-08-21): `src/utils/sessionSynthesis.ts` implements the four PRD §11.4 recall questions, source-hidden answer state, explicit completion/skip reveal, and synthesis-note Markdown generation. `SessionSynthesisModal` is offered when leaving an active annotated reader session for the library, never blocks return, hides session annotations until reveal/skip, and can save the result as a scratch synthesis note linked to the active document. `pnpm exec vitest run src/utils/sessionSynthesis.test.ts` exits 0 (3/3 tests); `npx tsc --noEmit` exits 0.
 
 - [ ] **4.8 — Export: Quick Copy, Markdown, JSON backup.**
   - Depends on 4.0.
