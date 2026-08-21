@@ -143,6 +143,9 @@ import {
 import type { EvidenceBlockRecord } from "./utils/evidenceTypes";
 import { createEvidenceBlockFromAnnotation } from "./utils/evidenceTypes";
 import { addEvidenceBlock } from "./utils/evidenceIo";
+import type { ReviewPromptRecord } from "./utils/promptTypes";
+import { PromptEditorModal } from "./components/PromptEditorModal";
+import { listReviewPrompts } from "./utils/promptsIo";
 import { createNote, listNotes } from "./utils/notesIo";
 import { createDefaultNoteRecord } from "./utils/notesTypes";
 
@@ -200,7 +203,6 @@ function App() {
   const [rightTab, setRightTab] = useState<"annotations" | "note" | "ai">("annotations");
   const [aiOn, setAiOn] = useState(false);
   const [selected, setSelected] = useState("");
-  const [promptOpen, setPromptOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [initialImportPath, setInitialImportPath] = useState<string | null>(null);
   const [pdfEntryMode, setPdfEntryMode] = useState<'open' | 'import'>('open');
@@ -226,6 +228,40 @@ function App() {
   const [isPasswordRejected, setIsPasswordRejected] = useState(false);
   const [scannedPdfBannerVisible, setScannedPdfBannerVisible] = useState(false);
   const [versionMismatchBannerVisible, setVersionMismatchBannerVisible] = useState(false);
+
+  // Task 4.4 (FR-11.1): Prompt Editor Modal for Remember actions
+  const [promptEditorModal, setPromptEditorModal] = useState<{
+    open: boolean;
+    initialPrompt?: Partial<ReviewPromptRecord> | null;
+    sourceContext?: {
+      title: string;
+      quote?: string | null;
+      annotationId?: string | null;
+      noteId?: string | null;
+    };
+  }>({ open: false });
+  const [rememberedPromptAnnotationIds, setRememberedPromptAnnotationIds] = useState<Set<string>>(new Set());
+
+  const handleRememberAnnotation = (ann: AnnotationRecord) => {
+    setPromptEditorModal({
+      open: true,
+      sourceContext: {
+        title: activeDocument?.title || 'Document',
+        quote: ann.quote,
+        annotationId: ann.id,
+      },
+    });
+  };
+
+  const handlePromptSaved = (prompt: ReviewPromptRecord) => {
+    if (prompt.annotation_id) {
+      setRememberedPromptAnnotationIds((prev) => {
+        const next = new Set(prev);
+        next.add(prompt.annotation_id as string);
+        return next;
+      });
+    }
+  };
 
   // Task 3.3 version handling (FR-7.3): real open-time fingerprint state.
   // `versionStatus` is what the open check reported; `versionOffer` carries
@@ -529,7 +565,7 @@ function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setReadingOnly(false);
-        setPromptOpen(false);
+        setPromptEditorModal({ open: false });
         setImportOpen(false);
         setJobDrawerOpen(false);
       }
@@ -547,6 +583,30 @@ function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  useEffect(() => {
+    if (!activeDocument) {
+      setRememberedPromptAnnotationIds(new Set());
+      return;
+    }
+    const annotationIds = new Set(annotationsList.map((annotation) => annotation.id));
+    let cancelled = false;
+    void listReviewPrompts().then((prompts) => {
+      if (cancelled) return;
+      setRememberedPromptAnnotationIds(
+        new Set(
+          prompts
+            .map((prompt) => prompt.annotation_id)
+            .filter((annotationId): annotationId is string => Boolean(annotationId && annotationIds.has(annotationId)))
+        )
+      );
+    }).catch(() => {
+      if (!cancelled) setRememberedPromptAnnotationIds(new Set());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDocument, annotationsList]);
 
   // Monotonic id for in-flight openDocument calls so a stale async open can
   // detect that a newer one superseded it and bail out before mutating state.
@@ -1170,13 +1230,14 @@ function App() {
                 setAiOn={setAiOn}
                 setImportOpen={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
                 setLeftOpen={setLeftOpen}
-                setPromptOpen={setPromptOpen}
                 setReadingOnly={setReadingOnly}
                 setRightOpen={setRightOpen}
                 setRightTab={setRightTab}
                 setSelected={setSelected}
                 totalPages={activeDocument.page_count}
+                rememberedAnnotationIds={rememberedPromptAnnotationIds}
                 onAddEvidenceToNote={handleAddAnnotationToNote}
+                onRememberAnnotation={handleRememberAnnotation}
               />
             )}
           </>
@@ -1248,7 +1309,14 @@ function App() {
         onCancel={handlePasswordCancel}
       />
 
-      {promptOpen && <PromptDialog close={() => setPromptOpen(false)} evidence={activeAnnotation} />}
+      {/* Task 4.4 (FR-11.1 - FR-11.5): Prompt Editor Modal for Remember actions */}
+      <PromptEditorModal
+        isOpen={promptEditorModal.open}
+        onClose={() => setPromptEditorModal({ open: false })}
+        initialPrompt={promptEditorModal.initialPrompt}
+        sourceContext={promptEditorModal.sourceContext}
+        onSaved={handlePromptSaved}
+      />
     </main>
   );
 }
@@ -1305,7 +1373,6 @@ type ReaderProps = {
   setAiOn: (value: boolean) => void;
   setImportOpen: (value: boolean) => void;
   setLeftOpen: (value: boolean) => void;
-  setPromptOpen: (value: boolean) => void;
   setReadingOnly: (value: boolean) => void;
   setRightOpen: (value: boolean) => void;
   setRightTab: (value: "annotations" | "note" | "ai") => void;
@@ -1319,6 +1386,8 @@ type ReaderProps = {
   rememberedAnnotationIds?: ReadonlySet<string>;
   /** Task 4.2 (FR-10.1): Add active annotation as evidence block to note */
   onAddEvidenceToNote?: (annotation: AnnotationRecord) => void;
+  /** Task 4.4 (FR-11.1): Open review prompt editor for annotation */
+  onRememberAnnotation?: (annotation: AnnotationRecord) => void;
 };
 
 function Reader(props: ReaderProps) {
@@ -1952,7 +2021,7 @@ function Reader(props: ReaderProps) {
           void props.onUndoAnnotation();
           break;
         case 'annot.remember':
-          if (props.annotationsList.length > 0) props.setPromptOpen(true);
+          if (props.activeAnnotation) props.onRememberAnnotation?.(props.activeAnnotation);
           break;
       }
     };
@@ -2844,6 +2913,7 @@ function RightPane(props: ReaderProps) {
               palette={props.palette}
               onSave={(id, color, comment, tags) => void props.onAnnotationUpdated(id, color, comment, tags)}
               onTrash={(id) => void props.onTrashAnnotation(id)}
+              onRemember={(ann) => props.onRememberAnnotation?.(ann)}
             />
           )}
 
@@ -2906,7 +2976,7 @@ function RightPane(props: ReaderProps) {
 
           <button
             className="wide-action"
-            onClick={() => props.setPromptOpen(true)}
+            onClick={() => props.activeAnnotation && props.onRememberAnnotation?.(props.activeAnnotation)}
             disabled={!props.activeAnnotation}
             title={!props.activeAnnotation ? 'Select a passage and annotate it first' : 'Draft a retrieval review prompt (R4 milestone)'}
           >
@@ -3075,20 +3145,6 @@ function SettingsView({
       </article>
     </section>
   );
-}
-
-function PromptDialog({ close, evidence }: { close: () => void; evidence: AnnotationRecord | null }) {
-  const evidenceLabel = evidence
-    ? evidence.annotation_type === 'highlight' || evidence.annotation_type === 'underline'
-      ? `“${evidence.quote}”`
-      : evidence.annotation_type === 'comment'
-        ? evidence.comment
-        : evidence.annotation_type === 'area'
-          ? 'Area capture'
-          : 'Bookmark'
-    : '';
-  const evidencePage = evidence ? `p. ${evidence.page_label || evidence.page_index + 1}` : '';
-  return <div className="modal-backdrop" role="presentation"><section className="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><button className="modal-close" onClick={close} aria-label="Close"><Glyph>×</Glyph></button><span className="eyebrow">Draft · not scheduled</span><h2 id="prompt-title">New retrieval prompt</h2><p>Nothing enters the review queue until you approve it. Every prompt keeps a link to its evidence.</p>{evidence ? <p className="evidence-block">{evidenceLabel}<small>Linked evidence · {evidencePage}</small></p> : <p className="dimmed">Select an annotation first — prompts must link to source evidence (FR-11.3).</p>}<label className="field-label">Prompt<textarea placeholder="Write the question your future self should answer from memory…" /></label><label className="field-label">Your answer — you write or rewrite this<textarea placeholder="Write the answer in your own words…" /></label><div className="prompt-check"><b>Prompt check — advisory, never blocking</b><span>✓ Focused — one retrieval task.</span><span>✓ Requires recall — no recognition options.</span><span>! Cue — name the source context if you will need it later.</span></div><div className="modal-actions"><button className="wide-action" onClick={close}>Save as draft</button><button className="wide-action primary" onClick={close}>Approve prompt</button></div></section></div>;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);

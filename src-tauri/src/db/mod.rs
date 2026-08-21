@@ -4,6 +4,7 @@ pub mod migrations;
 pub mod note_links;
 pub mod note_search;
 pub mod notes;
+pub mod prompts;
 pub mod provenance;
 pub mod versions;
 

@@ -22,6 +22,7 @@ import type { TextRole, NoteSearchResult } from '../utils/noteSearch';
 import { searchNotes, roleLabel, roleBadgeClass, filterSearchResultsByRole } from '../utils/noteSearch';
 import type { SplitNoteResult } from '../utils/noteSplit';
 import { getDefaultTemplate, renderTemplate } from '../utils/noteTemplates';
+import { PromptEditorModal } from './PromptEditorModal';
 import { NoteEditor } from './NoteEditor';
 
 export interface NotesViewProps {
@@ -43,6 +44,33 @@ export const NotesView: React.FC<NotesViewProps> = ({
   const [selectedRoleFilters, setSelectedRoleFilters] = useState<TextRole[]>([]);
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'concept' | 'source' | 'scratch' | 'trash'>('all');
   const [isLoading, setIsLoading] = useState(true);
+
+  const [promptModalOpen, setPromptModalOpen] = useState(false);
+  const [promptSourceContext, setPromptSourceContext] = useState<{
+    title: string;
+    quote?: string | null;
+    annotationId?: string | null;
+    noteId?: string | null;
+  } | undefined>(undefined);
+
+  const handleRememberNote = (n: NoteRecord) => {
+    setPromptSourceContext({
+      title: n.title || 'Note',
+      quote: n.body_markdown.slice(0, 300),
+      noteId: n.id,
+    });
+    setPromptModalOpen(true);
+  };
+
+  const handleRememberEvidence = (block: EvidenceBlockRecord) => {
+    setPromptSourceContext({
+      title: `Evidence p.${block.page_label}`,
+      quote: block.quote,
+      annotationId: block.annotation_id,
+      noteId: block.note_id,
+    });
+    setPromptModalOpen(true);
+  };
 
   const fetchNotes = useCallback(async () => {
     try {
@@ -448,6 +476,8 @@ export const NotesView: React.FC<NotesViewProps> = ({
             onNavigateToSource={onNavigateToSource}
             onOpenNote={(id) => setActiveNoteId(id)}
             onSplitNote={handleSplitNote}
+            onRememberNote={handleRememberNote}
+            onRememberEvidence={handleRememberEvidence}
           />
         ) : (
           <div style={{ display: 'grid', placeItems: 'center', padding: '32px', color: '#605d5d', fontSize: '12px' }}>
@@ -455,6 +485,13 @@ export const NotesView: React.FC<NotesViewProps> = ({
           </div>
         )}
       </div>
+
+      {/* Remember: Author Prompt Modal (FR-11.1 - FR-11.5) */}
+      <PromptEditorModal
+        isOpen={promptModalOpen}
+        onClose={() => setPromptModalOpen(false)}
+        sourceContext={promptSourceContext}
+      />
     </section>
   );
 };

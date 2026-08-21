@@ -10,6 +10,7 @@ use db::evidence::EvidenceBlock;
 use db::note_links::{BacklinkRecord, NoteLink};
 use db::note_search::NoteSearchResult;
 use db::notes::{Note, NoteRevision};
+use db::prompts::ReviewPrompt;
 use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
 use import::{
   compute_file_metadata, copy_to_managed_documents, ensure_external_pdf_source,
@@ -687,6 +688,87 @@ fn db_search_notes(
   db.search_notes(&query, note_type.as_deref())
 }
 
+#[tauri::command]
+fn db_create_review_prompt(
+  prompt: ReviewPrompt,
+  state: State<'_, AppState>,
+) -> Result<ReviewPrompt, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.create_review_prompt(&prompt)
+}
+
+#[tauri::command]
+fn db_get_review_prompt(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<Option<ReviewPrompt>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_review_prompt(&id)
+}
+
+#[tauri::command]
+fn db_list_review_prompts(
+  status_filter: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<Vec<ReviewPrompt>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.list_review_prompts(status_filter.as_deref())
+}
+
+#[tauri::command]
+fn db_list_prompts_for_source(
+  annotation_id: Option<String>,
+  note_id: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<Vec<ReviewPrompt>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.list_prompts_for_source(annotation_id.as_deref(), note_id.as_deref())
+}
+
+#[tauri::command]
+fn db_update_review_prompt(
+  prompt: ReviewPrompt,
+  state: State<'_, AppState>,
+) -> Result<ReviewPrompt, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_review_prompt(&prompt)
+}
+
+#[tauri::command]
+fn db_adopt_review_prompt(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<ReviewPrompt, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.adopt_review_prompt(&id)
+}
+
+#[tauri::command]
+fn db_retire_review_prompt(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<ReviewPrompt, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.retire_review_prompt(&id)
+}
+
+#[tauri::command]
+fn db_delete_review_prompt(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.delete_review_prompt(&id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut builder = tauri::Builder::default()
@@ -757,6 +839,14 @@ pub fn run() {
       db_sync_note_links,
       db_delete_note_link,
       db_search_notes,
+      db_create_review_prompt,
+      db_get_review_prompt,
+      db_list_review_prompts,
+      db_list_prompts_for_source,
+      db_update_review_prompt,
+      db_adopt_review_prompt,
+      db_retire_review_prompt,
+      db_delete_review_prompt,
       cmd_get_initial_launch_route,
       import_compute_file_metadata,
       import_copy_to_managed_library,

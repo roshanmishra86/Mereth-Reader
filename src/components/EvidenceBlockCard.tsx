@@ -12,6 +12,7 @@ interface EvidenceBlockCardProps {
   onDelete: () => void;
   onUpdateComment: (newComment: string) => void;
   onNavigateToSource: (block: EvidenceBlockRecord) => void;
+  onRemember?: (block: EvidenceBlockRecord) => void;
 }
 
 export const EvidenceBlockCard: React.FC<EvidenceBlockCardProps> = ({
@@ -25,6 +26,7 @@ export const EvidenceBlockCard: React.FC<EvidenceBlockCardProps> = ({
   onDelete,
   onUpdateComment,
   onNavigateToSource,
+  onRemember,
 }) => {
   const [isEditingComment, setIsEditingComment] = useState(false);
   const [commentDraft, setCommentDraft] = useState(block.user_comment);
@@ -180,7 +182,7 @@ export const EvidenceBlockCard: React.FC<EvidenceBlockCardProps> = ({
         )}
       </div>
 
-      {/* In-Context Return footer deep link */}
+      {/* In-Context Return footer deep link & Remember action */}
       <div className="flex items-center justify-between pt-1 border-t border-border/30 text-[11px]">
         <button
           type="button"
@@ -191,9 +193,21 @@ export const EvidenceBlockCard: React.FC<EvidenceBlockCardProps> = ({
           <span>↗</span>
           <span>Open in Document (p. {block.page_label})</span>
         </button>
-        <span className="text-muted-foreground text-[10px]">
-          {block.provenance}
-        </span>
+        <div className="flex items-center gap-2">
+          {onRemember && (
+            <button
+              type="button"
+              className="text-xs text-primary hover:underline font-medium"
+              onClick={() => onRemember(block)}
+              title="Create or edit a review prompt for spaced repetition (FR-11.1)"
+            >
+              Remember
+            </button>
+          )}
+          <span className="text-muted-foreground text-[10px]">
+            {block.provenance}
+          </span>
+        </div>
       </div>
     </div>
   );

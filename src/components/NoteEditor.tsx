@@ -24,6 +24,8 @@ export interface NoteEditorProps {
   onNavigateToSource?: (block: EvidenceBlockRecord) => void;
   onOpenNote?: (noteId: string) => void;
   onSplitNote?: (result: SplitNoteResult) => void;
+  onRememberNote?: (note: NoteRecord) => void;
+  onRememberEvidence?: (block: EvidenceBlockRecord) => void;
 }
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({
@@ -41,6 +43,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onNavigateToSource,
   onOpenNote,
   onSplitNote,
+  onRememberNote,
+  onRememberEvidence,
 }) => {
   const [title, setTitle] = useState(note.title);
   const [bodyMarkdown, setBodyMarkdown] = useState(note.body_markdown);
@@ -173,6 +177,17 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {onRememberNote && (
+            <button
+              className="outline-button"
+              style={{ fontSize: '10.5px', padding: '3px 8px' }}
+              onClick={() => onRememberNote(note)}
+              title="Create a review prompt linked to this note (FR-11.1)"
+            >
+              Remember
+            </button>
+          )}
+
           <button
             className="outline-button"
             style={{ fontSize: '10.5px', padding: '3px 8px' }}
@@ -353,6 +368,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
                 onDelete={() => onDeleteEvidence && void onDeleteEvidence(block.id)}
                 onUpdateComment={(comment) => onUpdateEvidenceComment && void onUpdateEvidenceComment(block.id, comment)}
                 onNavigateToSource={(b) => onNavigateToSource && onNavigateToSource(b)}
+                onRemember={(b) => onRememberEvidence && onRememberEvidence(b)}
               />
             ))}
           </div>
