@@ -8,6 +8,7 @@ import { extractWikiLinks, syncNoteLinks } from '../utils/noteLinks';
 import { BacklinksPanel } from './BacklinksPanel';
 import { SplitNoteModal } from './SplitNoteModal';
 import type { SplitNoteResult } from '../utils/noteSplit';
+import { renderMarkdownToHtml } from '../utils/markdownRenderer';
 
 export interface NoteEditorProps {
   note: NoteRecord;
@@ -310,18 +311,19 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       {/* Markdown Body Editor or Rendered View */}
       {isPreview ? (
         <div
+          className="note-markdown-rendered"
           style={{
             padding: '12px',
             background: '#eae9e9',
             border: '1px solid rgba(32,30,29,.2)',
             minHeight: '200px',
-            whiteSpace: 'pre-wrap',
             fontFamily: 'inherit',
             lineHeight: 1.6,
           }}
-        >
-          {bodyMarkdown || <em style={{ color: '#605d5d' }}>Empty note body.</em>}
-        </div>
+          dangerouslySetInnerHTML={{
+            __html: renderMarkdownToHtml(bodyMarkdown) || '<em style="color: #605d5d">Empty note body.</em>',
+          }}
+        />
       ) : (
         <textarea
           ref={textareaRef}

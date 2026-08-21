@@ -1,4 +1,5 @@
 pub mod db;
+pub mod export;
 pub mod import;
 pub mod launch;
 #[cfg(debug_assertions)]
@@ -808,6 +809,49 @@ fn db_get_review_queue_stats(state: State<'_, AppState>) -> Result<ReviewQueueSt
   db.get_review_queue_stats()
 }
 
+#[tauri::command]
+fn db_export_markdown_package(
+  app_handle: tauri::AppHandle,
+  destination_dir: String,
+  state: State<'_, AppState>,
+) -> Result<export::markdown::MarkdownPackageManifest, String> {
+  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  export::markdown::export_markdown_package(db, &app_dir, &destination_dir)
+}
+
+#[tauri::command]
+fn db_create_json_backup(
+  destination_file: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<export::backup::JsonBackupArchive, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  export::backup::create_json_backup(db, destination_file.as_deref())
+}
+
+#[tauri::command]
+fn db_export_review_csv(
+  destination_file: String,
+  delimiter: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<usize, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  export::review_csv::export_review_csv(db, &destination_file, delimiter.as_deref())
+}
+
+#[tauri::command]
+fn db_restore_from_backup(
+  backup_json: String,
+  state: State<'_, AppState>,
+) -> Result<export::restore::RestoreResult, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  export::restore::restore_from_backup(db, &backup_json)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut builder = tauri::Builder::default()
@@ -890,6 +934,10 @@ pub fn run() {
       db_record_review_event,
       db_get_review_history,
       db_get_review_queue_stats,
+      db_export_markdown_package,
+      db_create_json_backup,
+      db_export_review_csv,
+      db_restore_from_backup,
       cmd_get_initial_launch_route,
       import_compute_file_metadata,
       import_copy_to_managed_library,

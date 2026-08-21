@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 /// These structs are the typed boundary between the Rust persistence layer
 /// and the Tauri IPC commands in `lib.rs`: they must implement `Serialize`
 /// (to return rows to the webview) and `Deserialize` (to accept IPC args).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Document {
   pub id: String,
   pub title: String,
@@ -111,9 +111,9 @@ pub struct ReadingSession {
 }
 
 pub struct Database {
-  conn: Arc<Mutex<Connection>>,
+  pub(crate) conn: Arc<Mutex<Connection>>,
   #[allow(dead_code)]
-  app_dir: PathBuf,
+  pub(crate) app_dir: PathBuf,
 }
 
 const DOCUMENT_SELECT_COLS: &str = "id, title, filepath, sha256_hash, page_count, created_at, updated_at, provenance, is_favourite, is_archived, last_opened_at, tags, collections, author, subject, keywords, creation_date, doi, isbn";
