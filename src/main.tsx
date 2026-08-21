@@ -145,7 +145,7 @@ import { createEvidenceBlockFromAnnotation } from "./utils/evidenceTypes";
 import { addEvidenceBlock } from "./utils/evidenceIo";
 import type { ReviewPromptRecord } from "./utils/promptTypes";
 import { PromptEditorModal } from "./components/PromptEditorModal";
-import { listReviewPrompts } from "./utils/promptsIo";
+import { createReviewPrompt, listReviewPrompts, updateReviewPrompt } from "./utils/promptsIo";
 import type { ReviewOutcome } from "./utils/fsrsScheduler";
 import { formatIntervalPreview, scheduleReview } from "./utils/fsrsScheduler";
 import {
@@ -155,7 +155,11 @@ import {
   updateUserResponse,
 } from "./utils/reviewSession";
 import type { DueReviewPromptRecord, ReviewQueueStats } from "./utils/reviewIo";
-import { getDueReviewPrompts, getReviewQueueStats, recordReviewEvent } from "./utils/reviewIo";
+import { getDueReviewPrompts, getReviewHistory, getReviewQueueStats, recordReviewEvent } from "./utils/reviewIo";
+import { PromptRepairModal } from "./components/PromptRepairModal";
+import { SettingsReview } from "./components/SettingsReview";
+import type { PromptRepairResult } from "./utils/promptRepair";
+import { hasRepeatedFailures } from "./utils/promptRepair";
 import { createNote, listNotes } from "./utils/notesIo";
 import { createDefaultNoteRecord } from "./utils/notesTypes";
 
@@ -3044,6 +3048,7 @@ function ReviewView() {
   const [session, setSession] = useState(() => createReviewSession([]));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [repairPrompt, setRepairPrompt] = useState<{ prompt: ReviewPromptRecord; failureCount: number } | null>(null);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -3106,8 +3111,35 @@ function ReviewView() {
       }, scheduled.schedule);
       setSession(nextSession);
       setQueueStats((prev) => ({ ...prev, due_count: Math.max(0, prev.due_count - 1) }));
+      if (outcome === 'again') {
+        const history = await getReviewHistory(attempt.prompt.id);
+        const failureCount = history.filter((event) => event.outcome === 'again').length;
+        if (hasRepeatedFailures(failureCount)) {
+          setRepairPrompt({ prompt: attempt.prompt, failureCount });
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save review outcome.');
+    }
+  };
+
+  const applyRepair = async (result: PromptRepairResult) => {
+    const [primary, ...additional] = result.prompts;
+    if (!primary) return;
+    try {
+      await updateReviewPrompt(primary);
+      for (const prompt of additional) {
+        await createReviewPrompt({
+          ...prompt,
+          id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${prompt.id}-${Date.now()}`,
+          status: 'draft',
+          adopted_at: null,
+        });
+      }
+      setRepairPrompt(null);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply prompt repair.');
     }
   };
 
@@ -3119,6 +3151,15 @@ function ReviewView() {
       <div className="destination-rule" />
 
       {error && <p className="error-text">{error}</p>}
+      {repairPrompt && (
+        <PromptRepairModal
+          isOpen={true}
+          prompt={repairPrompt.prompt}
+          failureCount={repairPrompt.failureCount}
+          onClose={() => setRepairPrompt(null)}
+          onRepair={(result) => void applyRepair(result)}
+        />
+      )}
 
       {loading ? (
         <EmptyState viewType="annotations" customTitle="Loading review queue" customDescription="Checking local due prompts." />
@@ -3211,7 +3252,7 @@ function SettingsView({
   palette: PaletteEntry[];
   onSavePalette: (palette: PaletteEntry[]) => void;
 }) {
-  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance' | 'annotations'>('privacy');
+  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance' | 'annotations' | 'review'>('privacy');
 
   return (
     <section className="settings-view">
@@ -3245,7 +3286,13 @@ function SettingsView({
           Annotations
         </b>
         <b>Reading</b>
-        <b>Review</b>
+        <b
+          className={settingTab === 'review' ? 'selected-setting' : ''}
+          onClick={() => setSettingTab('review')}
+          style={{ cursor: 'pointer' }}
+        >
+          Review
+        </b>
         <b>Storage</b>
         <b>Export</b>
       </aside>
@@ -3256,6 +3303,8 @@ function SettingsView({
           <SettingsAppearance preferences={appearance} onUpdatePreference={onUpdateAppearance} />
         ) : settingTab === 'annotations' ? (
           <SettingsAnnotations palette={palette} onSavePalette={onSavePalette} />
+        ) : settingTab === 'review' ? (
+          <SettingsReview />
         ) : (
           <>
             <span className="eyebrow">Your local boundary</span>
