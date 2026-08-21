@@ -8,6 +8,7 @@ interface AnnotationEditorProps {
   busy?: boolean;
   onSave: (id: string, color: string, comment: string, tags: string[]) => void;
   onTrash: (id: string) => void;
+  onRemember?: (annotation: AnnotationRecord) => void;
 }
 
 /**
@@ -19,7 +20,7 @@ interface AnnotationEditorProps {
  * colour chips come from the user's configured palette. FR-9.8: Trash moves
  * the row to the recoverable trash; Undo lives at the session level.
  */
-export function AnnotationEditor({ annotation, palette, busy, onSave, onTrash }: AnnotationEditorProps) {
+export function AnnotationEditor({ annotation, palette, busy, onSave, onTrash, onRemember }: AnnotationEditorProps) {
   const [color, setColor] = useState(annotation.color);
   const [comment, setComment] = useState(annotation.comment);
   const [tagsText, setTagsText] = useState(annotation.tags.join(', '));
@@ -102,15 +103,28 @@ export function AnnotationEditor({ annotation, palette, busy, onSave, onTrash }:
         />
       </label>
 
-      <div className="popup-actions">
-        <button
-          className="button compact danger-ghost"
-          onClick={() => onTrash(annotation.id)}
-          disabled={busy}
-          title="Move to trash — recoverable, undoable (FR-9.8)"
-        >
-          Trash
-        </button>
+      <div className="popup-actions" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' }}>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          <button
+            className="button compact danger-ghost"
+            onClick={() => onTrash(annotation.id)}
+            disabled={busy}
+            title="Move to trash — recoverable, undoable (FR-9.8)"
+          >
+            Trash
+          </button>
+          {onRemember && (
+            <button
+              type="button"
+              className="button compact"
+              onClick={() => onRemember(annotation)}
+              disabled={busy}
+              title="Create or edit a review prompt for spaced repetition (FR-11.1)"
+            >
+              Remember
+            </button>
+          )}
+        </div>
         <button
           className="button compact primary"
           onClick={() => onSave(annotation.id, color, comment, tags)}

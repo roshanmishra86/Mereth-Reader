@@ -1,6 +1,12 @@
 pub mod annotations;
+pub mod evidence;
 pub mod migrations;
+pub mod note_links;
+pub mod note_search;
+pub mod notes;
+pub mod prompts;
 pub mod provenance;
+pub mod review;
 pub mod versions;
 
 use migrations::run_migrations;
@@ -1800,4 +1806,3 @@ mod tests {
     assert!(res.is_err(), "provenance outside the six values must fail the CHECK");
   }
 }
-

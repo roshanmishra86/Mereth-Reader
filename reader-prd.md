@@ -1052,8 +1052,8 @@ High AI usage is not a success metric. Low usage may mean the manual product is 
 | OQ-8 | **Resolved** | Retrieval practice and spaced review are internal; AI does not grade correctness. | R4 |
 | OQ-9 | **Resolved (provisional)** | **Open-in-place is the recommended onboarding default**, but both ownership modes from FR-7.2 remain fully supported: managed-library copy is offered as an explicit, non-destructive choice at import, and the original file is never moved or modified by default. The default is provisional — confirmed by the R1 usability test with real users before it becomes binding. See ADR `R0.8-reader-architecture-decisions.md`. | R1 usability test |
 | OQ-10 | **Resolved** | v1 ships area capture (rectangular snips) and text highlighting/comment only; freehand ink is deferred past v1. | R0/R2 |
-| OQ-11 | **Open** | Which Markdown front-matter fields and note templates must ship by default? | R3 |
-| OQ-12 | **Open** | Does v1 need CSL citation-style formatting, or are editable metadata plus page/source references sufficient? | R3 |
+| OQ-11 | **Resolved** | Structured YAML front-matter schema (`id`, `title`, `type`, `created_at`, `updated_at`, `document_id`, `source_title`, `source_author`, `source_year`, `doi`, `tags`, `provenance`) and four default templates (`source_note`, `concept_note`, `scratch_note`, `evidence_block`). See ADR `R3.0-note-template-and-citation-decisions.md`. | R3 |
+| OQ-12 | **Resolved** | Editable metadata plus human-readable page/source references (`Author (Year), p. X`) and `mereth://` deep links; full CSL runtime rendering is deferred past v1. See ADR `R3.0-note-template-and-citation-decisions.md`. | R3 |
 | OQ-13 | **Open** | Which FSRS implementation/library satisfies desktop licensing and deterministic export requirements? | R4 |
 | OQ-14 | **Open** | Should app-managed `llama.cpp` ship before support for existing Ollama/LM Studio installations, or together? | R5 |
 | OQ-15 | **Open** | What reference PDFs and user-authored tasks make up the local AI citation evaluation corpus? | R5 |

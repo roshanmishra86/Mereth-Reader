@@ -59,6 +59,7 @@ import { ReaderToolbar } from "./components/ReaderToolbar";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { SettingsShortcuts } from "./components/SettingsShortcuts";
 import { LibraryView } from "./components/LibraryView";
+import { NotesView } from "./components/NotesView";
 import { JobQueueDrawer } from "./components/JobQueueDrawer";
 import { DuplicateConfirmModal } from "./components/DuplicateConfirmModal";
 import { CollectionItem } from "./utils/libraryUtils";
@@ -139,6 +140,30 @@ import {
   dragBoxToNormalized,
   mergeSelectionRects,
 } from "./utils/annotationAnchor";
+import type { EvidenceBlockRecord } from "./utils/evidenceTypes";
+import { createEvidenceBlockFromAnnotation } from "./utils/evidenceTypes";
+import { addEvidenceBlock } from "./utils/evidenceIo";
+import type { ReviewPromptRecord } from "./utils/promptTypes";
+import { PromptEditorModal } from "./components/PromptEditorModal";
+import { createReviewPrompt, getReviewPrompt, listReviewPrompts, updateReviewPrompt } from "./utils/promptsIo";
+import type { ReviewOutcome } from "./utils/fsrsScheduler";
+import { formatIntervalPreview, scheduleReview } from "./utils/fsrsScheduler";
+import {
+  createReviewSession,
+  revealCurrentCard,
+  submitCurrentReview,
+  updateUserResponse,
+} from "./utils/reviewSession";
+import type { DueReviewPromptRecord, ReviewQueueStats } from "./utils/reviewIo";
+import { getDueReviewPrompts, getReviewHistory, getReviewQueueStats, recordReviewEvent } from "./utils/reviewIo";
+import { PromptRepairModal } from "./components/PromptRepairModal";
+import { SettingsReview } from "./components/SettingsReview";
+import type { PromptRepairResult } from "./utils/promptRepair";
+import { hasRepeatedFailures } from "./utils/promptRepair";
+import { createNote, listNotes } from "./utils/notesIo";
+import { createDefaultNoteRecord } from "./utils/notesTypes";
+import { SessionSynthesisModal } from "./components/SessionSynthesisModal";
+import { resolveDeepLinkUiAction } from "./utils/deepLinkRouter";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
 
@@ -194,7 +219,6 @@ function App() {
   const [rightTab, setRightTab] = useState<"annotations" | "note" | "ai">("annotations");
   const [aiOn, setAiOn] = useState(false);
   const [selected, setSelected] = useState("");
-  const [promptOpen, setPromptOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [initialImportPath, setInitialImportPath] = useState<string | null>(null);
   const [pdfEntryMode, setPdfEntryMode] = useState<'open' | 'import'>('open');
@@ -220,6 +244,60 @@ function App() {
   const [isPasswordRejected, setIsPasswordRejected] = useState(false);
   const [scannedPdfBannerVisible, setScannedPdfBannerVisible] = useState(false);
   const [versionMismatchBannerVisible, setVersionMismatchBannerVisible] = useState(false);
+  const [sessionSynthesisOpen, setSessionSynthesisOpen] = useState(false);
+
+  // Task 4.4 (FR-11.1): Prompt Editor Modal for Remember actions
+  const [promptEditorModal, setPromptEditorModal] = useState<{
+    open: boolean;
+    initialPrompt?: Partial<ReviewPromptRecord> | null;
+    sourceContext?: {
+      title: string;
+      quote?: string | null;
+      annotationId?: string | null;
+      noteId?: string | null;
+    };
+  }>({ open: false });
+  const [rememberedPromptAnnotationIds, setRememberedPromptAnnotationIds] = useState<Set<string>>(new Set());
+
+  const handleRememberAnnotation = (ann: AnnotationRecord) => {
+    setPromptEditorModal({
+      open: true,
+      sourceContext: {
+        title: activeDocument?.title || 'Document',
+        quote: ann.quote,
+        annotationId: ann.id,
+      },
+    });
+  };
+
+  const handlePromptSaved = (prompt: ReviewPromptRecord) => {
+    if (prompt.annotation_id) {
+      setRememberedPromptAnnotationIds((prev) => {
+        const next = new Set(prev);
+        next.add(prompt.annotation_id as string);
+        return next;
+      });
+    }
+  };
+
+  const handleReturnToLibrary = () => {
+    if (activeDocument && annotationsList.length > 0) {
+      setSessionSynthesisOpen(true);
+    }
+    setDestination("library");
+  };
+
+  const handleSaveSynthesisNote = async (title: string, bodyMarkdown: string) => {
+    if (!activeDocument) return;
+    const note = createDefaultNoteRecord({
+      note_type: 'scratch',
+      title,
+      body_markdown: bodyMarkdown,
+      document_id: activeDocument.id,
+    });
+    await createNote(note);
+    setNotesList((prev) => [{ id: note.id, title: note.title, type: note.note_type }, ...prev]);
+  };
 
   // Task 3.3 version handling (FR-7.3): real open-time fingerprint state.
   // `versionStatus` is what the open check reported; `versionOffer` carries
@@ -244,7 +322,7 @@ function App() {
   // Task 3.5: recoverable trash records (FR-9.8) — loaded alongside the active
   // list so Restore/Purge stay truthful without hiding what is recoverable.
   const [trashedAnnotations, setTrashedAnnotations] = useState<AnnotationRecord[]>([]);
-  const [notesList] = useState<Array<{ id: string; title: string; type: string }>>([]);
+  const [notesList, setNotesList] = useState<Array<{ id: string; title: string; type: string }>>([]);
   const [reviewPromptsList] = useState<Array<{ id: string; prompt: string }>>([]);
   // The current version row's id — creation-time checksums bind to it and
   // re-anchoring switches it; null until registration/refresh completes.
@@ -282,24 +360,78 @@ function App() {
 
     const dl = payload.deep_link ?? payload.deepLink;
     if (dl) {
-      if (dl.kind === "document") {
+      const action = resolveDeepLinkUiAction(dl);
+      if (action.destination === "reader") {
         setDestination("reader");
-        const found = documents.find((d) => d.id === dl.id);
+        const found = documents.find((d) => d.id === action.documentId);
         if (found) {
           openDocument(found);
         }
-        if (dl.page) {
-          setTargetPage(dl.page);
+        if (action.page) {
+          setTargetPage(action.page);
         }
-        const annotId = dl.annotationId;
+        const annotId = action.annotationId;
         if (annotId) {
           setSelected(annotId);
         }
-      } else if (dl.kind === "note") {
+      } else if (action.destination === "notes") {
+        setSelectedNoteId(action.noteId ?? null);
         setDestination("notes");
-      } else if (dl.kind === "review") {
+      } else if (action.destination === "review") {
+        setSelectedReviewPromptId(action.reviewPromptId ?? null);
         setDestination("review");
       }
+    }
+  };
+
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [selectedReviewPromptId, setSelectedReviewPromptId] = useState<string | null>(null);
+
+  const handleNavigateToSource = (block: EvidenceBlockRecord) => {
+    const doc = documents.find((d) => d.id === block.document_id);
+    if (doc) {
+      openDocument(doc);
+      setTargetPage(Number(block.page_index) + 1);
+      if (block.annotation_id) {
+        setSelected(block.annotation_id);
+      }
+      setDestination("reader");
+    }
+  };
+
+  const handleAddAnnotationToNote = async (annotation: AnnotationRecord) => {
+    if (!activeDocument) return;
+    try {
+      const notes = await listNotes({ includeTrash: false });
+      let targetNote = notes.find((n) => n.document_id === activeDocument.id && n.deleted_at === null);
+      if (!targetNote) {
+        const newNote = createDefaultNoteRecord({
+          note_type: "source",
+          title: `${activeDocument.title} — Reading Notes`,
+          document_id: activeDocument.id,
+          body_markdown: `# ${activeDocument.title}\n\n*By ${activeDocument.author || "Unknown"}*\n\n## Excerpts & Notes\n`,
+        });
+        targetNote = await createNote(newNote);
+      }
+
+      const evidenceBlock = createEvidenceBlockFromAnnotation({
+        noteId: targetNote.id,
+        annotation,
+        document: activeDocument,
+        pageIndex: annotation.page_index,
+        pageLabel: annotation.page_label,
+        sourceKind: annotation.annotation_type === "area" ? "area_image" : "quote",
+        quote: annotation.quote,
+        color: annotation.color,
+        tags: annotation.tags,
+        userComment: annotation.comment,
+      });
+
+      await addEvidenceBlock(evidenceBlock);
+      setSelectedNoteId(targetNote.id);
+      setDestination("notes");
+    } catch (err) {
+      console.error("Failed to add annotation to note:", err);
     }
   };
 
@@ -473,7 +605,7 @@ function App() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setReadingOnly(false);
-        setPromptOpen(false);
+        setPromptEditorModal({ open: false });
         setImportOpen(false);
         setJobDrawerOpen(false);
       }
@@ -491,6 +623,30 @@ function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  useEffect(() => {
+    if (!activeDocument) {
+      setRememberedPromptAnnotationIds(new Set());
+      return;
+    }
+    const annotationIds = new Set(annotationsList.map((annotation) => annotation.id));
+    let cancelled = false;
+    void listReviewPrompts().then((prompts) => {
+      if (cancelled) return;
+      setRememberedPromptAnnotationIds(
+        new Set(
+          prompts
+            .map((prompt) => prompt.annotation_id)
+            .filter((annotationId): annotationId is string => Boolean(annotationId && annotationIds.has(annotationId)))
+        )
+      );
+    }).catch(() => {
+      if (!cancelled) setRememberedPromptAnnotationIds(new Set());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeDocument, annotationsList]);
 
   // Monotonic id for in-flight openDocument calls so a stale async open can
   // detect that a newer one superseded it and bail out before mutating state.
@@ -1064,7 +1220,7 @@ function App() {
             ) : activeDocument.is_malformed ? (
               <MalformedDocumentView
                 document={activeDocument}
-                onReturnToLibrary={() => setDestination("library")}
+                onReturnToLibrary={handleReturnToLibrary}
                 onDeleteRecord={handleDeleteRecord}
               />
             ) : (
@@ -1110,16 +1266,18 @@ function App() {
                 onVersionRegistered={handleVersionRegistered}
                 onReanchorOutcome={handleReanchorOutcome}
                 onDismissReanchorSummary={() => setReanchorSummary(null)}
-                onReturnToLibrary={() => setDestination("library")}
+                onReturnToLibrary={handleReturnToLibrary}
                 setAiOn={setAiOn}
                 setImportOpen={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
                 setLeftOpen={setLeftOpen}
-                setPromptOpen={setPromptOpen}
                 setReadingOnly={setReadingOnly}
                 setRightOpen={setRightOpen}
                 setRightTab={setRightTab}
                 setSelected={setSelected}
                 totalPages={activeDocument.page_count}
+                rememberedAnnotationIds={rememberedPromptAnnotationIds}
+                onAddEvidenceToNote={handleAddAnnotationToNote}
+                onRememberAnnotation={handleRememberAnnotation}
               />
             )}
           </>
@@ -1139,8 +1297,13 @@ function App() {
             onUpdateCollections={handleUpdateCollections}
           />
         )}
-        {destination === "notes" && <NotesView />}
-        {destination === "review" && <ReviewView />}
+        {destination === "notes" && (
+          <NotesView
+            initialSelectedNoteId={selectedNoteId}
+            onNavigateToSource={handleNavigateToSource}
+          />
+        )}
+        {destination === "review" && <ReviewView initialPromptId={selectedReviewPromptId} />}
         {destination === "settings" && (
           <SettingsView
             aiOn={aiOn}
@@ -1186,7 +1349,20 @@ function App() {
         onCancel={handlePasswordCancel}
       />
 
-      {promptOpen && <PromptDialog close={() => setPromptOpen(false)} evidence={activeAnnotation} />}
+      {/* Task 4.4 (FR-11.1 - FR-11.5): Prompt Editor Modal for Remember actions */}
+      <PromptEditorModal
+        isOpen={promptEditorModal.open}
+        onClose={() => setPromptEditorModal({ open: false })}
+        initialPrompt={promptEditorModal.initialPrompt}
+        sourceContext={promptEditorModal.sourceContext}
+        onSaved={handlePromptSaved}
+      />
+      <SessionSynthesisModal
+        isOpen={sessionSynthesisOpen}
+        annotations={annotationsList}
+        onClose={() => setSessionSynthesisOpen(false)}
+        onSaveNote={handleSaveSynthesisNote}
+      />
     </main>
   );
 }
@@ -1243,7 +1419,6 @@ type ReaderProps = {
   setAiOn: (value: boolean) => void;
   setImportOpen: (value: boolean) => void;
   setLeftOpen: (value: boolean) => void;
-  setPromptOpen: (value: boolean) => void;
   setReadingOnly: (value: boolean) => void;
   setRightOpen: (value: boolean) => void;
   setRightTab: (value: "annotations" | "note" | "ai") => void;
@@ -1255,6 +1430,10 @@ type ReaderProps = {
   /** Task 3.7 (FR-9.6): annotation linkage sets (populated by R3/R4 linking). */
   linkedAnnotationIds?: ReadonlySet<string>;
   rememberedAnnotationIds?: ReadonlySet<string>;
+  /** Task 4.2 (FR-10.1): Add active annotation as evidence block to note */
+  onAddEvidenceToNote?: (annotation: AnnotationRecord) => void;
+  /** Task 4.4 (FR-11.1): Open review prompt editor for annotation */
+  onRememberAnnotation?: (annotation: AnnotationRecord) => void;
 };
 
 function Reader(props: ReaderProps) {
@@ -1888,7 +2067,7 @@ function Reader(props: ReaderProps) {
           void props.onUndoAnnotation();
           break;
         case 'annot.remember':
-          if (props.annotationsList.length > 0) props.setPromptOpen(true);
+          if (props.activeAnnotation) props.onRememberAnnotation?.(props.activeAnnotation);
           break;
       }
     };
@@ -2780,6 +2959,7 @@ function RightPane(props: ReaderProps) {
               palette={props.palette}
               onSave={(id, color, comment, tags) => void props.onAnnotationUpdated(id, color, comment, tags)}
               onTrash={(id) => void props.onTrashAnnotation(id)}
+              onRemember={(ann) => props.onRememberAnnotation?.(ann)}
             />
           )}
 
@@ -2842,7 +3022,7 @@ function RightPane(props: ReaderProps) {
 
           <button
             className="wide-action"
-            onClick={() => props.setPromptOpen(true)}
+            onClick={() => props.activeAnnotation && props.onRememberAnnotation?.(props.activeAnnotation)}
             disabled={!props.activeAnnotation}
             title={!props.activeAnnotation ? 'Select a passage and annotate it first' : 'Draft a retrieval review prompt (R4 milestone)'}
           >
@@ -2875,7 +3055,12 @@ function RightPane(props: ReaderProps) {
                 <small>— {props.documentName.replace(".pdf", "")}, p. {props.activeAnnotation.page_label || props.activeAnnotation.page_index + 1}</small>
               </p>
               <textarea aria-label="Note content" placeholder="Write your own prose here — it stays separate from the quoted evidence." />
-              <button className="wide-action">Add evidence block</button>
+              <button
+                className="wide-action primary"
+                onClick={() => props.activeAnnotation && props.onAddEvidenceToNote?.(props.activeAnnotation)}
+              >
+                + Add to Note (Structured Evidence)
+              </button>
             </>
           ) : (
             <p className="dimmed">Select an annotation to preview it here.</p>
@@ -2887,42 +3072,203 @@ function RightPane(props: ReaderProps) {
   );
 }
 
-function NotesView() {
-  // Notes persistence arrives with the R3 milestone. Until then this surface
-  // shows an honest empty state instead of fabricated sample notes (U15).
-  return (
-    <section className="destination-view">
-      <div className="view-header">
-        <div>
-          <span className="eyebrow">0 notes · all local</span>
-          <h1>Notes</h1>
-        </div>
-      </div>
-      <div className="destination-rule" />
-      <EmptyState
-        viewType="annotations"
-        customTitle="No notes yet"
-        customDescription="Source, concept, and scratch notes are built from your annotations and arrive with the R3 milestone. Nothing here is invented sample content."
-      />
-    </section>
-  );
-}
 
-function ReviewView() {
-  // The review queue arrives with the R4 milestone (FSRS scheduling). Until
-  // then: an honest empty queue, with no invented due counts or scheduler
-  // claims (U15).
+
+function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
+  const [dueRows, setDueRows] = useState<DueReviewPromptRecord[]>([]);
+  const [queueStats, setQueueStats] = useState<ReviewQueueStats>({ due_count: 0, adopted_count: 0, paused_count: 0 });
+  const [session, setSession] = useState(() => createReviewSession([]));
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [repairPrompt, setRepairPrompt] = useState<{ prompt: ReviewPromptRecord; failureCount: number } | null>(null);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [due, stats, targetPrompt] = await Promise.all([
+        getDueReviewPrompts(20),
+        getReviewQueueStats(),
+        initialPromptId ? getReviewPrompt(initialPromptId) : Promise.resolve(null),
+      ]);
+      const mergedDue = targetPrompt && targetPrompt.status === 'adopted' && !due.some((row) => row.prompt.id === targetPrompt.id)
+        ? [{ prompt: targetPrompt, schedule: null }, ...due]
+        : due;
+      setDueRows(mergedDue);
+      setQueueStats(stats);
+      setSession(createReviewSession(mergedDue.map((row) => row.prompt)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load review queue.');
+    } finally {
+      setLoading(false);
+    }
+  }, [initialPromptId]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const currentPrompt = session.current?.prompt ?? null;
+  const currentSchedule = currentPrompt
+    ? dueRows.find((row) => row.prompt.id === currentPrompt.id)?.schedule ?? null
+    : null;
+  const previewBase = currentPrompt
+    ? (['again', 'hard', 'good', 'easy'] as ReviewOutcome[]).map((outcome) => ({
+        outcome,
+        interval: scheduleReview({
+          promptId: currentPrompt.id,
+          outcome,
+          reviewedAt: new Date(),
+          previous: currentSchedule,
+        }).intervalDays,
+      }))
+    : [];
+
+  const reveal = () => {
+    setSession((prev) => revealCurrentCard(prev));
+  };
+
+  const rate = async (outcome: ReviewOutcome) => {
+    const now = new Date();
+    const { state: nextSession, attempt } = submitCurrentReview(session, outcome, now);
+    if (!attempt) return;
+    const scheduled = scheduleReview({
+      promptId: attempt.prompt.id,
+      outcome,
+      reviewedAt: now,
+      previous: currentSchedule,
+    });
+    try {
+      await recordReviewEvent({
+        id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `review-${Date.now()}`,
+        prompt_id: attempt.prompt.id,
+        reviewed_at: now.toISOString(),
+        outcome,
+        duration_ms: attempt.durationMs,
+        user_response: attempt.userResponse,
+        provenance: 'user_authored',
+      }, scheduled.schedule);
+      setSession(nextSession);
+      setQueueStats((prev) => ({ ...prev, due_count: Math.max(0, prev.due_count - 1) }));
+      if (outcome === 'again') {
+        const history = await getReviewHistory(attempt.prompt.id);
+        const failureCount = history.filter((event) => event.outcome === 'again').length;
+        if (hasRepeatedFailures(failureCount)) {
+          setRepairPrompt({ prompt: attempt.prompt, failureCount });
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save review outcome.');
+    }
+  };
+
+  const applyRepair = async (result: PromptRepairResult) => {
+    const [primary, ...additional] = result.prompts;
+    if (!primary) return;
+    try {
+      await updateReviewPrompt(primary);
+      for (const prompt of additional) {
+        await createReviewPrompt({
+          ...prompt,
+          id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${prompt.id}-${Date.now()}`,
+          status: 'draft',
+          adopted_at: null,
+        });
+      }
+      setRepairPrompt(null);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to apply prompt repair.');
+    }
+  };
+
   return (
     <section className="review-view">
-      <span className="eyebrow">0 due</span>
+      <span className="eyebrow">{queueStats.due_count} due · {queueStats.adopted_count} adopted · {queueStats.paused_count} paused</span>
       <h1>Review before you reveal.</h1>
       <p className="review-preamble">You decide the outcome. The source is the feedback authority.</p>
       <div className="destination-rule" />
-      <EmptyState
-        viewType="annotations"
-        customTitle="Nothing due"
-        customDescription="Prompts you mark Remember will appear here once annotation and review scheduling land in the R3/R4 milestones."
-      />
+
+      {error && <p className="error-text">{error}</p>}
+      {repairPrompt && (
+        <PromptRepairModal
+          isOpen={true}
+          prompt={repairPrompt.prompt}
+          failureCount={repairPrompt.failureCount}
+          onClose={() => setRepairPrompt(null)}
+          onRepair={(result) => void applyRepair(result)}
+        />
+      )}
+
+      {loading ? (
+        <EmptyState viewType="annotations" customTitle="Loading review queue" customDescription="Checking local due prompts." />
+      ) : session.step === 'empty' || !session.current ? (
+        <EmptyState
+          viewType="annotations"
+          customTitle="Nothing due"
+          customDescription="Adopted prompts appear here when their local FSRS schedule is due."
+        />
+      ) : session.step === 'complete' ? (
+        <EmptyState
+          viewType="annotations"
+          customTitle="Review complete"
+          customDescription="All due prompts in this session have been rated. The next due dates were saved locally."
+        />
+      ) : (
+        <article className="review-card">
+          <div className="review-card-header">
+            <span>Card {session.currentIndex + 1} of {session.queue.length}</span>
+            <span>Budget 20/day · elapsed locally</span>
+          </div>
+          <h2>{session.current.prompt.question}</h2>
+          {session.current.prompt.cue && <p className="dimmed">Cue: {session.current.prompt.cue}</p>}
+
+          {!session.current.revealed ? (
+            <>
+              <label className="field-label">
+                Optional typed response
+                <textarea
+                  value={session.current.userResponse}
+                  onChange={(event) => setSession((prev) => updateUserResponse(prev, event.target.value))}
+                  placeholder="Answer from memory before revealing the source."
+                />
+              </label>
+              <button className="wide-action primary" onClick={reveal}>
+                Reveal answer and source
+              </button>
+            </>
+          ) : (
+            <>
+              {session.current.userResponse && (
+                <div className="evidence-block">
+                  <b>Your response</b>
+                  <p>{session.current.userResponse}</p>
+                </div>
+              )}
+              <div className="evidence-block">
+                <b>Adopted answer</b>
+                <p>{session.current.prompt.answer || 'No adopted answer text was saved for this prompt.'}</p>
+              </div>
+              <div className="evidence-block">
+                <b>Linked source</b>
+                <small>
+                  {session.current.prompt.annotation_id ? `Annotation ${session.current.prompt.annotation_id}` : ''}
+                  {session.current.prompt.annotation_id && session.current.prompt.note_id ? ' · ' : ''}
+                  {session.current.prompt.note_id ? `Note ${session.current.prompt.note_id}` : ''}
+                </small>
+              </div>
+              <div className="review-ratings">
+                {previewBase.map(({ outcome, interval }) => (
+                  <button key={outcome} className="wide-action" onClick={() => void rate(outcome)}>
+                    {outcome === 'again' ? 'Again' : outcome === 'hard' ? 'Hard (recalled)' : outcome === 'good' ? 'Good' : 'Easy'}
+                    <small>{formatIntervalPreview(interval)}</small>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </article>
+      )}
     </section>
   );
 }
@@ -2945,7 +3291,7 @@ function SettingsView({
   palette: PaletteEntry[];
   onSavePalette: (palette: PaletteEntry[]) => void;
 }) {
-  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance' | 'annotations'>('privacy');
+  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance' | 'annotations' | 'review'>('privacy');
 
   return (
     <section className="settings-view">
@@ -2979,7 +3325,13 @@ function SettingsView({
           Annotations
         </b>
         <b>Reading</b>
-        <b>Review</b>
+        <b
+          className={settingTab === 'review' ? 'selected-setting' : ''}
+          onClick={() => setSettingTab('review')}
+          style={{ cursor: 'pointer' }}
+        >
+          Review
+        </b>
         <b>Storage</b>
         <b>Export</b>
       </aside>
@@ -2990,6 +3342,8 @@ function SettingsView({
           <SettingsAppearance preferences={appearance} onUpdatePreference={onUpdateAppearance} />
         ) : settingTab === 'annotations' ? (
           <SettingsAnnotations palette={palette} onSavePalette={onSavePalette} />
+        ) : settingTab === 'review' ? (
+          <SettingsReview />
         ) : (
           <>
             <span className="eyebrow">Your local boundary</span>
@@ -3025,20 +3379,6 @@ function SettingsView({
       </article>
     </section>
   );
-}
-
-function PromptDialog({ close, evidence }: { close: () => void; evidence: AnnotationRecord | null }) {
-  const evidenceLabel = evidence
-    ? evidence.annotation_type === 'highlight' || evidence.annotation_type === 'underline'
-      ? `“${evidence.quote}”`
-      : evidence.annotation_type === 'comment'
-        ? evidence.comment
-        : evidence.annotation_type === 'area'
-          ? 'Area capture'
-          : 'Bookmark'
-    : '';
-  const evidencePage = evidence ? `p. ${evidence.page_label || evidence.page_index + 1}` : '';
-  return <div className="modal-backdrop" role="presentation"><section className="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title"><button className="modal-close" onClick={close} aria-label="Close"><Glyph>×</Glyph></button><span className="eyebrow">Draft · not scheduled</span><h2 id="prompt-title">New retrieval prompt</h2><p>Nothing enters the review queue until you approve it. Every prompt keeps a link to its evidence.</p>{evidence ? <p className="evidence-block">{evidenceLabel}<small>Linked evidence · {evidencePage}</small></p> : <p className="dimmed">Select an annotation first — prompts must link to source evidence (FR-11.3).</p>}<label className="field-label">Prompt<textarea placeholder="Write the question your future self should answer from memory…" /></label><label className="field-label">Your answer — you write or rewrite this<textarea placeholder="Write the answer in your own words…" /></label><div className="prompt-check"><b>Prompt check — advisory, never blocking</b><span>✓ Focused — one retrieval task.</span><span>✓ Requires recall — no recognition options.</span><span>! Cue — name the source context if you will need it later.</span></div><div className="modal-actions"><button className="wide-action" onClick={close}>Save as draft</button><button className="wide-action primary" onClick={close}>Approve prompt</button></div></section></div>;
 }
 
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
