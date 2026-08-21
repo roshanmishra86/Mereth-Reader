@@ -1,5 +1,6 @@
 pub mod annotations;
 pub mod migrations;
+pub mod notes;
 pub mod provenance;
 pub mod versions;
 

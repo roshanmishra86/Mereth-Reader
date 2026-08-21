@@ -59,6 +59,7 @@ import { ReaderToolbar } from "./components/ReaderToolbar";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { SettingsShortcuts } from "./components/SettingsShortcuts";
 import { LibraryView } from "./components/LibraryView";
+import { NotesView } from "./components/NotesView";
 import { JobQueueDrawer } from "./components/JobQueueDrawer";
 import { DuplicateConfirmModal } from "./components/DuplicateConfirmModal";
 import { CollectionItem } from "./utils/libraryUtils";
@@ -2887,26 +2888,7 @@ function RightPane(props: ReaderProps) {
   );
 }
 
-function NotesView() {
-  // Notes persistence arrives with the R3 milestone. Until then this surface
-  // shows an honest empty state instead of fabricated sample notes (U15).
-  return (
-    <section className="destination-view">
-      <div className="view-header">
-        <div>
-          <span className="eyebrow">0 notes · all local</span>
-          <h1>Notes</h1>
-        </div>
-      </div>
-      <div className="destination-rule" />
-      <EmptyState
-        viewType="annotations"
-        customTitle="No notes yet"
-        customDescription="Source, concept, and scratch notes are built from your annotations and arrive with the R3 milestone. Nothing here is invented sample content."
-      />
-    </section>
-  );
-}
+
 
 function ReviewView() {
   // The review queue arrives with the R4 milestone (FSRS scheduling). Until

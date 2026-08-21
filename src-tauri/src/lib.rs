@@ -6,6 +6,7 @@ pub mod perf;
 
 use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
 use db::annotations::{Annotation, AnnotationAsset};
+use db::notes::{Note, NoteRevision};
 use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
 use import::{
   compute_file_metadata, copy_to_managed_documents, ensure_external_pdf_source,
@@ -473,6 +474,100 @@ fn db_get_pdf_bytes(filepath: String) -> Result<tauri::ipc::Response, String> {
   Ok(tauri::ipc::Response::new(bytes))
 }
 
+#[tauri::command]
+fn db_add_note(note: Note, state: State<'_, AppState>) -> Result<Note, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.add_note(&note)
+}
+
+#[tauri::command]
+fn db_get_note(id: String, state: State<'_, AppState>) -> Result<Option<Note>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_note(&id)
+}
+
+#[tauri::command]
+fn db_list_notes(
+  include_trash: Option<bool>,
+  note_type: Option<String>,
+  document_id: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<Vec<Note>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.list_notes(
+    include_trash.unwrap_or(false),
+    note_type.as_deref(),
+    document_id.as_deref(),
+  )
+}
+
+#[tauri::command]
+fn db_update_note(
+  id: String,
+  title: String,
+  body_markdown: String,
+  create_revision: Option<bool>,
+  state: State<'_, AppState>,
+) -> Result<Note, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_note(&id, &title, &body_markdown, create_revision.unwrap_or(true))
+}
+
+#[tauri::command]
+fn db_trash_note(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.trash_note(&id)
+}
+
+#[tauri::command]
+fn db_restore_note(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.restore_note(&id)
+}
+
+#[tauri::command]
+fn db_purge_note(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.purge_note(&id)
+}
+
+#[tauri::command]
+fn db_get_note_revisions(note_id: String, state: State<'_, AppState>) -> Result<Vec<NoteRevision>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_note_revisions(&note_id)
+}
+
+#[tauri::command]
+fn db_restore_note_revision(
+  note_id: String,
+  revision_number: i64,
+  state: State<'_, AppState>,
+) -> Result<Note, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.restore_note_revision(&note_id, revision_number)
+}
+
+#[tauri::command]
+fn db_promote_scratch_note(
+  id: String,
+  target_type: String,
+  document_id: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<Note, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.promote_scratch_note(&id, &target_type, document_id.as_deref())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut builder = tauri::Builder::default()
@@ -522,6 +617,16 @@ pub fn run() {
       db_update_version_geometry,
       db_get_document_versions,
       db_reanchor_annotation_to_version,
+      db_add_note,
+      db_get_note,
+      db_list_notes,
+      db_update_note,
+      db_trash_note,
+      db_restore_note,
+      db_purge_note,
+      db_get_note_revisions,
+      db_restore_note_revision,
+      db_promote_scratch_note,
       cmd_get_initial_launch_route,
       import_compute_file_metadata,
       import_copy_to_managed_library,
