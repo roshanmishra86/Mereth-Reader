@@ -146,6 +146,16 @@ import { addEvidenceBlock } from "./utils/evidenceIo";
 import type { ReviewPromptRecord } from "./utils/promptTypes";
 import { PromptEditorModal } from "./components/PromptEditorModal";
 import { listReviewPrompts } from "./utils/promptsIo";
+import type { ReviewOutcome } from "./utils/fsrsScheduler";
+import { formatIntervalPreview, scheduleReview } from "./utils/fsrsScheduler";
+import {
+  createReviewSession,
+  revealCurrentCard,
+  submitCurrentReview,
+  updateUserResponse,
+} from "./utils/reviewSession";
+import type { DueReviewPromptRecord, ReviewQueueStats } from "./utils/reviewIo";
+import { getDueReviewPrompts, getReviewQueueStats, recordReviewEvent } from "./utils/reviewIo";
 import { createNote, listNotes } from "./utils/notesIo";
 import { createDefaultNoteRecord } from "./utils/notesTypes";
 
@@ -3029,20 +3039,156 @@ function RightPane(props: ReaderProps) {
 
 
 function ReviewView() {
-  // The review queue arrives with the R4 milestone (FSRS scheduling). Until
-  // then: an honest empty queue, with no invented due counts or scheduler
-  // claims (U15).
+  const [dueRows, setDueRows] = useState<DueReviewPromptRecord[]>([]);
+  const [queueStats, setQueueStats] = useState<ReviewQueueStats>({ due_count: 0, adopted_count: 0, paused_count: 0 });
+  const [session, setSession] = useState(() => createReviewSession([]));
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [due, stats] = await Promise.all([getDueReviewPrompts(20), getReviewQueueStats()]);
+      setDueRows(due);
+      setQueueStats(stats);
+      setSession(createReviewSession(due.map((row) => row.prompt)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load review queue.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const currentPrompt = session.current?.prompt ?? null;
+  const currentSchedule = currentPrompt
+    ? dueRows.find((row) => row.prompt.id === currentPrompt.id)?.schedule ?? null
+    : null;
+  const previewBase = currentPrompt
+    ? (['again', 'hard', 'good', 'easy'] as ReviewOutcome[]).map((outcome) => ({
+        outcome,
+        interval: scheduleReview({
+          promptId: currentPrompt.id,
+          outcome,
+          reviewedAt: new Date(),
+          previous: currentSchedule,
+        }).intervalDays,
+      }))
+    : [];
+
+  const reveal = () => {
+    setSession((prev) => revealCurrentCard(prev));
+  };
+
+  const rate = async (outcome: ReviewOutcome) => {
+    const now = new Date();
+    const { state: nextSession, attempt } = submitCurrentReview(session, outcome, now);
+    if (!attempt) return;
+    const scheduled = scheduleReview({
+      promptId: attempt.prompt.id,
+      outcome,
+      reviewedAt: now,
+      previous: currentSchedule,
+    });
+    try {
+      await recordReviewEvent({
+        id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `review-${Date.now()}`,
+        prompt_id: attempt.prompt.id,
+        reviewed_at: now.toISOString(),
+        outcome,
+        duration_ms: attempt.durationMs,
+        user_response: attempt.userResponse,
+        provenance: 'user_authored',
+      }, scheduled.schedule);
+      setSession(nextSession);
+      setQueueStats((prev) => ({ ...prev, due_count: Math.max(0, prev.due_count - 1) }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save review outcome.');
+    }
+  };
+
   return (
     <section className="review-view">
-      <span className="eyebrow">0 due</span>
+      <span className="eyebrow">{queueStats.due_count} due · {queueStats.adopted_count} adopted · {queueStats.paused_count} paused</span>
       <h1>Review before you reveal.</h1>
       <p className="review-preamble">You decide the outcome. The source is the feedback authority.</p>
       <div className="destination-rule" />
-      <EmptyState
-        viewType="annotations"
-        customTitle="Nothing due"
-        customDescription="Prompts you mark Remember will appear here once annotation and review scheduling land in the R3/R4 milestones."
-      />
+
+      {error && <p className="error-text">{error}</p>}
+
+      {loading ? (
+        <EmptyState viewType="annotations" customTitle="Loading review queue" customDescription="Checking local due prompts." />
+      ) : session.step === 'empty' || !session.current ? (
+        <EmptyState
+          viewType="annotations"
+          customTitle="Nothing due"
+          customDescription="Adopted prompts appear here when their local FSRS schedule is due."
+        />
+      ) : session.step === 'complete' ? (
+        <EmptyState
+          viewType="annotations"
+          customTitle="Review complete"
+          customDescription="All due prompts in this session have been rated. The next due dates were saved locally."
+        />
+      ) : (
+        <article className="review-card">
+          <div className="review-card-header">
+            <span>Card {session.currentIndex + 1} of {session.queue.length}</span>
+            <span>Budget 20/day · elapsed locally</span>
+          </div>
+          <h2>{session.current.prompt.question}</h2>
+          {session.current.prompt.cue && <p className="dimmed">Cue: {session.current.prompt.cue}</p>}
+
+          {!session.current.revealed ? (
+            <>
+              <label className="field-label">
+                Optional typed response
+                <textarea
+                  value={session.current.userResponse}
+                  onChange={(event) => setSession((prev) => updateUserResponse(prev, event.target.value))}
+                  placeholder="Answer from memory before revealing the source."
+                />
+              </label>
+              <button className="wide-action primary" onClick={reveal}>
+                Reveal answer and source
+              </button>
+            </>
+          ) : (
+            <>
+              {session.current.userResponse && (
+                <div className="evidence-block">
+                  <b>Your response</b>
+                  <p>{session.current.userResponse}</p>
+                </div>
+              )}
+              <div className="evidence-block">
+                <b>Adopted answer</b>
+                <p>{session.current.prompt.answer || 'No adopted answer text was saved for this prompt.'}</p>
+              </div>
+              <div className="evidence-block">
+                <b>Linked source</b>
+                <small>
+                  {session.current.prompt.annotation_id ? `Annotation ${session.current.prompt.annotation_id}` : ''}
+                  {session.current.prompt.annotation_id && session.current.prompt.note_id ? ' · ' : ''}
+                  {session.current.prompt.note_id ? `Note ${session.current.prompt.note_id}` : ''}
+                </small>
+              </div>
+              <div className="review-ratings">
+                {previewBase.map(({ outcome, interval }) => (
+                  <button key={outcome} className="wide-action" onClick={() => void rate(outcome)}>
+                    {outcome === 'again' ? 'Again' : outcome === 'hard' ? 'Hard (recalled)' : outcome === 'good' ? 'Good' : 'Easy'}
+                    <small>{formatIntervalPreview(interval)}</small>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </article>
+      )}
     </section>
   );
 }

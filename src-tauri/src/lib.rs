@@ -11,6 +11,7 @@ use db::note_links::{BacklinkRecord, NoteLink};
 use db::note_search::NoteSearchResult;
 use db::notes::{Note, NoteRevision};
 use db::prompts::ReviewPrompt;
+use db::review::{DueReviewPrompt, ReviewEvent, ReviewQueueStats, ReviewSchedule};
 use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
 use import::{
   compute_file_metadata, copy_to_managed_documents, ensure_external_pdf_source,
@@ -769,6 +770,44 @@ fn db_delete_review_prompt(
   db.delete_review_prompt(&id)
 }
 
+#[tauri::command]
+fn db_get_due_review_prompts(
+  limit: i64,
+  state: State<'_, AppState>,
+) -> Result<Vec<DueReviewPrompt>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_due_review_prompts(limit)
+}
+
+#[tauri::command]
+fn db_record_review_event(
+  event: ReviewEvent,
+  schedule: ReviewSchedule,
+  state: State<'_, AppState>,
+) -> Result<ReviewSchedule, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.record_review_event(&event, &schedule)
+}
+
+#[tauri::command]
+fn db_get_review_history(
+  prompt_id: String,
+  state: State<'_, AppState>,
+) -> Result<Vec<ReviewEvent>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_review_history(&prompt_id)
+}
+
+#[tauri::command]
+fn db_get_review_queue_stats(state: State<'_, AppState>) -> Result<ReviewQueueStats, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_review_queue_stats()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut builder = tauri::Builder::default()
@@ -847,6 +886,10 @@ pub fn run() {
       db_adopt_review_prompt,
       db_retire_review_prompt,
       db_delete_review_prompt,
+      db_get_due_review_prompts,
+      db_record_review_event,
+      db_get_review_history,
+      db_get_review_queue_stats,
       cmd_get_initial_launch_route,
       import_compute_file_metadata,
       import_copy_to_managed_library,
