@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { NoteRecord, NoteRevisionRecord, NoteType, createDefaultNoteRecord } from '../utils/notesTypes';
+import type { EvidenceBlockRecord } from '../utils/evidenceTypes';
 import {
   listNotes,
   createNote,
@@ -9,13 +10,28 @@ import {
   restoreNoteRevision,
   promoteScratchNote,
 } from '../utils/notesIo';
+import {
+  getNoteEvidenceBlocks,
+  updateEvidenceBlockOrder,
+  updateEvidenceBlockComment,
+  deleteEvidenceBlock,
+} from '../utils/evidenceIo';
 import { getDefaultTemplate, renderTemplate } from '../utils/noteTemplates';
 import { NoteEditor } from './NoteEditor';
 
-export const NotesView: React.FC = () => {
+export interface NotesViewProps {
+  initialSelectedNoteId?: string | null;
+  onNavigateToSource?: (block: EvidenceBlockRecord) => void;
+}
+
+export const NotesView: React.FC<NotesViewProps> = ({
+  initialSelectedNoteId,
+  onNavigateToSource,
+}) => {
   const [notes, setNotes] = useState<NoteRecord[]>([]);
-  const [activeNoteId, setActiveNoteId] = useState<string | null>(null);
+  const [activeNoteId, setActiveNoteId] = useState<string | null>(initialSelectedNoteId ?? null);
   const [revisions, setRevisions] = useState<NoteRevisionRecord[]>([]);
+  const [evidenceBlocks, setEvidenceBlocks] = useState<EvidenceBlockRecord[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'concept' | 'source' | 'scratch' | 'trash'>('all');
   const [isLoading, setIsLoading] = useState(true);
@@ -34,7 +50,7 @@ export const NotesView: React.FC = () => {
       // Maintain or select active note
       if (rows.length > 0) {
         if (!activeNoteId || !rows.some((n) => n.id === activeNoteId)) {
-          setActiveNoteId(rows[0].id);
+          setActiveNoteId(initialSelectedNoteId && rows.some(r => r.id === initialSelectedNoteId) ? initialSelectedNoteId : rows[0].id);
         }
       } else {
         setActiveNoteId(null);
@@ -44,30 +60,35 @@ export const NotesView: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedFilter, activeNoteId]);
+  }, [selectedFilter, activeNoteId, initialSelectedNoteId]);
 
   useEffect(() => {
     void fetchNotes();
   }, [selectedFilter]);
 
-  // Load revisions whenever active note changes
+  // Load revisions and evidence blocks whenever active note changes
   useEffect(() => {
     if (!activeNoteId) {
       setRevisions([]);
+      setEvidenceBlocks([]);
       return;
     }
     let isCancelled = false;
-    async function loadRevs() {
+    async function loadDetails() {
       try {
-        const revs = await getNoteRevisions(activeNoteId!);
+        const [revs, blocks] = await Promise.all([
+          getNoteRevisions(activeNoteId!),
+          getNoteEvidenceBlocks(activeNoteId!),
+        ]);
         if (!isCancelled) {
           setRevisions(revs);
+          setEvidenceBlocks(blocks);
         }
       } catch (err) {
-        console.error('Failed to load note revisions:', err);
+        console.error('Failed to load note details:', err);
       }
     }
-    void loadRevs();
+    void loadDetails();
     return () => {
       isCancelled = true;
     };
@@ -162,6 +183,36 @@ export const NotesView: React.FC = () => {
       setRevisions(revs);
     } catch (err) {
       console.error('Failed to restore revision:', err);
+    }
+  };
+
+  const handleUpdateEvidenceComment = async (blockId: string, comment: string) => {
+    try {
+      await updateEvidenceBlockComment(blockId, comment);
+      setEvidenceBlocks((prev) =>
+        prev.map((b) => (b.id === blockId ? { ...b, user_comment: comment } : b))
+      );
+    } catch (err) {
+      console.error('Failed to update evidence comment:', err);
+    }
+  };
+
+  const handleReorderEvidence = async (noteId: string, blockIds: string[]) => {
+    try {
+      await updateEvidenceBlockOrder(noteId, blockIds);
+      const reordered = await getNoteEvidenceBlocks(noteId);
+      setEvidenceBlocks(reordered);
+    } catch (err) {
+      console.error('Failed to reorder evidence blocks:', err);
+    }
+  };
+
+  const handleDeleteEvidence = async (blockId: string) => {
+    try {
+      await deleteEvidenceBlock(blockId);
+      setEvidenceBlocks((prev) => prev.filter((b) => b.id !== blockId));
+    } catch (err) {
+      console.error('Failed to delete evidence block:', err);
     }
   };
 
@@ -262,10 +313,15 @@ export const NotesView: React.FC = () => {
           <NoteEditor
             note={activeNote}
             revisions={revisions}
+            evidenceBlocks={evidenceBlocks}
             onSave={handleSaveNote}
             onPromoteScratch={handlePromoteScratch}
             onTrash={handleTrashNote}
             onRestoreRevision={handleRestoreRevision}
+            onUpdateEvidenceComment={handleUpdateEvidenceComment}
+            onReorderEvidence={handleReorderEvidence}
+            onDeleteEvidence={handleDeleteEvidence}
+            onNavigateToSource={onNavigateToSource}
           />
         ) : (
           <div style={{ display: 'grid', placeItems: 'center', padding: '32px', color: '#605d5d', fontSize: '12px' }}>

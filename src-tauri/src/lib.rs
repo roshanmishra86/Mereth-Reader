@@ -6,6 +6,7 @@ pub mod perf;
 
 use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
 use db::annotations::{Annotation, AnnotationAsset};
+use db::evidence::EvidenceBlock;
 use db::notes::{Note, NoteRevision};
 use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
 use import::{
@@ -568,6 +569,58 @@ fn db_promote_scratch_note(
   db.promote_scratch_note(&id, &target_type, document_id.as_deref())
 }
 
+#[tauri::command]
+fn db_add_evidence_block(
+  block: EvidenceBlock,
+  state: State<'_, AppState>,
+) -> Result<EvidenceBlock, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.add_evidence_block(&block)
+}
+
+#[tauri::command]
+fn db_get_note_evidence_blocks(
+  note_id: String,
+  state: State<'_, AppState>,
+) -> Result<Vec<EvidenceBlock>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_note_evidence_blocks(&note_id)
+}
+
+#[tauri::command]
+fn db_update_evidence_block_order(
+  note_id: String,
+  block_ids: Vec<String>,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_evidence_block_order(&note_id, &block_ids)
+}
+
+#[tauri::command]
+fn db_update_evidence_block_comment(
+  id: String,
+  user_comment: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_evidence_block_comment(&id, &user_comment)
+}
+
+#[tauri::command]
+fn db_delete_evidence_block(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.delete_evidence_block(&id)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut builder = tauri::Builder::default()
@@ -627,6 +680,11 @@ pub fn run() {
       db_get_note_revisions,
       db_restore_note_revision,
       db_promote_scratch_note,
+      db_add_evidence_block,
+      db_get_note_evidence_blocks,
+      db_update_evidence_block_order,
+      db_update_evidence_block_comment,
+      db_delete_evidence_block,
       cmd_get_initial_launch_route,
       import_compute_file_metadata,
       import_copy_to_managed_library,

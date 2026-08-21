@@ -1,23 +1,35 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { NoteRecord, NoteRevisionRecord, validateConceptTitleGuidance } from '../utils/notesTypes';
 import { AutosaveCoordinator, diffNoteRevisions } from '../utils/noteRevisions';
+import type { EvidenceBlockRecord } from '../utils/evidenceTypes';
+import { EvidenceBlockCard } from './EvidenceBlockCard';
 
 export interface NoteEditorProps {
   note: NoteRecord;
   revisions: NoteRevisionRecord[];
+  evidenceBlocks?: EvidenceBlockRecord[];
   onSave: (id: string, title: string, bodyMarkdown: string) => Promise<void>;
   onPromoteScratch?: (id: string, targetType: 'concept' | 'source') => Promise<void>;
   onTrash?: (id: string) => Promise<void>;
   onRestoreRevision?: (noteId: string, revisionNumber: number) => Promise<void>;
+  onUpdateEvidenceComment?: (id: string, comment: string) => Promise<void>;
+  onReorderEvidence?: (noteId: string, blockIds: string[]) => Promise<void>;
+  onDeleteEvidence?: (id: string) => Promise<void>;
+  onNavigateToSource?: (block: EvidenceBlockRecord) => void;
 }
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({
   note,
   revisions,
+  evidenceBlocks = [],
   onSave,
   onPromoteScratch,
   onTrash,
   onRestoreRevision,
+  onUpdateEvidenceComment,
+  onReorderEvidence,
+  onDeleteEvidence,
+  onNavigateToSource,
 }) => {
   const [title, setTitle] = useState(note.title);
   const [bodyMarkdown, setBodyMarkdown] = useState(note.body_markdown);
@@ -67,6 +79,19 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     if (autosaveRef.current.hasPending(note.id)) {
       void autosaveRef.current.flush(note.id, persistEdits);
     }
+  };
+
+  const handleMoveBlock = (index: number, direction: 'up' | 'down') => {
+    if (!onReorderEvidence) return;
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= evidenceBlocks.length) return;
+    const newBlocks = [...evidenceBlocks];
+    const [moved] = newBlocks.splice(index, 1);
+    newBlocks.splice(targetIndex, 0, moved);
+    void onReorderEvidence(
+      note.id,
+      newBlocks.map((b) => b.id)
+    );
   };
 
   const conceptGuidance = note.note_type === 'concept' ? validateConceptTitleGuidance(title) : null;
@@ -222,7 +247,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             padding: '12px',
             background: '#eae9e9',
             border: '1px solid rgba(32,30,29,.2)',
-            minHeight: '300px',
+            minHeight: '200px',
             whiteSpace: 'pre-wrap',
             fontFamily: 'inherit',
             lineHeight: 1.6,
@@ -238,7 +263,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           placeholder="Write your note in Markdown..."
           style={{
             width: '100%',
-            minHeight: '400px',
+            minHeight: '220px',
             padding: '12px',
             border: '1px solid rgba(32,30,29,.4)',
             background: '#eae9e9',
@@ -249,6 +274,37 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           }}
         />
       )}
+
+      {/* Evidence & Excerpts Section (FR-10.1, FR-10.2) */}
+      <section style={{ marginTop: '20px', paddingTop: '16px', borderTop: '2px solid rgba(32,30,29,.2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+          <strong style={{ fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Attached Evidence & Source Excerpts ({evidenceBlocks.length})
+          </strong>
+        </div>
+
+        {evidenceBlocks.length === 0 ? (
+          <div style={{ fontSize: '11.5px', color: '#605d5d', fontStyle: 'italic', padding: '8px 0' }}>
+            No evidence blocks attached yet. Use &ldquo;Add to note&rdquo; on annotations or selections in the reader.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {evidenceBlocks.map((block, index) => (
+              <EvidenceBlockCard
+                key={block.id}
+                block={block}
+                canMoveUp={index > 0}
+                canMoveDown={index < evidenceBlocks.length - 1}
+                onMoveUp={() => handleMoveBlock(index, 'up')}
+                onMoveDown={() => handleMoveBlock(index, 'down')}
+                onDelete={() => onDeleteEvidence && void onDeleteEvidence(block.id)}
+                onUpdateComment={(comment) => onUpdateEvidenceComment && void onUpdateEvidenceComment(block.id, comment)}
+                onNavigateToSource={(b) => onNavigateToSource && onNavigateToSource(b)}
+              />
+            ))}
+          </div>
+        )}
+      </section>
     </article>
   );
 };

@@ -140,6 +140,11 @@ import {
   dragBoxToNormalized,
   mergeSelectionRects,
 } from "./utils/annotationAnchor";
+import type { EvidenceBlockRecord } from "./utils/evidenceTypes";
+import { createEvidenceBlockFromAnnotation } from "./utils/evidenceTypes";
+import { addEvidenceBlock } from "./utils/evidenceIo";
+import { createNote, listNotes } from "./utils/notesIo";
+import { createDefaultNoteRecord } from "./utils/notesTypes";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
 
@@ -301,6 +306,56 @@ function App() {
       } else if (dl.kind === "review") {
         setDestination("review");
       }
+    }
+  };
+
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+
+  const handleNavigateToSource = (block: EvidenceBlockRecord) => {
+    const doc = documents.find((d) => d.id === block.document_id);
+    if (doc) {
+      openDocument(doc);
+      setTargetPage(Number(block.page_index) + 1);
+      if (block.annotation_id) {
+        setSelected(block.annotation_id);
+      }
+      setDestination("reader");
+    }
+  };
+
+  const handleAddAnnotationToNote = async (annotation: AnnotationRecord) => {
+    if (!activeDocument) return;
+    try {
+      const notes = await listNotes({ includeTrash: false });
+      let targetNote = notes.find((n) => n.document_id === activeDocument.id && n.deleted_at === null);
+      if (!targetNote) {
+        const newNote = createDefaultNoteRecord({
+          note_type: "source",
+          title: `${activeDocument.title} — Reading Notes`,
+          document_id: activeDocument.id,
+          body_markdown: `# ${activeDocument.title}\n\n*By ${activeDocument.author || "Unknown"}*\n\n## Excerpts & Notes\n`,
+        });
+        targetNote = await createNote(newNote);
+      }
+
+      const evidenceBlock = createEvidenceBlockFromAnnotation({
+        noteId: targetNote.id,
+        annotation,
+        document: activeDocument,
+        pageIndex: annotation.page_index,
+        pageLabel: annotation.page_label,
+        sourceKind: annotation.annotation_type === "area" ? "area_image" : "quote",
+        quote: annotation.quote,
+        color: annotation.color,
+        tags: annotation.tags,
+        userComment: annotation.comment,
+      });
+
+      await addEvidenceBlock(evidenceBlock);
+      setSelectedNoteId(targetNote.id);
+      setDestination("notes");
+    } catch (err) {
+      console.error("Failed to add annotation to note:", err);
     }
   };
 
@@ -1121,6 +1176,7 @@ function App() {
                 setRightTab={setRightTab}
                 setSelected={setSelected}
                 totalPages={activeDocument.page_count}
+                onAddEvidenceToNote={handleAddAnnotationToNote}
               />
             )}
           </>
@@ -1140,7 +1196,12 @@ function App() {
             onUpdateCollections={handleUpdateCollections}
           />
         )}
-        {destination === "notes" && <NotesView />}
+        {destination === "notes" && (
+          <NotesView
+            initialSelectedNoteId={selectedNoteId}
+            onNavigateToSource={handleNavigateToSource}
+          />
+        )}
         {destination === "review" && <ReviewView />}
         {destination === "settings" && (
           <SettingsView
@@ -1256,6 +1317,8 @@ type ReaderProps = {
   /** Task 3.7 (FR-9.6): annotation linkage sets (populated by R3/R4 linking). */
   linkedAnnotationIds?: ReadonlySet<string>;
   rememberedAnnotationIds?: ReadonlySet<string>;
+  /** Task 4.2 (FR-10.1): Add active annotation as evidence block to note */
+  onAddEvidenceToNote?: (annotation: AnnotationRecord) => void;
 };
 
 function Reader(props: ReaderProps) {
@@ -2876,7 +2939,12 @@ function RightPane(props: ReaderProps) {
                 <small>— {props.documentName.replace(".pdf", "")}, p. {props.activeAnnotation.page_label || props.activeAnnotation.page_index + 1}</small>
               </p>
               <textarea aria-label="Note content" placeholder="Write your own prose here — it stays separate from the quoted evidence." />
-              <button className="wide-action">Add evidence block</button>
+              <button
+                className="wide-action primary"
+                onClick={() => props.activeAnnotation && props.onAddEvidenceToNote?.(props.activeAnnotation)}
+              >
+                + Add to Note (Structured Evidence)
+              </button>
             </>
           ) : (
             <p className="dimmed">Select an annotation to preview it here.</p>

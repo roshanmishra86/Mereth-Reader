@@ -1,4 +1,5 @@
 pub mod annotations;
+pub mod evidence;
 pub mod migrations;
 pub mod notes;
 pub mod provenance;
