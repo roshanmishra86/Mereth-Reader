@@ -145,7 +145,7 @@ import { createEvidenceBlockFromAnnotation } from "./utils/evidenceTypes";
 import { addEvidenceBlock } from "./utils/evidenceIo";
 import type { ReviewPromptRecord } from "./utils/promptTypes";
 import { PromptEditorModal } from "./components/PromptEditorModal";
-import { createReviewPrompt, listReviewPrompts, updateReviewPrompt } from "./utils/promptsIo";
+import { createReviewPrompt, getReviewPrompt, listReviewPrompts, updateReviewPrompt } from "./utils/promptsIo";
 import type { ReviewOutcome } from "./utils/fsrsScheduler";
 import { formatIntervalPreview, scheduleReview } from "./utils/fsrsScheduler";
 import {
@@ -163,6 +163,7 @@ import { hasRepeatedFailures } from "./utils/promptRepair";
 import { createNote, listNotes } from "./utils/notesIo";
 import { createDefaultNoteRecord } from "./utils/notesTypes";
 import { SessionSynthesisModal } from "./components/SessionSynthesisModal";
+import { resolveDeepLinkUiAction } from "./utils/deepLinkRouter";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
 
@@ -359,28 +360,32 @@ function App() {
 
     const dl = payload.deep_link ?? payload.deepLink;
     if (dl) {
-      if (dl.kind === "document") {
+      const action = resolveDeepLinkUiAction(dl);
+      if (action.destination === "reader") {
         setDestination("reader");
-        const found = documents.find((d) => d.id === dl.id);
+        const found = documents.find((d) => d.id === action.documentId);
         if (found) {
           openDocument(found);
         }
-        if (dl.page) {
-          setTargetPage(dl.page);
+        if (action.page) {
+          setTargetPage(action.page);
         }
-        const annotId = dl.annotationId;
+        const annotId = action.annotationId;
         if (annotId) {
           setSelected(annotId);
         }
-      } else if (dl.kind === "note") {
+      } else if (action.destination === "notes") {
+        setSelectedNoteId(action.noteId ?? null);
         setDestination("notes");
-      } else if (dl.kind === "review") {
+      } else if (action.destination === "review") {
+        setSelectedReviewPromptId(action.reviewPromptId ?? null);
         setDestination("review");
       }
     }
   };
 
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [selectedReviewPromptId, setSelectedReviewPromptId] = useState<string | null>(null);
 
   const handleNavigateToSource = (block: EvidenceBlockRecord) => {
     const doc = documents.find((d) => d.id === block.document_id);
@@ -1298,7 +1303,7 @@ function App() {
             onNavigateToSource={handleNavigateToSource}
           />
         )}
-        {destination === "review" && <ReviewView />}
+        {destination === "review" && <ReviewView initialPromptId={selectedReviewPromptId} />}
         {destination === "settings" && (
           <SettingsView
             aiOn={aiOn}
@@ -3069,7 +3074,7 @@ function RightPane(props: ReaderProps) {
 
 
 
-function ReviewView() {
+function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
   const [dueRows, setDueRows] = useState<DueReviewPromptRecord[]>([]);
   const [queueStats, setQueueStats] = useState<ReviewQueueStats>({ due_count: 0, adopted_count: 0, paused_count: 0 });
   const [session, setSession] = useState(() => createReviewSession([]));
@@ -3081,16 +3086,23 @@ function ReviewView() {
     setLoading(true);
     setError(null);
     try {
-      const [due, stats] = await Promise.all([getDueReviewPrompts(20), getReviewQueueStats()]);
-      setDueRows(due);
+      const [due, stats, targetPrompt] = await Promise.all([
+        getDueReviewPrompts(20),
+        getReviewQueueStats(),
+        initialPromptId ? getReviewPrompt(initialPromptId) : Promise.resolve(null),
+      ]);
+      const mergedDue = targetPrompt && targetPrompt.status === 'adopted' && !due.some((row) => row.prompt.id === targetPrompt.id)
+        ? [{ prompt: targetPrompt, schedule: null }, ...due]
+        : due;
+      setDueRows(mergedDue);
       setQueueStats(stats);
-      setSession(createReviewSession(due.map((row) => row.prompt)));
+      setSession(createReviewSession(mergedDue.map((row) => row.prompt)));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load review queue.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [initialPromptId]);
 
   useEffect(() => {
     void reload();
