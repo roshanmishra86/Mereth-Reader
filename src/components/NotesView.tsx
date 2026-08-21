@@ -16,6 +16,11 @@ import {
   updateEvidenceBlockComment,
   deleteEvidenceBlock,
 } from '../utils/evidenceIo';
+import type { BacklinkRecord } from '../utils/noteLinks';
+import { getNoteBacklinks, addNoteLink } from '../utils/noteLinks';
+import type { TextRole, NoteSearchResult } from '../utils/noteSearch';
+import { searchNotes, roleLabel, roleBadgeClass, filterSearchResultsByRole } from '../utils/noteSearch';
+import type { SplitNoteResult } from '../utils/noteSplit';
 import { getDefaultTemplate, renderTemplate } from '../utils/noteTemplates';
 import { NoteEditor } from './NoteEditor';
 
@@ -32,7 +37,10 @@ export const NotesView: React.FC<NotesViewProps> = ({
   const [activeNoteId, setActiveNoteId] = useState<string | null>(initialSelectedNoteId ?? null);
   const [revisions, setRevisions] = useState<NoteRevisionRecord[]>([]);
   const [evidenceBlocks, setEvidenceBlocks] = useState<EvidenceBlockRecord[]>([]);
+  const [backlinks, setBacklinks] = useState<BacklinkRecord[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<NoteSearchResult[]>([]);
+  const [selectedRoleFilters, setSelectedRoleFilters] = useState<TextRole[]>([]);
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'concept' | 'source' | 'scratch' | 'trash'>('all');
   const [isLoading, setIsLoading] = useState(true);
 
@@ -66,23 +74,53 @@ export const NotesView: React.FC<NotesViewProps> = ({
     void fetchNotes();
   }, [selectedFilter]);
 
-  // Load revisions and evidence blocks whenever active note changes
+  // Handle full-text search with role identification (FR-10.9)
+  useEffect(() => {
+    let isCancelled = false;
+    async function runSearch() {
+      if (!searchQuery.trim()) {
+        setSearchResults([]);
+        return;
+      }
+      try {
+        const noteTypeFilter = (selectedFilter === 'all' || selectedFilter === 'trash') ? undefined : selectedFilter;
+        const res = await searchNotes(searchQuery, noteTypeFilter);
+        if (!isCancelled) {
+          setSearchResults(res);
+        }
+      } catch (err) {
+        console.error('Search failed:', err);
+      }
+    }
+    const timer = setTimeout(() => {
+      void runSearch();
+    }, 150);
+    return () => {
+      isCancelled = true;
+      clearTimeout(timer);
+    };
+  }, [searchQuery, selectedFilter]);
+
+  // Load revisions, evidence blocks, and backlinks whenever active note changes
   useEffect(() => {
     if (!activeNoteId) {
       setRevisions([]);
       setEvidenceBlocks([]);
+      setBacklinks([]);
       return;
     }
     let isCancelled = false;
     async function loadDetails() {
       try {
-        const [revs, blocks] = await Promise.all([
+        const [revs, blocks, links] = await Promise.all([
           getNoteRevisions(activeNoteId!),
           getNoteEvidenceBlocks(activeNoteId!),
+          getNoteBacklinks(activeNoteId!),
         ]);
         if (!isCancelled) {
           setRevisions(revs);
           setEvidenceBlocks(blocks);
+          setBacklinks(links);
         }
       } catch (err) {
         console.error('Failed to load note details:', err);
@@ -216,6 +254,34 @@ export const NotesView: React.FC<NotesViewProps> = ({
     }
   };
 
+  const handleSplitNote = async (result: SplitNoteResult) => {
+    try {
+      const createdNew = await createNote(result.newConceptNote);
+      try {
+        await addNoteLink(result.forwardLink);
+      } catch {
+        // non-blocking in dev
+      }
+      setNotes((prev) => [
+        createdNew,
+        ...prev.map((n) => (n.id === result.updatedOriginalNote.id ? result.updatedOriginalNote : n)),
+      ]);
+      setActiveNoteId(createdNew.id);
+    } catch (err) {
+      console.error('Failed to apply note split:', err);
+    }
+  };
+
+  const displayedSearchResults = useMemo(() => {
+    return filterSearchResultsByRole(searchResults, selectedRoleFilters);
+  }, [searchResults, selectedRoleFilters]);
+
+  const toggleRoleFilter = (role: TextRole) => {
+    setSelectedRoleFilters((prev) =>
+      prev.includes(role) ? prev.filter((r) => r !== role) : [...prev, role]
+    );
+  };
+
   return (
     <section className="destination-view" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Top Destination Header */}
@@ -247,30 +313,87 @@ export const NotesView: React.FC<NotesViewProps> = ({
           {/* Search input */}
           <input
             type="text"
-            placeholder="Filter notes..."
+            placeholder="Search titles, prose, quotes, comments, tags (FR-10.9)..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             style={{ width: '100%', padding: '6px 8px', fontSize: '11.5px', background: '#eae9e9', border: '1px solid rgba(32,30,29,.4)' }}
           />
 
-          {/* Filter Tabs */}
-          <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', margin: '4px 0 8px' }}>
-            {(['all', 'concept', 'source', 'scratch', 'trash'] as const).map((filter) => (
-              <button
-                key={filter}
-                className={`button micro ${selectedFilter === filter ? 'primary' : ''}`}
-                style={{ textTransform: 'capitalize' }}
-                onClick={() => setSelectedFilter(filter)}
-              >
-                {filter}
-              </button>
-            ))}
-          </div>
+          {/* Role Filter Chips (when search query active) */}
+          {searchQuery.trim().length > 0 ? (
+            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', margin: '2px 0 6px' }}>
+              {(['title', 'prose', 'evidence_quote', 'evidence_comment', 'tag'] as const).map((role) => {
+                const isSelected = selectedRoleFilters.includes(role);
+                return (
+                  <button
+                    key={role}
+                    className={`button micro ${isSelected ? 'primary' : ''}`}
+                    style={{ fontSize: '9px', padding: '1px 5px' }}
+                    onClick={() => toggleRoleFilter(role)}
+                  >
+                    {roleLabel(role)}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            /* Filter Tabs */
+            <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', margin: '4px 0 8px' }}>
+              {(['all', 'concept', 'source', 'scratch', 'trash'] as const).map((filter) => (
+                <button
+                  key={filter}
+                  className={`button micro ${selectedFilter === filter ? 'primary' : ''}`}
+                  style={{ textTransform: 'capitalize' }}
+                  onClick={() => setSelectedFilter(filter)}
+                >
+                  {filter}
+                </button>
+              ))}
+            </div>
+          )}
 
-          {/* Notes List */}
+          {/* Notes or Search Results List */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', overflowY: 'auto', flex: 1 }}>
             {isLoading ? (
               <div style={{ fontSize: '11px', color: '#605d5d', padding: '8px' }}>Loading notes...</div>
+            ) : searchQuery.trim().length > 0 ? (
+              displayedSearchResults.length === 0 ? (
+                <div style={{ fontSize: '11px', color: '#605d5d', padding: '8px' }}>No matches for &ldquo;{searchQuery}&rdquo;.</div>
+              ) : (
+                displayedSearchResults.map((r, idx) => {
+                  const isActive = r.note_id === activeNoteId;
+                  return (
+                    <button
+                      key={`${r.note_id}-${r.text_role}-${idx}`}
+                      className={`note-card ${isActive ? 'note-list-active' : ''}`}
+                      onClick={() => setActiveNoteId(r.note_id)}
+                      style={{
+                        padding: '8px 10px',
+                        border: 0,
+                        borderLeft: isActive ? '3px solid #ec3013' : '3px solid transparent',
+                        background: isActive ? '#eae9e9' : 'transparent',
+                        textAlign: 'left',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                        <span className="eyebrow" style={{ fontSize: '8px', margin: 0, color: '#ec3013' }}>
+                          {roleLabel(r.text_role)}
+                        </span>
+                        <small style={{ fontSize: '8.5px', color: '#605d5d' }}>
+                          {r.note_type}
+                        </small>
+                      </div>
+                      <strong style={{ display: 'block', fontSize: '11.5px', color: '#201e1d', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.note_title}
+                      </strong>
+                      <small style={{ display: 'block', fontSize: '10px', color: '#444141', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {r.snippet}
+                      </small>
+                    </button>
+                  );
+                })
+              )
             ) : filteredNotes.length === 0 ? (
               <div style={{ fontSize: '11px', color: '#605d5d', padding: '8px' }}>No notes found.</div>
             ) : (
@@ -314,6 +437,7 @@ export const NotesView: React.FC<NotesViewProps> = ({
             note={activeNote}
             revisions={revisions}
             evidenceBlocks={evidenceBlocks}
+            backlinks={backlinks}
             onSave={handleSaveNote}
             onPromoteScratch={handlePromoteScratch}
             onTrash={handleTrashNote}
@@ -322,6 +446,8 @@ export const NotesView: React.FC<NotesViewProps> = ({
             onReorderEvidence={handleReorderEvidence}
             onDeleteEvidence={handleDeleteEvidence}
             onNavigateToSource={onNavigateToSource}
+            onOpenNote={(id) => setActiveNoteId(id)}
+            onSplitNote={handleSplitNote}
           />
         ) : (
           <div style={{ display: 'grid', placeItems: 'center', padding: '32px', color: '#605d5d', fontSize: '12px' }}>

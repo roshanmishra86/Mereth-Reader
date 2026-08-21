@@ -1,6 +1,8 @@
 pub mod annotations;
 pub mod evidence;
 pub mod migrations;
+pub mod note_links;
+pub mod note_search;
 pub mod notes;
 pub mod provenance;
 pub mod versions;

@@ -7,6 +7,8 @@ pub mod perf;
 use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
 use db::annotations::{Annotation, AnnotationAsset};
 use db::evidence::EvidenceBlock;
+use db::note_links::{BacklinkRecord, NoteLink};
+use db::note_search::NoteSearchResult;
 use db::notes::{Note, NoteRevision};
 use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
 use import::{
@@ -621,6 +623,70 @@ fn db_delete_evidence_block(
   db.delete_evidence_block(&id)
 }
 
+#[tauri::command]
+fn db_add_note_link(
+  link: NoteLink,
+  state: State<'_, AppState>,
+) -> Result<NoteLink, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.add_note_link(&link)
+}
+
+#[tauri::command]
+fn db_get_forward_links(
+  note_id: String,
+  state: State<'_, AppState>,
+) -> Result<Vec<NoteLink>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_forward_links(&note_id)
+}
+
+#[tauri::command]
+fn db_get_note_backlinks(
+  target_note_id: String,
+  state: State<'_, AppState>,
+) -> Result<Vec<BacklinkRecord>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_note_backlinks(&target_note_id)
+}
+
+#[tauri::command]
+fn db_sync_note_links(
+  note_id: String,
+  target_note_ids: Vec<String>,
+  target_doc_ids: Vec<String>,
+  target_ann_ids: Vec<String>,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.sync_note_links(&note_id, &target_note_ids, &target_doc_ids, &target_ann_ids)
+}
+
+#[tauri::command]
+fn db_delete_note_link(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.delete_note_link(&id)
+}
+
+#[tauri::command]
+fn db_search_notes(
+  query: String,
+  note_type: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<Vec<NoteSearchResult>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.search_notes(&query, note_type.as_deref())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut builder = tauri::Builder::default()
@@ -685,6 +751,12 @@ pub fn run() {
       db_update_evidence_block_order,
       db_update_evidence_block_comment,
       db_delete_evidence_block,
+      db_add_note_link,
+      db_get_forward_links,
+      db_get_note_backlinks,
+      db_sync_note_links,
+      db_delete_note_link,
+      db_search_notes,
       cmd_get_initial_launch_route,
       import_compute_file_metadata,
       import_copy_to_managed_library,

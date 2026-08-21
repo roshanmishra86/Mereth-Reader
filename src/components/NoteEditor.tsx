@@ -3,11 +3,17 @@ import { NoteRecord, NoteRevisionRecord, validateConceptTitleGuidance } from '..
 import { AutosaveCoordinator, diffNoteRevisions } from '../utils/noteRevisions';
 import type { EvidenceBlockRecord } from '../utils/evidenceTypes';
 import { EvidenceBlockCard } from './EvidenceBlockCard';
+import type { BacklinkRecord } from '../utils/noteLinks';
+import { extractWikiLinks, syncNoteLinks } from '../utils/noteLinks';
+import { BacklinksPanel } from './BacklinksPanel';
+import { SplitNoteModal } from './SplitNoteModal';
+import type { SplitNoteResult } from '../utils/noteSplit';
 
 export interface NoteEditorProps {
   note: NoteRecord;
   revisions: NoteRevisionRecord[];
   evidenceBlocks?: EvidenceBlockRecord[];
+  backlinks?: BacklinkRecord[];
   onSave: (id: string, title: string, bodyMarkdown: string) => Promise<void>;
   onPromoteScratch?: (id: string, targetType: 'concept' | 'source') => Promise<void>;
   onTrash?: (id: string) => Promise<void>;
@@ -16,12 +22,15 @@ export interface NoteEditorProps {
   onReorderEvidence?: (noteId: string, blockIds: string[]) => Promise<void>;
   onDeleteEvidence?: (id: string) => Promise<void>;
   onNavigateToSource?: (block: EvidenceBlockRecord) => void;
+  onOpenNote?: (noteId: string) => void;
+  onSplitNote?: (result: SplitNoteResult) => void;
 }
 
 export const NoteEditor: React.FC<NoteEditorProps> = ({
   note,
   revisions,
   evidenceBlocks = [],
+  backlinks = [],
   onSave,
   onPromoteScratch,
   onTrash,
@@ -30,12 +39,18 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   onReorderEvidence,
   onDeleteEvidence,
   onNavigateToSource,
+  onOpenNote,
+  onSplitNote,
 }) => {
   const [title, setTitle] = useState(note.title);
   const [bodyMarkdown, setBodyMarkdown] = useState(note.body_markdown);
   const [isPreview, setIsPreview] = useState(false);
   const [showRevisions, setShowRevisions] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'dirty'>('saved');
+
+  const [splitModalOpen, setSplitModalOpen] = useState(false);
+  const [selectedTextForSplit, setSelectedTextForSplit] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const autosaveRef = useRef<AutosaveCoordinator>(new AutosaveCoordinator(400));
 
@@ -52,6 +67,16 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       setSaveStatus('saving');
       try {
         await onSave(id, newTitle, newBody);
+        const parsed = extractWikiLinks(newBody);
+        try {
+          await syncNoteLinks(id, {
+            noteIds: parsed.targetNoteIds,
+            docIds: parsed.targetDocIds,
+            annIds: parsed.targetAnnIds,
+          });
+        } catch {
+          // sync failure non-blocking in dev
+        }
         setSaveStatus('saved');
       } catch (err) {
         console.error('Save failed:', err);
@@ -79,6 +104,24 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     if (autosaveRef.current.hasPending(note.id)) {
       void autosaveRef.current.flush(note.id, persistEdits);
     }
+  };
+
+  const handleOpenSplit = () => {
+    if (textareaRef.current) {
+      const start = textareaRef.current.selectionStart;
+      const end = textareaRef.current.selectionEnd;
+      const selected = bodyMarkdown.substring(start, end).trim();
+      setSelectedTextForSplit(selected || bodyMarkdown.trim());
+    } else {
+      setSelectedTextForSplit(bodyMarkdown.trim());
+    }
+    setSplitModalOpen(true);
+  };
+
+  const handleConfirmSplit = (result: SplitNoteResult) => {
+    setBodyMarkdown(result.updatedOriginalNote.body_markdown);
+    void onSave(note.id, title, result.updatedOriginalNote.body_markdown);
+    onSplitNote?.(result);
   };
 
   const handleMoveBlock = (index: number, direction: 'up' | 'down') => {
@@ -130,6 +173,15 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <button
+            className="outline-button"
+            style={{ fontSize: '10.5px', padding: '3px 8px' }}
+            onClick={handleOpenSplit}
+            title="Split selected passage or entire note into an atomic concept note (FR-10.6)"
+          >
+            ✂ Split Note
+          </button>
+
           <button
             className="outline-button"
             style={{ fontSize: '10.5px', padding: '3px 8px' }}
@@ -257,10 +309,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
         </div>
       ) : (
         <textarea
+          ref={textareaRef}
           value={bodyMarkdown}
           onChange={handleBodyChange}
           onBlur={handleBlur}
-          placeholder="Write your note in Markdown..."
+          placeholder="Write your note in Markdown... Highlight any text and click 'Split Note' to extract an atomic concept note."
           style={{
             width: '100%',
             minHeight: '220px',
@@ -305,6 +358,23 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
           </div>
         )}
       </section>
+
+      {/* Backlinks & Linked Mentions Panel (FR-10.5) */}
+      <section style={{ marginTop: '20px', paddingTop: '16px', borderTop: '2px solid rgba(32,30,29,.2)' }}>
+        <BacklinksPanel
+          backlinks={backlinks}
+          onOpenNote={(noteId) => onOpenNote && onOpenNote(noteId)}
+        />
+      </section>
+
+      {/* Split Note Modal (FR-10.6) */}
+      <SplitNoteModal
+        isOpen={splitModalOpen}
+        onClose={() => setSplitModalOpen(false)}
+        originalNote={note}
+        selectedText={selectedTextForSplit}
+        onConfirmSplit={handleConfirmSplit}
+      />
     </article>
   );
 };
