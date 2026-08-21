@@ -264,8 +264,9 @@ Items the C8 audit found missing or false in the shipping render path. Each was 
 
 ### 4. Notes, review, and export (PRD R3–R4)
 
-- [ ] **4.0 — Resolve note-template and citation-output decisions before R3 implementation.**
+- [x] **4.0 — Resolve note-template and citation-output decisions before R3 implementation.**
   - Acceptance: PRD OQ-11 and OQ-12 are resolved with representative exported files: required Markdown front matter, default source/concept/annotation templates, and whether v1 includes CSL rendering or only editable metadata plus page/source references. The decision fixes compatibility and portability expectations without expanding into full citation management.
+  - Verification note (2026-08-21): PRD OQ-11 and OQ-12 resolved in ADR `docs/decisions/R3.0-note-template-and-citation-decisions.md` and recorded in PRD §21. Pure module `src/utils/noteTemplates.ts` implements structured YAML front-matter parsing/serialization, variable substitution, default templates for source, concept, scratch, and evidence blocks, human-readable citation formatting (`Author (Year), p. X` with fallbacks), and `mereth://` deep link building. Covered by `src/utils/noteTemplates.test.ts` (17/17 vitest unit tests passing). Zero `any` types. Strict TypeScript and build clean.
 
 - [ ] **4.1 — Source, concept, and scratch notes.**
   - Depends on 4.0.
