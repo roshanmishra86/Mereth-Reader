@@ -22,8 +22,10 @@ fn extract_snippet(text: &str, query: &str, max_len: usize) -> String {
   let lower_query = query.to_lowercase();
 
   if let Some(pos) = lower_text.find(&lower_query) {
-    let start = if pos > 30 { pos - 30 } else { 0 };
-    let end = (pos + query.len() + 50).min(text.len());
+    let mut start = pos.saturating_sub(30).min(text.len());
+    while start > 0 && !text.is_char_boundary(start) { start -= 1; }
+    let mut end = (pos + query.len() + 50).min(text.len());
+    while end < text.len() && !text.is_char_boundary(end) { end += 1; }
     let mut snippet = text[start..end].to_string();
     if start > 0 {
       snippet = format!("…{snippet}");
@@ -33,9 +35,23 @@ fn extract_snippet(text: &str, query: &str, max_len: usize) -> String {
     }
     snippet
   } else if text.len() > max_len {
-    format!("{}…", &text[..max_len])
+    let mut end = max_len.min(text.len());
+    while end > 0 && !text.is_char_boundary(end) { end -= 1; }
+    format!("{}…", &text[..end])
   } else {
     text.to_string()
+  }
+}
+
+#[cfg(test)]
+mod snippet_tests {
+  use super::extract_snippet;
+
+  #[test]
+  fn unicode_snippets_never_slice_between_code_points() {
+    let text = format!("{}needle{}", "é".repeat(40), "界".repeat(40));
+    assert!(extract_snippet(&text, "needle", 80).contains("needle"));
+    assert!(extract_snippet(&"界".repeat(100), "missing", 80).ends_with('…'));
   }
 }
 

@@ -144,7 +144,8 @@ pub fn export_markdown_package(
           let target_path = assets_dir.join(&asset_filename);
           let rel_path = format!("assets/{asset_filename}");
 
-          let _ = fs::copy(&src_file, &target_path);
+          fs::copy(&src_file, &target_path)
+            .map_err(|e| format!("Failed to copy asset {}: {e}", asset.id))?;
 
           asset_entries.push(ManifestEntry {
             id: asset.id.clone(),

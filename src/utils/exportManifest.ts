@@ -4,6 +4,7 @@ import type { NoteRecord, NoteRevisionRecord } from './notesTypes';
 import type { NoteLinkRecord } from './noteLinks';
 import type { ReviewEventRecord } from './reviewIo';
 import type { ReviewPromptRecord } from './promptTypes';
+import type { EvidenceBlockRecord } from './evidenceTypes';
 
 export const MARKDOWN_PACKAGE_SCHEMA = 'mereth.markdown-package';
 export const JSON_BACKUP_SCHEMA = 'mereth.json-backup';
@@ -20,6 +21,7 @@ export interface MarkdownPackageManifest {
 export interface JsonBackupArchive {
   schema: typeof JSON_BACKUP_SCHEMA; schema_version: number; exported_at: string;
   documents: DocumentRecord[]; annotations: AnnotationRecord[]; assets: AnnotationAssetRecord[];
+  asset_files?: Record<string, string>; evidence_blocks?: EvidenceBlockRecord[];
   notes: NoteRecord[]; note_revisions: NoteRevisionRecord[]; links: NoteLinkRecord[];
   prompts: ReviewPromptRecord[]; review_events: ReviewEventRecord[]; review_schedules: JsonValue[];
   settings: Record<string, string>; provenance: Record<string, string | null>;

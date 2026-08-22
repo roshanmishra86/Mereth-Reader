@@ -13,6 +13,7 @@ use super::Database;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use super::note_links::NoteLink;
 
 pub const NOTE_TYPES: &[&str] = &["source", "concept", "scratch"];
 pub const MAX_REVISIONS_PER_NOTE: i64 = 20;
@@ -45,6 +46,12 @@ pub struct NoteRevision {
   pub provenance: String,
   #[serde(default)]
   pub original_provenance: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SplitNoteTransactionResult {
+  pub original_note: Note,
+  pub new_note: Note,
 }
 
 const NOTE_COLS: &str = "id, note_type, title, body_markdown, document_id, deleted_at, created_at, updated_at, provenance, original_provenance";
@@ -95,6 +102,44 @@ fn current_timestamp(conn: &rusqlite::Connection) -> rusqlite::Result<String> {
 }
 
 impl Database {
+  pub fn split_note_transaction(
+    &self,
+    original_id: &str,
+    original_title: &str,
+    original_body: &str,
+    new_note: &Note,
+    link: &NoteLink,
+  ) -> Result<SplitNoteTransactionResult, String> {
+    validate_note_type(&new_note.note_type)?;
+    validate_provenance(&new_note.provenance)?;
+    validate_provenance(&link.provenance)?;
+    if new_note.note_type != "concept" || link.note_id != original_id || link.target_note_id.as_deref() != Some(new_note.id.as_str()) {
+      return Err("Invalid split-note transaction payload".to_string());
+    }
+
+    let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+    let now = current_timestamp(&conn).map_err(|e| e.to_string())?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let original: Note = tx.query_row(
+      &format!("SELECT {NOTE_COLS} FROM notes WHERE id = ?1 AND deleted_at IS NULL"),
+      params![original_id], map_row_to_note,
+    ).map_err(|e| format!("Original note not found: {e}"))?;
+
+    tx.execute("UPDATE notes SET title=?1, body_markdown=?2, updated_at=?3 WHERE id=?4", params![original_title, original_body, now, original_id])
+      .map_err(|e| format!("Failed to update original note: {e}"))?;
+    let revision_number: i64 = tx.query_row("SELECT COALESCE(MAX(revision_number), 0) + 1 FROM note_revisions WHERE note_id=?1", params![original_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    tx.execute(&format!("INSERT INTO note_revisions ({REVISION_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"), params![Uuid::new_v4().to_string(), original_id, revision_number, original_title, original_body, now, original.provenance, original.original_provenance]).map_err(|e| e.to_string())?;
+    tx.execute(&format!("INSERT INTO notes ({NOTE_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?6, ?7, ?8)"), params![new_note.id, new_note.note_type, new_note.title, new_note.body_markdown, new_note.document_id, now, new_note.provenance, new_note.original_provenance]).map_err(|e| format!("Failed to create split note: {e}"))?;
+    tx.execute(&format!("INSERT INTO note_revisions ({REVISION_COLS}) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7)"), params![Uuid::new_v4().to_string(), new_note.id, new_note.title, new_note.body_markdown, now, new_note.provenance, new_note.original_provenance]).map_err(|e| e.to_string())?;
+    tx.execute("INSERT INTO note_links (id, note_id, target_note_id, target_document_id, target_annotation_id, created_at, provenance, original_provenance) VALUES (?1, ?2, ?3, NULL, NULL, ?4, ?5, ?6)", params![link.id, original_id, new_note.id, now, link.provenance, link.original_provenance]).map_err(|e| format!("Failed to create split link: {e}"))?;
+    tx.commit().map_err(|e| e.to_string())?;
+
+    Ok(SplitNoteTransactionResult {
+      original_note: Note { title: original_title.to_string(), body_markdown: original_body.to_string(), updated_at: now.clone(), ..original },
+      new_note: Note { created_at: now.clone(), updated_at: now, ..new_note.clone() },
+    })
+  }
+
   /// Creates a new note in the `notes` table and automatically creates revision 1 in `note_revisions`.
   pub fn add_note(&self, note: &Note) -> Result<Note, String> {
     validate_note_type(&note.note_type)?;
@@ -636,5 +681,21 @@ pub mod tests {
     assert_eq!(revs.len(), 4); // v1, v2, v3, v4 (restored)
     assert_eq!(revs[0].revision_number, 4);
     assert_eq!(revs[0].title, "Testing enhances memory retention");
+  }
+
+  #[test]
+  fn test_split_note_transaction_is_all_or_nothing() {
+    let (db, _tmp) = test_db();
+    db.add_note(&sample_note("original", "source")).unwrap();
+    let new_note = sample_note("split", "concept");
+    let link = NoteLink { id: "split-link".to_string(), note_id: "original".to_string(), target_note_id: Some("split".to_string()), target_document_id: None, target_annotation_id: None, created_at: String::new(), provenance: "user_authored".to_string(), original_provenance: None };
+    let result = db.split_note_transaction("original", "Original", "See [[mereth:note/split|Split]]", &new_note, &link).unwrap();
+    assert_eq!(result.new_note.id, "split");
+    assert_eq!(db.get_forward_links("original").unwrap().len(), 1);
+
+    let invalid_note = sample_note("invalid-split", "concept");
+    let invalid_link = NoteLink { target_note_id: Some("wrong-target".to_string()), ..link };
+    assert!(db.split_note_transaction("original", "Original", "unchanged", &invalid_note, &invalid_link).is_err());
+    assert!(db.get_note("invalid-split").unwrap().is_none());
   }
 }

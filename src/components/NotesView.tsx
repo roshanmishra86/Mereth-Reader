@@ -9,6 +9,7 @@ import {
   getNoteRevisions,
   restoreNoteRevision,
   promoteScratchNote,
+  splitNoteTransaction,
 } from '../utils/notesIo';
 import {
   getNoteEvidenceBlocks,
@@ -17,7 +18,7 @@ import {
   deleteEvidenceBlock,
 } from '../utils/evidenceIo';
 import type { BacklinkRecord } from '../utils/noteLinks';
-import { getNoteBacklinks, addNoteLink } from '../utils/noteLinks';
+import { getNoteBacklinks } from '../utils/noteLinks';
 import type { TextRole, NoteSearchResult } from '../utils/noteSearch';
 import { searchNotes, roleLabel, roleBadgeClass, filterSearchResultsByRole } from '../utils/noteSearch';
 import type { SplitNoteResult } from '../utils/noteSplit';
@@ -284,17 +285,18 @@ export const NotesView: React.FC<NotesViewProps> = ({
 
   const handleSplitNote = async (result: SplitNoteResult) => {
     try {
-      const createdNew = await createNote(result.newConceptNote);
-      try {
-        await addNoteLink(result.forwardLink);
-      } catch {
-        // non-blocking in dev
-      }
+      const split = await splitNoteTransaction({
+        originalId: result.updatedOriginalNote.id,
+        originalTitle: result.updatedOriginalNote.title,
+        originalBody: result.updatedOriginalNote.body_markdown,
+        newNote: result.newConceptNote,
+        link: result.forwardLink,
+      });
       setNotes((prev) => [
-        createdNew,
-        ...prev.map((n) => (n.id === result.updatedOriginalNote.id ? result.updatedOriginalNote : n)),
+        split.new_note,
+        ...prev.map((n) => (n.id === split.original_note.id ? split.original_note : n)),
       ]);
-      setActiveNoteId(createdNew.id);
+      setActiveNoteId(split.new_note.id);
     } catch (err) {
       console.error('Failed to apply note split:', err);
     }

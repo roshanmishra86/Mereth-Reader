@@ -3,10 +3,13 @@
 //! Validates manifest integrity and restores database records and settings
 //! inside a single atomic SQLite transaction.
 
+use crate::db::annotations::validate_asset_relative_path;
 use crate::db::Database;
 use crate::export::backup::{JsonBackupArchive, BACKUP_SCHEMA_VERSION, JSON_BACKUP_SCHEMA};
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Component, Path};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RestoreResult {
@@ -18,7 +21,7 @@ pub struct RestoreResult {
 }
 
 /// Restores records from a JSON backup archive into the active database.
-pub fn restore_from_backup(db: &Database, backup_json: &str) -> Result<RestoreResult, String> {
+pub fn restore_from_backup(db: &Database, app_dir: &Path, backup_json: &str) -> Result<RestoreResult, String> {
   let archive: JsonBackupArchive = serde_json::from_str(backup_json)
     .map_err(|e| format!("Invalid JSON backup format: {e}"))?;
 
@@ -34,6 +37,21 @@ pub fn restore_from_backup(db: &Database, backup_json: &str) -> Result<RestoreRe
       "Unsupported backup version {}; expected {}",
       archive.schema_version, BACKUP_SCHEMA_VERSION
     ));
+  }
+
+  let asset_files = archive.asset_files.iter().map(|(relative_path, encoded)| {
+    validate_asset_relative_path(relative_path)?;
+    let path = Path::new(relative_path);
+    if path.is_absolute() || path.components().any(|part| !matches!(part, Component::Normal(_))) {
+      return Err(format!("Unsafe asset path in backup: {relative_path}"));
+    }
+    let bytes = hex::decode(encoded).map_err(|e| format!("Invalid asset data for {relative_path}: {e}"))?;
+    Ok((app_dir.join(path), bytes))
+  }).collect::<Result<Vec<_>, String>>()?;
+  for asset in &archive.assets {
+    if !archive.asset_files.contains_key(&asset.relative_path) {
+      return Err(format!("Backup is missing file data for asset {}", asset.id));
+    }
   }
 
   let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
@@ -201,6 +219,16 @@ pub fn restore_from_backup(db: &Database, backup_json: &str) -> Result<RestoreRe
     .map_err(|e| format!("Failed to restore note {}: {e}", note.id))?;
   }
 
+  for block in &archive.evidence_blocks {
+    let tags_json = serde_json::to_string(&block.tags).map_err(|e| e.to_string())?;
+    tx.execute(
+      "INSERT INTO evidence_blocks (id, note_id, source_kind, annotation_id, image_asset_id, document_id, page_index, page_label, quote, color, tags, user_comment, sort_order, created_at, provenance, original_provenance)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+       ON CONFLICT(id) DO UPDATE SET note_id=excluded.note_id, source_kind=excluded.source_kind, annotation_id=excluded.annotation_id, image_asset_id=excluded.image_asset_id, document_id=excluded.document_id, page_index=excluded.page_index, page_label=excluded.page_label, quote=excluded.quote, color=excluded.color, tags=excluded.tags, user_comment=excluded.user_comment, sort_order=excluded.sort_order, provenance=excluded.provenance, original_provenance=excluded.original_provenance",
+      params![block.id, block.note_id, block.source_kind, block.annotation_id, block.image_asset_id, block.document_id, block.page_index, block.page_label, block.quote, block.color, tags_json, block.user_comment, block.sort_order, block.created_at, block.provenance, block.original_provenance],
+    ).map_err(|e| format!("Failed to restore evidence block {}: {e}", block.id))?;
+  }
+
   // 5. Restore Note Revisions
   for rev in &archive.note_revisions {
     tx.execute(
@@ -342,6 +370,13 @@ pub fn restore_from_backup(db: &Database, backup_json: &str) -> Result<RestoreRe
   }
 
   tx.commit().map_err(|e| e.to_string())?;
+
+  for (path, bytes) in asset_files {
+    if let Some(parent) = path.parent() {
+      fs::create_dir_all(parent).map_err(|e| format!("Failed to create restored asset directory: {e}"))?;
+    }
+    fs::write(&path, bytes).map_err(|e| format!("Failed to restore asset file {}: {e}", path.display()))?;
+  }
 
   Ok(RestoreResult {
     success: true,

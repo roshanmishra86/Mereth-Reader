@@ -10,7 +10,7 @@ use db::annotations::{Annotation, AnnotationAsset};
 use db::evidence::EvidenceBlock;
 use db::note_links::{BacklinkRecord, NoteLink};
 use db::note_search::NoteSearchResult;
-use db::notes::{Note, NoteRevision};
+use db::notes::{Note, NoteRevision, SplitNoteTransactionResult};
 use db::prompts::ReviewPrompt;
 use db::review::{DueReviewPrompt, ReviewEvent, ReviewQueueStats, ReviewSchedule};
 use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
@@ -691,6 +691,20 @@ fn db_search_notes(
 }
 
 #[tauri::command]
+fn db_split_note_transaction(
+  original_id: String,
+  original_title: String,
+  original_body: String,
+  new_note: Note,
+  link: NoteLink,
+  state: State<'_, AppState>,
+) -> Result<SplitNoteTransactionResult, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.split_note_transaction(&original_id, &original_title, &original_body, &new_note, &link)
+}
+
+#[tauri::command]
 fn db_create_review_prompt(
   prompt: ReviewPrompt,
   state: State<'_, AppState>,
@@ -823,12 +837,14 @@ fn db_export_markdown_package(
 
 #[tauri::command]
 fn db_create_json_backup(
+  app_handle: tauri::AppHandle,
   destination_file: Option<String>,
   state: State<'_, AppState>,
 ) -> Result<export::backup::JsonBackupArchive, String> {
   let lock = state.db.lock().unwrap();
   let db = lock.as_ref().ok_or("Database not initialized")?;
-  export::backup::create_json_backup(db, destination_file.as_deref())
+  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+  export::backup::create_json_backup(db, &app_dir, destination_file.as_deref())
 }
 
 #[tauri::command]
@@ -844,12 +860,14 @@ fn db_export_review_csv(
 
 #[tauri::command]
 fn db_restore_from_backup(
+  app_handle: tauri::AppHandle,
   backup_json: String,
   state: State<'_, AppState>,
 ) -> Result<export::restore::RestoreResult, String> {
   let lock = state.db.lock().unwrap();
   let db = lock.as_ref().ok_or("Database not initialized")?;
-  export::restore::restore_from_backup(db, &backup_json)
+  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+  export::restore::restore_from_backup(db, &app_dir, &backup_json)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -922,6 +940,7 @@ pub fn run() {
       db_sync_note_links,
       db_delete_note_link,
       db_search_notes,
+      db_split_note_transaction,
       db_create_review_prompt,
       db_get_review_prompt,
       db_list_review_prompts,

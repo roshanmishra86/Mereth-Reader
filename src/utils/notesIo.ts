@@ -7,6 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { NoteRecord, NoteRevisionRecord, NoteType } from './notesTypes';
+import type { NoteLinkRecord } from './noteLinks';
 
 export async function createNote(note: NoteRecord): Promise<NoteRecord> {
   return await invoke<NoteRecord>('db_add_note', { note });
@@ -80,4 +81,14 @@ export async function promoteScratchNote(
     targetType,
     documentId: documentId ?? null,
   });
+}
+
+export async function splitNoteTransaction(input: {
+  originalId: string;
+  originalTitle: string;
+  originalBody: string;
+  newNote: NoteRecord;
+  link: NoteLinkRecord;
+}): Promise<{ original_note: NoteRecord; new_note: NoteRecord }> {
+  return invoke('db_split_note_transaction', input);
 }

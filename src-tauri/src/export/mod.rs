@@ -37,6 +37,7 @@ pub struct ExportRecord {
 mod tests {
   use super::*;
   use crate::db::annotations::Annotation;
+  use crate::db::evidence::EvidenceBlock;
   use crate::db::notes::Note;
   use crate::db::prompts::ReviewPrompt;
   use crate::db::{Database, Document};
@@ -166,15 +167,23 @@ mod tests {
   #[test]
   fn test_create_json_backup_and_restore_roundtrip() {
     let (db, tmp, doc, note, prompt) = test_db_with_data();
+    db.add_evidence_block(&EvidenceBlock {
+      id: "evidence-1".to_string(), note_id: note.id.clone(), source_kind: "quote".to_string(),
+      annotation_id: Some("ann-1".to_string()), image_asset_id: None, document_id: doc.id.clone(),
+      page_index: 0, page_label: "1".to_string(), quote: "Key discovery passage".to_string(),
+      color: "yellow".to_string(), tags: vec!["finding".to_string()], user_comment: "My comment".to_string(),
+      sort_order: 1, created_at: "2026-08-21T00:00:00Z".to_string(), provenance: "source_extracted".to_string(), original_provenance: None,
+    }).unwrap();
     let backup_file = tmp.path().join("backup.json");
 
-    let backup_archive = create_json_backup(&db, Some(&backup_file.to_string_lossy())).unwrap();
+    let backup_archive = create_json_backup(&db, tmp.path(), Some(&backup_file.to_string_lossy())).unwrap();
 
     assert_eq!(backup_archive.schema, "mereth.json-backup");
     assert_eq!(backup_archive.schema_version, 1);
     assert_eq!(backup_archive.documents.len(), 1);
     assert_eq!(backup_archive.notes.len(), 1);
     assert_eq!(backup_archive.prompts.len(), 1);
+    assert_eq!(backup_archive.evidence_blocks.len(), 1);
     assert!(backup_file.exists());
 
     let backup_json = std::fs::read_to_string(&backup_file).unwrap();
@@ -183,7 +192,7 @@ mod tests {
     let clean_tmp = TempDir::new().unwrap();
     let clean_db = Database::new(clean_tmp.path()).unwrap();
 
-    let restore_result = restore_from_backup(&clean_db, &backup_json).unwrap();
+    let restore_result = restore_from_backup(&clean_db, clean_tmp.path(), &backup_json).unwrap();
     assert!(restore_result.success);
     assert_eq!(restore_result.documents_count, 1);
     assert_eq!(restore_result.notes_count, 1);
@@ -197,6 +206,9 @@ mod tests {
 
     let restored_prompt = clean_db.get_review_prompt(&prompt.id).unwrap().unwrap();
     assert_eq!(restored_prompt.question, prompt.question);
+    let restored_evidence = clean_db.get_note_evidence_blocks(&note.id).unwrap();
+    assert_eq!(restored_evidence.len(), 1);
+    assert_eq!(restored_evidence[0].quote, "Key discovery passage");
   }
 
   #[test]

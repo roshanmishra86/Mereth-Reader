@@ -164,6 +164,8 @@ import { createNote, listNotes } from "./utils/notesIo";
 import { createDefaultNoteRecord } from "./utils/notesTypes";
 import { SessionSynthesisModal } from "./components/SessionSynthesisModal";
 import { resolveDeepLinkUiAction } from "./utils/deepLinkRouter";
+import { ExportModal, type ExportFormat } from "./components/ExportModal";
+import { RestoreBackupModal } from "./components/RestoreBackupModal";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
 
@@ -3081,6 +3083,27 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [repairPrompt, setRepairPrompt] = useState<{ prompt: ReviewPromptRecord; failureCount: number } | null>(null);
+  const [editingPrompt, setEditingPrompt] = useState<ReviewPromptRecord | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [sourceContext, setSourceContext] = useState<{ label: string; excerpt: string } | null>(null);
+
+  useEffect(() => {
+    if (!session.current) return;
+    const update = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - new Date(session.current!.startedAt).getTime()) / 1000)));
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [session.current?.startedAt]);
+
+  const pauseCurrent = async () => {
+    if (!session.current) return;
+    try {
+      await updateReviewPrompt({ ...session.current.prompt, paused_at: new Date().toISOString() });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to pause prompt.');
+    }
+  };
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -3109,6 +3132,38 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
   }, [reload]);
 
   const currentPrompt = session.current?.prompt ?? null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setSourceContext(null);
+    if (!currentPrompt) return () => { cancelled = true; };
+
+    const loadSource = async () => {
+      try {
+        if (currentPrompt.annotation_id) {
+          const annotation = await invoke<AnnotationRecord | null>('db_get_annotation', { id: currentPrompt.annotation_id });
+          if (!cancelled && annotation) {
+            setSourceContext({
+              label: `Page ${annotation.page_label || annotation.page_index + 1}`,
+              excerpt: annotation.quote || annotation.comment,
+            });
+          }
+          return;
+        }
+        if (currentPrompt.note_id) {
+          const note = await invoke<ReturnType<typeof createDefaultNoteRecord> | null>('db_get_note', { id: currentPrompt.note_id });
+          if (!cancelled && note) {
+            setSourceContext({ label: note.title, excerpt: note.body_markdown.slice(0, 600) });
+          }
+        }
+      } catch {
+        if (!cancelled) setSourceContext(null);
+      }
+    };
+    void loadSource();
+    return () => { cancelled = true; };
+  }, [currentPrompt?.id, currentPrompt?.annotation_id, currentPrompt?.note_id]);
+
   const currentSchedule = currentPrompt
     ? dueRows.find((row) => row.prompt.id === currentPrompt.id)?.schedule ?? null
     : null;
@@ -3184,6 +3239,15 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
 
   return (
     <section className="review-view">
+      {session.current && (
+        <div className="review-session-toolbar">
+          <strong>Review</strong>
+          <span>Card {session.currentIndex + 1} of {session.queue.length} · budget 20/day · {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, '0')} elapsed</span>
+          <button className="button compact" onClick={() => void pauseCurrent()}>Pause this prompt</button>
+          <button className="button compact" onClick={() => setEditingPrompt(session.current!.prompt)}>Edit prompt</button>
+          <button className="button compact" onClick={() => setSession(createReviewSession([]))}>End session</button>
+        </div>
+      )}
       <span className="eyebrow">{queueStats.due_count} due · {queueStats.adopted_count} adopted · {queueStats.paused_count} paused</span>
       <h1>Review before you reveal.</h1>
       <p className="review-preamble">You decide the outcome. The source is the feedback authority.</p>
@@ -3199,6 +3263,7 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
           onRepair={(result) => void applyRepair(result)}
         />
       )}
+      <PromptEditorModal isOpen={editingPrompt !== null} initialPrompt={editingPrompt} onClose={() => setEditingPrompt(null)} onSaved={() => void reload()} />
 
       {loading ? (
         <EmptyState viewType="annotations" customTitle="Loading review queue" customDescription="Checking local due prompts." />
@@ -3218,7 +3283,7 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
         <article className="review-card">
           <div className="review-card-header">
             <span>Card {session.currentIndex + 1} of {session.queue.length}</span>
-            <span>Budget 20/day · elapsed locally</span>
+            <span>{Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, '0')} elapsed</span>
           </div>
           <h2>{session.current.prompt.question}</h2>
           {session.current.prompt.cue && <p className="dimmed">Cue: {session.current.prompt.cue}</p>}
@@ -3236,6 +3301,7 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
               <button className="wide-action primary" onClick={reveal}>
                 Reveal answer and source
               </button>
+              <button className="wide-action" onClick={reveal}>Skip — I can't recall</button>
             </>
           ) : (
             <>
@@ -3251,11 +3317,11 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
               </div>
               <div className="evidence-block">
                 <b>Linked source</b>
-                <small>
-                  {session.current.prompt.annotation_id ? `Annotation ${session.current.prompt.annotation_id}` : ''}
-                  {session.current.prompt.annotation_id && session.current.prompt.note_id ? ' · ' : ''}
-                  {session.current.prompt.note_id ? `Note ${session.current.prompt.note_id}` : ''}
-                </small>
+                {sourceContext ? (
+                  <><small>{sourceContext.label}</small><p>{sourceContext.excerpt || 'The linked source has no excerpt text.'}</p></>
+                ) : (
+                  <small>The linked source could not be resolved.</small>
+                )}
               </div>
               <div className="review-ratings">
                 {previewBase.map(({ outcome, interval }) => (
@@ -3291,7 +3357,21 @@ function SettingsView({
   palette: PaletteEntry[];
   onSavePalette: (palette: PaletteEntry[]) => void;
 }) {
-  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance' | 'annotations' | 'review'>('privacy');
+  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance' | 'annotations' | 'review' | 'export'>('privacy');
+  const [exportOpen, setExportOpen] = useState(false);
+  const [restoreOpen, setRestoreOpen] = useState(false);
+  const [backupJson, setBackupJson] = useState('');
+  const [exportStatus, setExportStatus] = useState<string | null>(null);
+
+  const runExport = async (format: ExportFormat, destination: string) => {
+    if (!destination) throw new Error('Choose an explicit destination first.');
+    if (format === 'markdown') {
+      await invoke('db_export_markdown_package', { destinationDir: destination });
+    } else {
+      await invoke('db_create_json_backup', { destinationFile: destination });
+    }
+    setExportStatus(`Export completed: ${destination}`);
+  };
 
   return (
     <section className="settings-view">
@@ -3333,7 +3413,7 @@ function SettingsView({
           Review
         </b>
         <b>Storage</b>
-        <b>Export</b>
+        <b className={settingTab === 'export' ? 'selected-setting' : ''} onClick={() => setSettingTab('export')} style={{ cursor: 'pointer' }}>Export</b>
       </aside>
       <article>
         {settingTab === 'shortcuts' ? (
@@ -3344,6 +3424,27 @@ function SettingsView({
           <SettingsAnnotations palette={palette} onSavePalette={onSavePalette} />
         ) : settingTab === 'review' ? (
           <SettingsReview />
+        ) : settingTab === 'export' ? (
+          <div>
+            <span className="eyebrow">Portable, local output</span>
+            <h1>Export and restore</h1>
+            <p>Create readable packages or a complete backup containing evidence and area-capture files.</p>
+            <div className="destination-rule" />
+            <div className="setting-state">
+              <div><b>Export</b><p>Write a Markdown package or versioned JSON backup to an explicit destination.</p></div>
+              <button className="wide-action primary" onClick={() => setExportOpen(true)}>Export...</button>
+            </div>
+            <label className="field-label" htmlFor="restore-json">Backup JSON
+              <textarea id="restore-json" rows={8} value={backupJson} onChange={(event) => setBackupJson(event.target.value)} placeholder="Paste the contents of a Mereth JSON backup." />
+            </label>
+            <button className="wide-action" disabled={!backupJson.trim()} onClick={() => setRestoreOpen(true)}>Preview restore</button>
+            {exportStatus && <p role="status">{exportStatus}</p>}
+            <ExportModal isOpen={exportOpen} onClose={() => setExportOpen(false)} onExport={runExport} />
+            <RestoreBackupModal isOpen={restoreOpen} backupJson={backupJson} onClose={() => setRestoreOpen(false)} onRestore={async () => {
+              await invoke('db_restore_from_backup', { backupJson });
+              setExportStatus('Restore completed. Reopen the destination views to refresh restored records.');
+            }} />
+          </div>
         ) : (
           <>
             <span className="eyebrow">Your local boundary</span>

@@ -11,6 +11,7 @@ const COLLECTION_KEYS = [
   'documents',
   'annotations',
   'assets',
+  'evidence_blocks',
   'notes',
   'note_revisions',
   'links',
@@ -26,7 +27,7 @@ export function previewBackupRestore(value: unknown): RestorePreview {
   return {
     valid: true,
     errors: [],
-    counts: Object.fromEntries(COLLECTION_KEYS.map((key) => [key, backup[key].length])),
+    counts: Object.fromEntries(COLLECTION_KEYS.map((key) => [key, backup[key]?.length ?? 0])),
   };
 }
 

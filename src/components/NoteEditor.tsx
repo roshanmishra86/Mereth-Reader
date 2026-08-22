@@ -9,6 +9,8 @@ import { BacklinksPanel } from './BacklinksPanel';
 import { SplitNoteModal } from './SplitNoteModal';
 import type { SplitNoteResult } from '../utils/noteSplit';
 import { renderMarkdownToHtml } from '../utils/markdownRenderer';
+import { copyQuickCopy } from '../utils/quickCopy';
+import { listPromptsForSource } from '../utils/promptsIo';
 
 export interface NoteEditorProps {
   note: NoteRecord;
@@ -52,6 +54,8 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
   const [isPreview, setIsPreview] = useState(false);
   const [showRevisions, setShowRevisions] = useState(false);
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'dirty'>('saved');
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const [promptCount, setPromptCount] = useState(0);
 
   const [splitModalOpen, setSplitModalOpen] = useState(false);
   const [selectedTextForSplit, setSelectedTextForSplit] = useState('');
@@ -65,6 +69,14 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
     setBodyMarkdown(note.body_markdown);
     setSaveStatus('saved');
     setShowRevisions(false);
+  }, [note.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listPromptsForSource(null, note.id).then((prompts) => {
+      if (!cancelled) setPromptCount(prompts.length);
+    }).catch(() => { if (!cancelled) setPromptCount(0); });
+    return () => { cancelled = true; };
   }, [note.id]);
 
   const persistEdits = useCallback(
@@ -125,7 +137,6 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
 
   const handleConfirmSplit = (result: SplitNoteResult) => {
     setBodyMarkdown(result.updatedOriginalNote.body_markdown);
-    void onSave(note.id, title, result.updatedOriginalNote.body_markdown);
     onSplitNote?.(result);
   };
 
@@ -188,6 +199,11 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
               Remember
             </button>
           )}
+          <button className="outline-button" onClick={() => {
+            void copyQuickCopy({ kind: 'note', record: { ...note, title, body_markdown: bodyMarkdown } })
+              .then(() => setCopyStatus('Copied'))
+              .catch((err) => setCopyStatus(err instanceof Error ? err.message : 'Copy failed'));
+          }}>Quick Copy</button>
 
           <button
             className="outline-button"
@@ -224,6 +240,10 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             </button>
           )}
         </div>
+      </div>
+      <div className="note-context-summary" aria-live="polite">
+        <span><b>Prompts from this note</b> · {promptCount}</span>
+        {copyStatus && <span>{copyStatus}</span>}
       </div>
 
       {/* Revisions History Drawer */}

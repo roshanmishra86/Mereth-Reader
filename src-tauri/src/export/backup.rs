@@ -3,7 +3,8 @@
 //! Exports all SQLite tables, annotations, assets, notes, links, prompts, review events,
 //! and settings into a single versioned JSON archive (schema: `mereth.json-backup`).
 
-use crate::db::annotations::{Annotation, AnnotationAsset};
+use crate::db::annotations::{validate_asset_relative_path, Annotation, AnnotationAsset};
+use crate::db::evidence::EvidenceBlock;
 use crate::db::note_links::NoteLink;
 use crate::db::notes::{Note, NoteRevision};
 use crate::db::prompts::ReviewPrompt;
@@ -29,6 +30,10 @@ pub struct JsonBackupArchive {
   pub document_versions: Vec<DocumentVersion>,
   pub annotations: Vec<Annotation>,
   pub assets: Vec<AnnotationAsset>,
+  #[serde(default)]
+  pub asset_files: HashMap<String, String>,
+  #[serde(default)]
+  pub evidence_blocks: Vec<EvidenceBlock>,
   pub notes: Vec<Note>,
   pub note_revisions: Vec<NoteRevision>,
   pub links: Vec<NoteLink>,
@@ -42,9 +47,10 @@ pub struct JsonBackupArchive {
 /// Creates a complete JSON backup archive from the database.
 pub fn create_json_backup(
   db: &Database,
+  app_dir: &Path,
   destination_file: Option<&str>,
 ) -> Result<JsonBackupArchive, String> {
-  let (documents, document_versions, annotations, assets, notes, note_revisions, links, prompts, review_events, review_schedules, settings) = {
+  let (documents, document_versions, annotations, assets, evidence_blocks, notes, note_revisions, links, prompts, review_events, review_schedules, settings) = {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
     // 1. Fetch documents
@@ -81,8 +87,7 @@ pub fn create_json_backup(
         })
       })
       .map_err(|e| e.to_string())?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
 
     // 1.5. Fetch document versions
     let mut ver_stmt = conn
@@ -104,8 +109,7 @@ pub fn create_json_backup(
         })
       })
       .map_err(|e| e.to_string())?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
 
     // 2. Fetch annotations
     let mut ann_stmt = conn
@@ -139,8 +143,7 @@ pub fn create_json_backup(
         })
       })
       .map_err(|e| e.to_string())?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
 
     // 3. Fetch annotation assets
     let mut asset_stmt = conn
@@ -164,8 +167,16 @@ pub fn create_json_backup(
         })
       })
       .map_err(|e| e.to_string())?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
+
+    let mut evidence_stmt = conn
+      .prepare("SELECT id, note_id, source_kind, annotation_id, image_asset_id, document_id, page_index, page_label, quote, color, tags, user_comment, sort_order, created_at, provenance, original_provenance FROM evidence_blocks")
+      .map_err(|e| e.to_string())?;
+    let evidence: Vec<EvidenceBlock> = evidence_stmt.query_map([], |row| {
+      let tags_json: String = row.get(10)?;
+      let tags = serde_json::from_str(&tags_json).map_err(|e| rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e)))?;
+      Ok(EvidenceBlock { id: row.get(0)?, note_id: row.get(1)?, source_kind: row.get(2)?, annotation_id: row.get(3)?, image_asset_id: row.get(4)?, document_id: row.get(5)?, page_index: row.get(6)?, page_label: row.get(7)?, quote: row.get(8)?, color: row.get(9)?, tags, user_comment: row.get(11)?, sort_order: row.get(12)?, created_at: row.get(13)?, provenance: row.get(14)?, original_provenance: row.get(15)? })
+    }).map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
 
     // 4. Fetch notes
     let mut notes_stmt = conn
@@ -188,8 +199,7 @@ pub fn create_json_backup(
         })
       })
       .map_err(|e| e.to_string())?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
 
     // 5. Fetch note revisions
     let mut rev_stmt = conn
@@ -210,8 +220,7 @@ pub fn create_json_backup(
         })
       })
       .map_err(|e| e.to_string())?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
 
     // 6. Fetch note links
     let mut link_stmt = conn
@@ -232,8 +241,7 @@ pub fn create_json_backup(
         })
       })
       .map_err(|e| e.to_string())?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
 
     // 7. Fetch review prompts
     let mut prompt_stmt = conn
@@ -260,8 +268,7 @@ pub fn create_json_backup(
         })
       })
       .map_err(|e| e.to_string())?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
 
     // 8. Fetch review events
     let mut event_stmt = conn
@@ -281,8 +288,7 @@ pub fn create_json_backup(
         })
       })
       .map_err(|e| e.to_string())?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
 
     // 9. Fetch review schedules
     let mut sched_stmt = conn
@@ -306,8 +312,7 @@ pub fn create_json_backup(
         })
       })
       .map_err(|e| e.to_string())?
-      .filter_map(|r| r.ok())
-      .collect();
+      .collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
 
     // 10. Fetch settings
     let mut settings_stmt = conn
@@ -320,13 +325,20 @@ pub fn create_json_backup(
       .map_err(|e| e.to_string())?;
 
     for r in setting_rows {
-      if let Ok((k, v)) = r {
-        stgs.insert(k, v);
-      }
+      let (k, v) = r.map_err(|e| e.to_string())?;
+      stgs.insert(k, v);
     }
 
-    (docs, vers, anns, asts, nts, revs, lnks, pmpts, evts, scheds, stgs)
+    (docs, vers, anns, asts, evidence, nts, revs, lnks, pmpts, evts, scheds, stgs)
   };
+
+  let mut asset_files = HashMap::new();
+  for asset in &assets {
+    validate_asset_relative_path(&asset.relative_path)?;
+    let bytes = fs::read(app_dir.join(&asset.relative_path))
+      .map_err(|e| format!("Failed to read backup asset {}: {e}", asset.id))?;
+    asset_files.insert(asset.relative_path.clone(), hex::encode(bytes));
+  }
 
   let now_ts = {
     let now = std::time::SystemTime::now();
@@ -342,6 +354,8 @@ pub fn create_json_backup(
     document_versions,
     annotations,
     assets,
+    asset_files,
+    evidence_blocks,
     notes,
     note_revisions,
     links,
