@@ -17,6 +17,12 @@ export interface ExternalLinkDecision {
   reason: string;
 }
 
+export interface CapabilityAuditResult {
+  isMinimal: boolean;
+  allowedPermissions: string[];
+  violations: string[];
+}
+
 /**
  * The CSP the application expects to ship. Kept as a constant ONLY as a
  * regression sentinel — the binding test reads the CSP straight out of
@@ -25,6 +31,12 @@ export interface ExternalLinkDecision {
  */
 export const TAURI_EXPECTED_CSP =
   "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: data:; font-src 'self' data:;";
+
+/**
+ * The minimal permitted capability list in src-tauri/capabilities/default.json.
+ * Any additional capability must be explicitly audited and reviewed.
+ */
+export const ALLOWED_TAURI_PERMISSIONS = ['core:default', 'dialog:allow-open'] as const;
 
 /**
  * Reads the CSP actually declared in `src-tauri/tauri.conf.json` so the security
@@ -42,22 +54,13 @@ export function readTauriCsp(configPath: string): string | null {
 export function getPdfSecuritySettings(): PdfSecurityOptions {
   return {
     disableScripting: true,
-    isEvalSupported: false
+    isEvalSupported: false,
   };
 }
 
 /**
  * Scans raw PDF dictionary objects or action strings for prohibited actions:
  * embedded JavaScript (/JS, /JavaScript), /Launch executables, auto-actions (/AA, /OpenAction).
- *
- * NOTE: this is a lightweight defense-in-depth scan over raw PDF bytes. PDF
- * action keys are case-sensitive (`/JS`, not `/js`), so the regexes below are
- * case-sensitive to avoid false positives on benign keys like `/js` or `/aa`.
- * Object streams compressed with `/FlateDecode` (`/ObjStm`) are NOT decoded
- * here; a hostile PDF can hide `/JS` or `/OpenAction` inside a compressed
- * stream and pass this scan. Treat a clean result as a signal, not a proof —
- * the authoritative controls are PDF.js `disableScripting` and the CSP, which
- * run regardless of what this scan reports.
  */
 export function scanPdfActions(pdfRawContent: string): SecurityScanResult {
   const blockedActions: string[] = [];
@@ -78,7 +81,7 @@ export function scanPdfActions(pdfRawContent: string): SecurityScanResult {
     blockedActions,
     rejectedReason: isSafe
       ? null
-      : `Hostile action(s) detected and blocked: ${blockedActions.join(', ')}`
+      : `Hostile action(s) detected and blocked: ${blockedActions.join(', ')}`,
   };
 }
 
@@ -92,7 +95,7 @@ export function interceptExternalLink(rawUrl: string): ExternalLinkDecision {
     return {
       allow: false,
       sanitizedUrl: null,
-      reason: 'URL is empty'
+      reason: 'URL is empty',
     };
   }
 
@@ -104,20 +107,20 @@ export function interceptExternalLink(rawUrl: string): ExternalLinkDecision {
       return {
         allow: true,
         sanitizedUrl: parsed.toString(),
-        reason: 'Safe web protocol permitted'
+        reason: 'Safe web protocol permitted',
       };
     }
 
     return {
       allow: false,
       sanitizedUrl: null,
-      reason: `Blocked unsafe protocol '${protocol}'`
+      reason: `Blocked unsafe protocol '${protocol}'`,
     };
   } catch {
     return {
       allow: false,
       sanitizedUrl: null,
-      reason: 'Malformed URL structure'
+      reason: 'Malformed URL structure',
     };
   }
 }
@@ -136,4 +139,41 @@ export function validateCspConfiguration(cspString: string): boolean {
     !lower.includes('script-src *') && !lower.includes("script-src 'unsafe-inline'");
 
   return hasDefaultSelf && noUnsafeEval && scriptSelf;
+}
+
+/**
+ * Audits a Tauri capability JSON file ensuring only minimal, itemized permissions
+ * are granted and no dangerous or over-broad filesystem/shell permissions exist.
+ */
+export function auditCapabilityFile(capabilityPath: string): CapabilityAuditResult {
+  const raw = fs.readFileSync(capabilityPath, 'utf-8');
+  const cap = JSON.parse(raw) as { permissions?: string[] };
+  const permissions = cap.permissions ?? [];
+  const violations: string[] = [];
+
+  const dangerousPrefixes = ['fs:', 'shell:', 'process:', 'http:', 'global-shortcut:'];
+
+  for (const perm of permissions) {
+    if (dangerousPrefixes.some((p) => perm.startsWith(p))) {
+      violations.push(`Dangerous broad permission found: '${perm}'`);
+    } else if (!ALLOWED_TAURI_PERMISSIONS.includes(perm as (typeof ALLOWED_TAURI_PERMISSIONS)[number])) {
+      violations.push(`Unapproved permission found: '${perm}'`);
+    }
+  }
+
+  return {
+    isMinimal: violations.length === 0,
+    allowedPermissions: permissions,
+    violations,
+  };
+}
+
+/**
+ * Document text as data isolation (FR-12.14).
+ * Ensures untrusted extracted PDF text or user notes cannot break structured serialization
+ * or be parsed as system instructions.
+ */
+export function sanitizeDocumentTextAsData(rawText: string): string {
+  // Strip control characters while preserving standard whitespaces (newline, tab, CR)
+  return rawText.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
 }

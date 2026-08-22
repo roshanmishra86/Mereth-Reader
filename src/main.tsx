@@ -87,6 +87,7 @@ import {
 } from "./utils/appearanceUtils";
 import { SettingsAppearance } from "./components/SettingsAppearance";
 import { PasswordDialog } from "./components/PasswordDialog";
+import { ExternalLinkModal } from "./components/ExternalLinkModal";
 import { ScannedPdfBanner } from "./components/ScannedPdfBanner";
 import { VersionMismatchBanner } from "./components/VersionMismatchBanner";
 import { RendererErrorBoundary } from "./components/RendererErrorBoundary";
@@ -247,6 +248,25 @@ function App() {
   const [scannedPdfBannerVisible, setScannedPdfBannerVisible] = useState(false);
   const [versionMismatchBannerVisible, setVersionMismatchBannerVisible] = useState(false);
   const [sessionSynthesisOpen, setSessionSynthesisOpen] = useState(false);
+  const [externalLinkUrl, setExternalLinkUrl] = useState<string | null>(null);
+
+  // Task 5.1 (FR-8.8): Intercept all external link clicks and disclose destination before browser handoff
+  useEffect(() => {
+    const handleDocumentClick = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement | null)?.closest('a');
+      if (!target) return;
+      const href = target.getAttribute('href');
+      if (!href) return;
+      if (href.startsWith('#') || href.startsWith('mereth://')) {
+        return; // Handled internally
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      setExternalLinkUrl(href);
+    };
+    document.addEventListener('click', handleDocumentClick, true);
+    return () => document.removeEventListener('click', handleDocumentClick, true);
+  }, []);
 
   // Task 4.4 (FR-11.1): Prompt Editor Modal for Remember actions
   const [promptEditorModal, setPromptEditorModal] = useState<{
@@ -1364,6 +1384,11 @@ function App() {
         annotations={annotationsList}
         onClose={() => setSessionSynthesisOpen(false)}
         onSaveNote={handleSaveSynthesisNote}
+      />
+      <ExternalLinkModal
+        isOpen={Boolean(externalLinkUrl)}
+        url={externalLinkUrl}
+        onClose={() => setExternalLinkUrl(null)}
       />
     </main>
   );

@@ -4,6 +4,7 @@ pub mod import;
 pub mod launch;
 #[cfg(debug_assertions)]
 pub mod perf;
+pub mod security;
 
 use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
 use db::annotations::{Annotation, AnnotationAsset};
@@ -870,6 +871,11 @@ fn db_restore_from_backup(
   export::restore::restore_from_backup(db, &app_dir, &backup_json)
 }
 
+#[tauri::command]
+fn cmd_open_external_url(url: String) -> Result<(), String> {
+  security::open_external_url(&url)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut builder = tauri::Builder::default()
@@ -962,6 +968,7 @@ pub fn run() {
       import_copy_to_managed_library,
       verify_document_file_exists,
       db_get_pdf_bytes,
+      cmd_open_external_url,
       #[cfg(debug_assertions)]
       perf::perf_rss_snapshot,
       #[cfg(debug_assertions)]
