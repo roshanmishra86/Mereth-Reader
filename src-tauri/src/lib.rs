@@ -1,4 +1,5 @@
 pub mod db;
+pub mod export;
 pub mod import;
 pub mod launch;
 #[cfg(debug_assertions)]
@@ -6,6 +7,12 @@ pub mod perf;
 
 use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
 use db::annotations::{Annotation, AnnotationAsset};
+use db::evidence::EvidenceBlock;
+use db::note_links::{BacklinkRecord, NoteLink};
+use db::note_search::NoteSearchResult;
+use db::notes::{Note, NoteRevision, SplitNoteTransactionResult};
+use db::prompts::ReviewPrompt;
+use db::review::{DueReviewPrompt, ReviewEvent, ReviewQueueStats, ReviewSchedule};
 use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
 use import::{
   compute_file_metadata, copy_to_managed_documents, ensure_external_pdf_source,
@@ -473,6 +480,396 @@ fn db_get_pdf_bytes(filepath: String) -> Result<tauri::ipc::Response, String> {
   Ok(tauri::ipc::Response::new(bytes))
 }
 
+#[tauri::command]
+fn db_add_note(note: Note, state: State<'_, AppState>) -> Result<Note, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.add_note(&note)
+}
+
+#[tauri::command]
+fn db_get_note(id: String, state: State<'_, AppState>) -> Result<Option<Note>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_note(&id)
+}
+
+#[tauri::command]
+fn db_list_notes(
+  include_trash: Option<bool>,
+  note_type: Option<String>,
+  document_id: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<Vec<Note>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.list_notes(
+    include_trash.unwrap_or(false),
+    note_type.as_deref(),
+    document_id.as_deref(),
+  )
+}
+
+#[tauri::command]
+fn db_update_note(
+  id: String,
+  title: String,
+  body_markdown: String,
+  create_revision: Option<bool>,
+  state: State<'_, AppState>,
+) -> Result<Note, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_note(&id, &title, &body_markdown, create_revision.unwrap_or(true))
+}
+
+#[tauri::command]
+fn db_trash_note(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.trash_note(&id)
+}
+
+#[tauri::command]
+fn db_restore_note(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.restore_note(&id)
+}
+
+#[tauri::command]
+fn db_purge_note(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.purge_note(&id)
+}
+
+#[tauri::command]
+fn db_get_note_revisions(note_id: String, state: State<'_, AppState>) -> Result<Vec<NoteRevision>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_note_revisions(&note_id)
+}
+
+#[tauri::command]
+fn db_restore_note_revision(
+  note_id: String,
+  revision_number: i64,
+  state: State<'_, AppState>,
+) -> Result<Note, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.restore_note_revision(&note_id, revision_number)
+}
+
+#[tauri::command]
+fn db_promote_scratch_note(
+  id: String,
+  target_type: String,
+  document_id: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<Note, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.promote_scratch_note(&id, &target_type, document_id.as_deref())
+}
+
+#[tauri::command]
+fn db_add_evidence_block(
+  block: EvidenceBlock,
+  state: State<'_, AppState>,
+) -> Result<EvidenceBlock, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.add_evidence_block(&block)
+}
+
+#[tauri::command]
+fn db_get_note_evidence_blocks(
+  note_id: String,
+  state: State<'_, AppState>,
+) -> Result<Vec<EvidenceBlock>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_note_evidence_blocks(&note_id)
+}
+
+#[tauri::command]
+fn db_update_evidence_block_order(
+  note_id: String,
+  block_ids: Vec<String>,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_evidence_block_order(&note_id, &block_ids)
+}
+
+#[tauri::command]
+fn db_update_evidence_block_comment(
+  id: String,
+  user_comment: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_evidence_block_comment(&id, &user_comment)
+}
+
+#[tauri::command]
+fn db_delete_evidence_block(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.delete_evidence_block(&id)
+}
+
+#[tauri::command]
+fn db_add_note_link(
+  link: NoteLink,
+  state: State<'_, AppState>,
+) -> Result<NoteLink, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.add_note_link(&link)
+}
+
+#[tauri::command]
+fn db_get_forward_links(
+  note_id: String,
+  state: State<'_, AppState>,
+) -> Result<Vec<NoteLink>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_forward_links(&note_id)
+}
+
+#[tauri::command]
+fn db_get_note_backlinks(
+  target_note_id: String,
+  state: State<'_, AppState>,
+) -> Result<Vec<BacklinkRecord>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_note_backlinks(&target_note_id)
+}
+
+#[tauri::command]
+fn db_sync_note_links(
+  note_id: String,
+  target_note_ids: Vec<String>,
+  target_doc_ids: Vec<String>,
+  target_ann_ids: Vec<String>,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.sync_note_links(&note_id, &target_note_ids, &target_doc_ids, &target_ann_ids)
+}
+
+#[tauri::command]
+fn db_delete_note_link(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.delete_note_link(&id)
+}
+
+#[tauri::command]
+fn db_search_notes(
+  query: String,
+  note_type: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<Vec<NoteSearchResult>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.search_notes(&query, note_type.as_deref())
+}
+
+#[tauri::command]
+fn db_split_note_transaction(
+  original_id: String,
+  original_title: String,
+  original_body: String,
+  new_note: Note,
+  link: NoteLink,
+  state: State<'_, AppState>,
+) -> Result<SplitNoteTransactionResult, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.split_note_transaction(&original_id, &original_title, &original_body, &new_note, &link)
+}
+
+#[tauri::command]
+fn db_create_review_prompt(
+  prompt: ReviewPrompt,
+  state: State<'_, AppState>,
+) -> Result<ReviewPrompt, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.create_review_prompt(&prompt)
+}
+
+#[tauri::command]
+fn db_get_review_prompt(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<Option<ReviewPrompt>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_review_prompt(&id)
+}
+
+#[tauri::command]
+fn db_list_review_prompts(
+  status_filter: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<Vec<ReviewPrompt>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.list_review_prompts(status_filter.as_deref())
+}
+
+#[tauri::command]
+fn db_list_prompts_for_source(
+  annotation_id: Option<String>,
+  note_id: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<Vec<ReviewPrompt>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.list_prompts_for_source(annotation_id.as_deref(), note_id.as_deref())
+}
+
+#[tauri::command]
+fn db_update_review_prompt(
+  prompt: ReviewPrompt,
+  state: State<'_, AppState>,
+) -> Result<ReviewPrompt, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.update_review_prompt(&prompt)
+}
+
+#[tauri::command]
+fn db_adopt_review_prompt(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<ReviewPrompt, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.adopt_review_prompt(&id)
+}
+
+#[tauri::command]
+fn db_retire_review_prompt(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<ReviewPrompt, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.retire_review_prompt(&id)
+}
+
+#[tauri::command]
+fn db_delete_review_prompt(
+  id: String,
+  state: State<'_, AppState>,
+) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.delete_review_prompt(&id)
+}
+
+#[tauri::command]
+fn db_get_due_review_prompts(
+  limit: i64,
+  state: State<'_, AppState>,
+) -> Result<Vec<DueReviewPrompt>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_due_review_prompts(limit)
+}
+
+#[tauri::command]
+fn db_record_review_event(
+  event: ReviewEvent,
+  schedule: ReviewSchedule,
+  state: State<'_, AppState>,
+) -> Result<ReviewSchedule, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.record_review_event(&event, &schedule)
+}
+
+#[tauri::command]
+fn db_get_review_history(
+  prompt_id: String,
+  state: State<'_, AppState>,
+) -> Result<Vec<ReviewEvent>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_review_history(&prompt_id)
+}
+
+#[tauri::command]
+fn db_get_review_queue_stats(state: State<'_, AppState>) -> Result<ReviewQueueStats, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_review_queue_stats()
+}
+
+#[tauri::command]
+fn db_export_markdown_package(
+  app_handle: tauri::AppHandle,
+  destination_dir: String,
+  state: State<'_, AppState>,
+) -> Result<export::markdown::MarkdownPackageManifest, String> {
+  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  export::markdown::export_markdown_package(db, &app_dir, &destination_dir)
+}
+
+#[tauri::command]
+fn db_create_json_backup(
+  app_handle: tauri::AppHandle,
+  destination_file: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<export::backup::JsonBackupArchive, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+  export::backup::create_json_backup(db, &app_dir, destination_file.as_deref())
+}
+
+#[tauri::command]
+fn db_export_review_csv(
+  destination_file: String,
+  delimiter: Option<String>,
+  state: State<'_, AppState>,
+) -> Result<usize, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  export::review_csv::export_review_csv(db, &destination_file, delimiter.as_deref())
+}
+
+#[tauri::command]
+fn db_restore_from_backup(
+  app_handle: tauri::AppHandle,
+  backup_json: String,
+  state: State<'_, AppState>,
+) -> Result<export::restore::RestoreResult, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+  export::restore::restore_from_backup(db, &app_dir, &backup_json)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   let mut builder = tauri::Builder::default()
@@ -522,6 +919,44 @@ pub fn run() {
       db_update_version_geometry,
       db_get_document_versions,
       db_reanchor_annotation_to_version,
+      db_add_note,
+      db_get_note,
+      db_list_notes,
+      db_update_note,
+      db_trash_note,
+      db_restore_note,
+      db_purge_note,
+      db_get_note_revisions,
+      db_restore_note_revision,
+      db_promote_scratch_note,
+      db_add_evidence_block,
+      db_get_note_evidence_blocks,
+      db_update_evidence_block_order,
+      db_update_evidence_block_comment,
+      db_delete_evidence_block,
+      db_add_note_link,
+      db_get_forward_links,
+      db_get_note_backlinks,
+      db_sync_note_links,
+      db_delete_note_link,
+      db_search_notes,
+      db_split_note_transaction,
+      db_create_review_prompt,
+      db_get_review_prompt,
+      db_list_review_prompts,
+      db_list_prompts_for_source,
+      db_update_review_prompt,
+      db_adopt_review_prompt,
+      db_retire_review_prompt,
+      db_delete_review_prompt,
+      db_get_due_review_prompts,
+      db_record_review_event,
+      db_get_review_history,
+      db_get_review_queue_stats,
+      db_export_markdown_package,
+      db_create_json_backup,
+      db_export_review_csv,
+      db_restore_from_backup,
       cmd_get_initial_launch_route,
       import_compute_file_metadata,
       import_copy_to_managed_library,
