@@ -878,6 +878,7 @@ mod tests {
       last_opened_at: None,
       tags: vec![],
       collections: vec![],
+      ownership_mode: "open_in_place".into(), original_filepath: None, removed_at: None,
     };
     db.add_document(doc).unwrap();
     let conn = db.conn.lock().unwrap();

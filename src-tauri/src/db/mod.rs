@@ -53,7 +53,15 @@ pub struct Document {
   pub tags: Vec<String>,
   #[serde(default)]
   pub collections: Vec<String>,
+  #[serde(default = "default_ownership_mode")]
+  pub ownership_mode: String,
+  #[serde(default)]
+  pub original_filepath: Option<String>,
+  #[serde(default)]
+  pub removed_at: Option<String>,
 }
+
+fn default_ownership_mode() -> String { "open_in_place".into() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionRecord {
@@ -116,7 +124,7 @@ pub struct Database {
   pub(crate) app_dir: PathBuf,
 }
 
-const DOCUMENT_SELECT_COLS: &str = "id, title, filepath, sha256_hash, page_count, created_at, updated_at, provenance, is_favourite, is_archived, last_opened_at, tags, collections, author, subject, keywords, creation_date, doi, isbn";
+const DOCUMENT_SELECT_COLS: &str = "id, title, filepath, sha256_hash, page_count, created_at, updated_at, provenance, is_favourite, is_archived, last_opened_at, tags, collections, author, subject, keywords, creation_date, doi, isbn, ownership_mode, original_filepath, removed_at";
 
 fn map_row_to_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
   let is_fav_int: i32 = row.get(8).unwrap_or(0);
@@ -144,6 +152,9 @@ fn map_row_to_document(row: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
     creation_date: row.get(16)?,
     doi: row.get(17)?,
     isbn: row.get(18)?,
+    ownership_mode: row.get(19).unwrap_or_else(|_| "open_in_place".into()),
+    original_filepath: row.get(20).unwrap_or(None),
+    removed_at: row.get(21).unwrap_or(None),
   })
 }
 
@@ -222,7 +233,7 @@ impl Database {
 
   pub fn get_documents(&self) -> Result<Vec<Document>, String> {
     let conn = self.conn.lock().unwrap();
-    let query = format!("SELECT {} FROM documents", DOCUMENT_SELECT_COLS);
+    let query = format!("SELECT {} FROM documents WHERE removed_at IS NULL", DOCUMENT_SELECT_COLS);
     let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
 
     let docs = stmt
@@ -244,8 +255,8 @@ impl Database {
         "INSERT INTO documents (
           id, title, filepath, sha256_hash, page_count, created_at, updated_at, provenance,
           author, subject, keywords, creation_date, doi, isbn, is_favourite, is_archived,
-          last_opened_at, tags, collections
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+          last_opened_at, tags, collections, ownership_mode, original_filepath, removed_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
           doc.id,
           doc.title,
@@ -266,6 +277,9 @@ impl Database {
           doc.last_opened_at,
           tags_json,
           collections_json,
+          doc.ownership_mode,
+          doc.original_filepath,
+          doc.removed_at,
         ],
       )
       .map_err(|e| e.to_string())?;
@@ -450,6 +464,35 @@ impl Database {
       return Err(format!("Document not found: {}", id));
     }
     Ok(())
+  }
+
+  pub fn remove_document(&self, id: &str) -> Result<(), String> {
+    let conn = self.conn.lock().unwrap();
+    let changed = conn.execute(
+      "UPDATE documents SET removed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1 AND removed_at IS NULL",
+      params![id],
+    ).map_err(|e| e.to_string())?;
+    if changed == 0 { return Err(format!("Document not found or already removed: {id}")); }
+    Ok(())
+  }
+
+  pub fn restore_document(&self, id: &str) -> Result<(), String> {
+    let conn = self.conn.lock().unwrap();
+    let changed = conn.execute(
+      "UPDATE documents SET removed_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1 AND removed_at IS NOT NULL",
+      params![id],
+    ).map_err(|e| e.to_string())?;
+    if changed == 0 { return Err(format!("Removed document not found: {id}")); }
+    Ok(())
+  }
+
+  pub fn get_removed_documents(&self) -> Result<Vec<Document>, String> {
+    let conn = self.conn.lock().unwrap();
+    let query = format!("SELECT {} FROM documents WHERE removed_at IS NOT NULL ORDER BY removed_at DESC", DOCUMENT_SELECT_COLS);
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+    let documents = stmt.query_map([], map_row_to_document).map_err(|e| e.to_string())?
+      .filter_map(Result::ok).collect();
+    Ok(documents)
   }
 
 
@@ -789,6 +832,7 @@ mod tests {
       last_opened_at: None,
       tags: vec![],
       collections: vec![],
+      ownership_mode: "open_in_place".into(), original_filepath: None, removed_at: None,
     };
     assert!(db.add_document(valid_doc).is_ok());
 
@@ -813,6 +857,7 @@ mod tests {
       last_opened_at: None,
       tags: vec![],
       collections: vec![],
+      ownership_mode: "open_in_place".into(), original_filepath: None, removed_at: None,
     };
     assert!(db.add_document(invalid_doc).is_err());
   }
@@ -845,6 +890,7 @@ mod tests {
       last_opened_at: None,
       tags: vec![],
       collections: vec![],
+      ownership_mode: "open_in_place".into(), original_filepath: None, removed_at: None,
     };
     db.add_document(doc).unwrap();
 
@@ -1019,6 +1065,7 @@ mod tests {
       last_opened_at: None,
       tags: vec!["Law".into(), "Reference".into()],
       collections: vec!["Legal Research".into()],
+      ownership_mode: "open_in_place".into(), original_filepath: None, removed_at: None,
     };
 
     db.add_document(doc.clone()).unwrap();
@@ -1088,6 +1135,7 @@ mod tests {
       last_opened_at: None,
       tags: vec![],
       collections: vec![],
+      ownership_mode: "open_in_place".into(), original_filepath: None, removed_at: None,
     };
 
     db.add_document(doc).unwrap();
@@ -1130,6 +1178,7 @@ mod tests {
       last_opened_at: None,
       tags: vec![],
       collections: vec![],
+      ownership_mode: "open_in_place".into(), original_filepath: None, removed_at: None,
     };
     db.add_document(doc).unwrap();
 
@@ -1204,6 +1253,7 @@ mod tests {
       last_opened_at: None,
       tags: vec![],
       collections: vec![],
+      ownership_mode: "open_in_place".into(), original_filepath: None, removed_at: None,
     };
     db.add_document(doc).unwrap();
 
@@ -1255,6 +1305,39 @@ mod tests {
   }
 
   #[test]
+  fn test_remove_restore_preserves_document_and_linked_rows() {
+    let db = Database::in_memory().unwrap();
+    let doc_id = Uuid::new_v4().to_string();
+    db.add_document(Document {
+      id: doc_id.clone(), title: "Recoverable".into(), filepath: "/docs/recoverable.pdf".into(),
+      sha256_hash: "ab".repeat(32), page_count: 1,
+      created_at: "2026-08-23T00:00:00Z".into(), updated_at: "2026-08-23T00:00:00Z".into(),
+      provenance: "source_extracted".into(), author: None, subject: None, keywords: None,
+      creation_date: None, doi: None, isbn: None, is_favourite: false, is_archived: false,
+      last_opened_at: None, tags: vec![], collections: vec![], ownership_mode: "managed_library".into(),
+      original_filepath: Some("/source/recoverable.pdf".into()), removed_at: None,
+    }).unwrap();
+    db.add_page(Page {
+      id: Uuid::new_v4().to_string(), document_id: doc_id.clone(), page_number: 1,
+      width: 612.0, height: 792.0, text_content: "preserved".into(),
+      created_at: "2026-08-23T00:00:00Z".into(), provenance: "source_extracted".into(),
+    }).unwrap();
+
+    db.remove_document(&doc_id).unwrap();
+    assert!(db.get_documents().unwrap().is_empty());
+    let removed = db.get_removed_documents().unwrap();
+    assert_eq!(removed.len(), 1);
+    assert_eq!(removed[0].ownership_mode, "managed_library");
+    assert_eq!(removed[0].original_filepath.as_deref(), Some("/source/recoverable.pdf"));
+    assert_eq!(db.get_pages(&doc_id).unwrap().len(), 1);
+
+    db.restore_document(&doc_id).unwrap();
+    assert_eq!(db.get_documents().unwrap().len(), 1);
+    assert!(db.get_removed_documents().unwrap().is_empty());
+    assert_eq!(db.get_pages(&doc_id).unwrap().len(), 1);
+  }
+
+  #[test]
   fn test_database_lives_in_db_subdirectory_and_relocates_legacy() {
     // A fresh database lands at app-data/db/mereth_reader.db (PRD §15.4,
     // task 3.1) and nothing appears at the app-data root.
@@ -1297,7 +1380,7 @@ mod tests {
       let rows: i64 = conn
         .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
         .unwrap();
-      assert_eq!(rows, 12);
+      assert_eq!(rows, 13);
     }
   }
 
@@ -1331,6 +1414,7 @@ mod tests {
         last_opened_at: None,
         tags: vec![],
         collections: vec![],
+        ownership_mode: "open_in_place".into(), original_filepath: None, removed_at: None,
       };
       db.add_document(doc).unwrap();
       drop(db);
@@ -1393,7 +1477,7 @@ mod tests {
       let rows: i64 = conn
         .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
         .unwrap();
-      assert_eq!(rows, 12);
+      assert_eq!(rows, 13);
       drop(conn);
       // Pre-existing data survived the forward migration.
       let doc = db.get_document_by_id(&doc_id).unwrap().expect("document preserved");

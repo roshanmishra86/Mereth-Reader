@@ -55,7 +55,7 @@ pub fn create_json_backup(
 
     // 1. Fetch documents
     let mut doc_stmt = conn
-      .prepare("SELECT id, title, filepath, sha256_hash, page_count, created_at, updated_at, provenance, is_favourite, is_archived, last_opened_at, tags, collections, author, subject, keywords, creation_date, doi, isbn FROM documents")
+      .prepare("SELECT id, title, filepath, sha256_hash, page_count, created_at, updated_at, provenance, is_favourite, is_archived, last_opened_at, tags, collections, author, subject, keywords, creation_date, doi, isbn, ownership_mode, original_filepath, removed_at FROM documents")
       .map_err(|e| e.to_string())?;
 
     let docs: Vec<Document> = doc_stmt
@@ -84,6 +84,9 @@ pub fn create_json_backup(
           creation_date: row.get(16)?,
           doi: row.get(17)?,
           isbn: row.get(18)?,
+          ownership_mode: row.get(19).unwrap_or_else(|_| "open_in_place".into()),
+          original_filepath: row.get(20).unwrap_or(None),
+          removed_at: row.get(21).unwrap_or(None),
         })
       })
       .map_err(|e| e.to_string())?

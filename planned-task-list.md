@@ -355,10 +355,10 @@ Items the C8 audit found missing or false in the shipping render path. Each was 
   - Status (2026-08-05): Local verification green — `pnpm build` (tsc --noEmit + vite build, 6.18s, 31 modules), `pnpm test` (41/41 across 8 files), `cargo check --manifest-path src-tauri/Cargo.toml` (exits 0), and `cargo test --lib` (10/10: 4 `launch::tests` + 6 `db::tests`). The Rust unit tests now execute for the first time (previously the crate never compiled); getting there required two rusqlite 0.32 fixes — `PRAGMA journal_mode = WAL` via `query_row` (the pragma returns a row that `execute` rejects) and explicit `PRAGMA foreign_keys = ON` (so `ON DELETE CASCADE` is honored). On CI, the Quality job (run 30732211388) runs `pnpm build`, `pnpm test`, and `cargo check` green, and the Windows NSIS bundle (run 30732218214) exits 0. Gaps remain: `pnpm tauri:build` (unfiltered) has never been run, no `tauri build` of any kind has been run on Linux (the Quality job stops at `cargo check` and does not link or bundle), and `cargo test` is not yet wired into CI.
 
 - [ ] **6.4 — Validate the Windows workflow end to end.**
-  - Acceptance: a push produces a downloadable `MerethReader-Windows-NSIS` artifact containing a setup `.exe` that installs and launches on a clean Windows 11 x64 machine.
+  - Acceptance: a push produces a downloadable `MerethReader-Windows-NSIS` artifact containing a setup `.exe` that installs and launches on a clean Windows 11 x64 machine. On that clean installation, Explorer lists `Mereth Reader` under PDF `Open with`; both a cold launch and a warm single-instance launch open the requested PDF.
 
 - [ ] **6.5 — Performance benchmark against reference hardware.**
-  - Acceptance: repeat and compare the already-passed R0, R1, R2, and R3/R4 measurements on recorded Windows reference hardware — first page under 2 s, cached page navigation under 100 ms, annotation visible under 100 ms and durable under 500 ms, search first results under 300 ms, responsive background work, and the measured AI-off working-set cap. Record corpus version, build, cold/warm state, method, median, worst observed result, and any regression. This is final confirmation, not the first time performance is measured.
+  - Acceptance: repeat and compare the already-passed R0, R1, R2, and R3/R4 measurements on recorded Windows reference hardware — picker/Explorer launch to first painted page under 2 s, first selectable text layer, annotation readiness, cached page navigation under 100 ms, annotation visible under 100 ms and durable under 500 ms, search first results under 300 ms, rapid zoom/rotation, responsive background work, and the measured AI-off working-set cap. Use the installed release build and record corpus version, build, cold/warm state, method, median, worst observed result, and any regression. This is final confirmation, not the first time performance is measured.
 
 - [ ] **6.6 — Release signing.**
   - Acceptance: certificate secrets are held in GitHub secrets, the installer is signed in CI, and verification steps are documented.
@@ -371,6 +371,22 @@ Items the C8 audit found missing or false in the shipping render path. Each was 
 
 - [ ] **6.8 — Establish a success-measurement path without telemetry.**
   - Acceptance: each PRD §19 metric identifies whether it comes from automated corpus tests, local benchmark reports, or a consented usability study; any diagnostic export is explicit, inspectable, and user-initiated; no document, note, annotation, prompt, review response, or behavioural event is silently transmitted or retained for product analytics.
+
+- [ ] **6.9 — Native File menu and one PDF-opening pipeline.**
+  - Acceptance: native File menu, Ctrl+O/Ctrl+W, Library/Reader/empty-state controls, drag-and-drop, and launch routes converge on one typed controller; Open PDF registers in place and enters the Reader immediately; Import a Copy persists its ownership metadata; every activation clears document-scoped state before hydration; failures remain visible; parsing and indexing begin after registration/rendering.
+  - Status (2026-08-23): native menu, direct picker controller, deduplication, shared activation, visible controller errors, and render-first import are implemented. Installed Windows interaction matrix remains required before completion.
+
+- [ ] **6.10 — Windows Explorer “Open with” reliability.**
+  - Acceptance: the frontend listener is active before pending startup routes are consumed; cold and warm routes deduplicate and activate correctly; missing/invalid paths surface recoverably; spaces, Unicode, long-path prefixes, and UNC locations pass on installed Windows 11.
+  - Status (2026-08-23): listener ordering and direct launch-controller routing are implemented; installed Windows path matrix remains open.
+
+- [ ] **6.11 — Recoverable Library removal and correct ownership persistence.**
+  - Acceptance: ownership/original/removal fields migrate and round-trip; ordinary removal preserves linked data and files; Recently Removed supports Restore and confirmed Permanent Delete; active removal cancels/evicts and returns to Library; open-in-place sources are never deleted; managed-file purge is backend-confined; backend failures never hide records.
+  - Status (2026-08-23): migration 13, soft removal/restore queries, Recently Removed UI, explicit purge warning, cache eviction, and confined managed-copy purge are implemented. Migration and purge regression tests remain required before completion.
+
+- [ ] **6.12 — Renderer stability, annotation readiness, and perceived performance.**
+  - Acceptance: canvas reuse is serialized; render/text cancellation is normal control flow; bitmap and text-layer outcomes are discriminated; text failure never obscures a painted bitmap; genuine bitmap failures retry per page; background work begins after first paint with bounded visible-window priority; document version state cannot leak across opens; installed corpus stress tests pass.
+  - Status (2026-08-23): serialized canvas cancellation, discriminated results, text-layer degradation, per-page retry, and pre-hydration version clearing are implemented. First-paint gating and installed corpus stress verification remain open.
 
 ### 7. Deferred — not v1
 

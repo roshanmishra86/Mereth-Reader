@@ -553,6 +553,42 @@
   }
 }
 
+.app-operation-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 10px 12px 0;
+  overflow-wrap: anywhere;
+}
+
+.pdf-text-layer-warning {
+  position: absolute;
+  inset-inline: 10px;
+  inset-block-end: 10px;
+  z-index: 8;
+  padding: 7px 10px;
+  border: 1px solid currentColor;
+  background: #fff6e5;
+  color: #5f4100;
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: none;
+}
+
+:root[data-theme="dark"] .pdf-text-layer-warning {
+  background: #342b18;
+  color: #ffe0a1;
+}
+
+.pdf-page-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
 :root[data-reduced-motion="true"] *,
 :root[data-reduced-motion="true"] *::before,
 :root[data-reduced-motion="true"] *::after {
@@ -1609,5 +1645,4 @@
     scroll-behavior: auto !important;
   }
 }
-
 

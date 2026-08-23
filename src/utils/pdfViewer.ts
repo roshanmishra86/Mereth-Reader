@@ -106,11 +106,11 @@ export function buildPdfJsLoadConfig(
   };
 }
 
-async function fetchPdfBytes(filepath: string): Promise<Uint8Array> {
+async function fetchPdfBytes(documentId: string): Promise<Uint8Array> {
   // The Rust command returns tauri::ipc::Response (raw bytes), which the
   // webview receives as an ArrayBuffer. The number[] branch is a defensive
   // fallback for IPC paths that JSON-serialize (and for tests).
-  const raw = await invoke<ArrayBuffer | number[]>('db_get_pdf_bytes', { filepath });
+  const raw = await invoke<ArrayBuffer | number[]>('db_get_pdf_bytes', { documentId });
   if (raw instanceof ArrayBuffer) {
     return new Uint8Array(raw);
   }
@@ -125,8 +125,8 @@ async function fetchPdfBytes(filepath: string): Promise<Uint8Array> {
  * to render its first page — page text extraction is deliberately NOT part of
  * this path (see extractPdfPageTexts).
  */
-export async function loadPdfDocument(filepath: string): Promise<LoadedPdfInfo | null> {
-  const cached = pdfDocCache.get(filepath);
+export async function loadPdfDocument(documentId: string): Promise<LoadedPdfInfo | null> {
+  const cached = pdfDocCache.get(documentId);
   if (cached) {
     cached.lastUsed = Date.now();
     return { doc: cached.doc, numPages: cached.doc.numPages, outline: cached.outline };
@@ -135,7 +135,7 @@ export async function loadPdfDocument(filepath: string): Promise<LoadedPdfInfo |
   try {
     let uint8: Uint8Array;
     try {
-      uint8 = await fetchPdfBytes(filepath);
+      uint8 = await fetchPdfBytes(documentId);
     } catch {
       // Backend IPC unavailable (tests, browser dev preview) or file rejected.
       return null;
@@ -145,7 +145,7 @@ export async function loadPdfDocument(filepath: string): Promise<LoadedPdfInfo |
     const doc = await loadingTask.promise;
     const outline = await extractOutline(doc);
 
-    pdfDocCache.set(filepath, {
+    pdfDocCache.set(documentId, {
       doc,
       loadingTask,
       outline,
@@ -361,6 +361,7 @@ function sortByPage(pages: PageTextContent[]): PageTextContent[] {
 interface ActivePageWork {
   renderTask: pdfjsLib.RenderTask | null;
   textLayer: pdfjsLib.TextLayer | null;
+  completion: Promise<void>;
 }
 
 // pdf.js throws if a canvas is rendered to while a previous render on the
@@ -374,9 +375,21 @@ export function cancelCanvasRender(canvas: HTMLCanvasElement): void {
   if (work) {
     work.renderTask?.cancel();
     work.textLayer?.cancel();
-    activeCanvasWork.delete(canvas);
   }
 }
+
+async function cancelAndAwaitCanvasRender(canvas: HTMLCanvasElement): Promise<void> {
+  const previous = activeCanvasWork.get(canvas);
+  if (!previous) return;
+  previous.renderTask?.cancel();
+  previous.textLayer?.cancel();
+  await previous.completion.catch(() => undefined);
+}
+
+export type RenderPageResult =
+  | { bitmap: 'rendered'; textLayer: 'rendered' | 'failed' | 'cancelled' | 'not_requested'; dimensions: { width: number; height: number }; errorCategory?: 'text_layer' }
+  | { bitmap: 'failed'; textLayer: 'not_started'; dimensions: null; errorCategory: 'bitmap'; message: string }
+  | { bitmap: 'cancelled'; textLayer: 'not_started' | 'cancelled'; dimensions: null; errorCategory: 'cancelled' };
 
 export interface RenderPageParams {
   pdfDoc: pdfjsLib.PDFDocumentProxy;
@@ -397,15 +410,17 @@ export interface RenderPageParams {
  */
 export async function renderPdfPageToCanvas(
   params: RenderPageParams
-): Promise<{ width: number; height: number } | null> {
+): Promise<RenderPageResult> {
   const { pdfDoc, pageNumber, canvas, scale, rotation = 0, textLayerContainer } = params;
 
   if (pageNumber < 1 || pageNumber > pdfDoc.numPages) {
-    return null;
+    return { bitmap: 'failed', textLayer: 'not_started', dimensions: null, errorCategory: 'bitmap', message: 'Page is outside the document.' };
   }
 
-  cancelCanvasRender(canvas);
-  const work: ActivePageWork = { renderTask: null, textLayer: null };
+  await cancelAndAwaitCanvasRender(canvas);
+  let resolveCompletion!: () => void;
+  const completion = new Promise<void>((resolve) => { resolveCompletion = resolve; });
+  const work: ActivePageWork = { renderTask: null, textLayer: null, completion };
   activeCanvasWork.set(canvas, work);
 
   try {
@@ -418,7 +433,7 @@ export async function renderPdfPageToCanvas(
     );
 
     const context = canvas.getContext('2d');
-    if (!context) return null;
+    if (!context) return { bitmap: 'failed', textLayer: 'not_started', dimensions: null, errorCategory: 'bitmap', message: 'Canvas is unavailable.' };
 
     canvas.width = Math.floor(viewport.width * outputScale);
     canvas.height = Math.floor(viewport.height * outputScale);
@@ -436,25 +451,39 @@ export async function renderPdfPageToCanvas(
     work.renderTask = renderTask;
     await renderTask.promise;
 
+    let textLayerStatus: 'rendered' | 'failed' | 'cancelled' | 'not_requested' = 'not_requested';
     if (textLayerContainer) {
-      textLayerContainer.replaceChildren();
-      const textLayer = new pdfjsLib.TextLayer({
-        textContentSource: page.streamTextContent(),
-        container: textLayerContainer,
-        viewport,
-      });
-      work.textLayer = textLayer;
-      await textLayer.render();
+      try {
+        textLayerContainer.replaceChildren();
+        const textLayer = new pdfjsLib.TextLayer({
+          textContentSource: page.streamTextContent(),
+          container: textLayerContainer,
+          viewport,
+        });
+        work.textLayer = textLayer;
+        await textLayer.render();
+        textLayerStatus = 'rendered';
+      } catch (err) {
+        const name = err instanceof Error ? err.name : '';
+        textLayerStatus = name === 'AbortException' || name === 'RenderingCancelledException' ? 'cancelled' : 'failed';
+        if (textLayerStatus === 'failed') console.error(`Failed to render text layer for page ${pageNumber}:`, err);
+      }
     }
 
-    return { width: viewport.width, height: viewport.height };
+    return {
+      bitmap: 'rendered',
+      textLayer: textLayerStatus,
+      dimensions: { width: viewport.width, height: viewport.height },
+      ...(textLayerStatus === 'failed' ? { errorCategory: 'text_layer' as const } : {}),
+    };
   } catch (err) {
     if (err instanceof Error && err.name === 'RenderingCancelledException') {
-      return null;
+      return { bitmap: 'cancelled', textLayer: 'not_started', dimensions: null, errorCategory: 'cancelled' };
     }
     console.error(`Failed to render page ${pageNumber}:`, err);
-    return null;
+    return { bitmap: 'failed', textLayer: 'not_started', dimensions: null, errorCategory: 'bitmap', message: err instanceof Error ? err.message : String(err) };
   } finally {
+    resolveCompletion();
     if (activeCanvasWork.get(canvas) === work) {
       activeCanvasWork.delete(canvas);
     }

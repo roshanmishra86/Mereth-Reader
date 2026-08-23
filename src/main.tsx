@@ -2,6 +2,7 @@ import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "r
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { perfMark } from "./perf/perfMark";
 import "./styles.css";
 import {
@@ -12,9 +13,10 @@ import {
   extractOrderedText,
   PageTextContent,
 } from "./utils/pdfUtils";
-import { DocumentRecord } from "./utils/pdfImport";
+import { createDocumentRecord, DocumentRecord, OwnershipMode } from "./utils/pdfImport";
 import {
   loadPdfDocument,
+  evictPdfDocument,
   extractPdfPageTexts,
   getPdfPageTextItems,
   getPdfPageBaseSize,
@@ -228,7 +230,13 @@ function App() {
   const [readingOnly, setReadingOnly] = useState(false);
 
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [removedDocuments, setRemovedDocuments] = useState<DocumentRecord[]>([]);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const [activeDocument, setActiveDocument] = useState<DocumentRecord | null>(null);
+  const documentsRef = useRef<DocumentRecord[]>([]);
+  const dbReadyRef = useRef(false);
+  const pendingLaunchRoutesRef = useRef<LaunchRoutePayload[]>([]);
+  useEffect(() => { documentsRef.current = documents; }, [documents]);
   const [activeSession, setActiveSession] = useState<ReadingSessionState | null>(null);
   const [collections, setCollections] = useState<CollectionItem[]>([]);
 
@@ -365,17 +373,19 @@ function App() {
   const [targetPage, setTargetPage] = useState<number | undefined>(undefined);
 
   const handleLaunchRoutePayload = (payload: LaunchRoutePayload) => {
+    if (!dbReadyRef.current) {
+      pendingLaunchRoutesRef.current.push(payload);
+      return;
+    }
     // Task 2.9 gate mark (dev-only) so boot failures are attributable.
     perfMark(`route.payload:${JSON.stringify(payload).slice(0, 160)}`);
     const docPath = payload.target_document_path ?? payload.targetDocumentPath;
     if (docPath) {
-      const existing = documents.find((d) => d.filepath === docPath || d.original_filepath === docPath);
+      const existing = documentsRef.current.find((d) => d.filepath === docPath || d.original_filepath === docPath);
       if (existing) {
         openDocument(existing);
       } else {
-        setInitialImportPath(docPath);
-        setPdfEntryMode('open');
-        setImportOpen(true);
+        void openPdfFromPath(docPath, 'open_in_place', 'explorer');
       }
       return;
     }
@@ -385,7 +395,7 @@ function App() {
       const action = resolveDeepLinkUiAction(dl);
       if (action.destination === "reader") {
         setDestination("reader");
-        const found = documents.find((d) => d.id === action.documentId);
+        const found = documentsRef.current.find((d) => d.id === action.documentId);
         if (found) {
           openDocument(found);
         }
@@ -555,13 +565,18 @@ function App() {
           // Fallback if settings table unpopulated
         }
 
-        const docs = await invoke<DocumentRecord[]>("db_get_documents");
+        const [docs, removed] = await Promise.all([
+          invoke<DocumentRecord[]>("db_get_documents"),
+          invoke<DocumentRecord[]>("db_get_removed_documents"),
+        ]);
         // Load the library list only — no document is auto-opened. The app
         // opens to the Library; a document's session is restored by
         // openDocument when the user explicitly opens it.
         if (docs && docs.length > 0) {
+          documentsRef.current = docs;
           setDocuments(docs);
         }
+        setRemovedDocuments(removed ?? []);
 
         const cols = await invoke<CollectionItem[]>("db_get_collections");
         if (cols && cols.length > 0) {
@@ -572,6 +587,9 @@ function App() {
         if (dbJobs && dbJobs.length > 0) {
           setJobs(dbJobs);
         }
+        dbReadyRef.current = true;
+        const pendingRoutes = pendingLaunchRoutesRef.current.splice(0);
+        for (const route of pendingRoutes) handleLaunchRoutePayload(route);
       } catch {
         // Dev preview environment fallback
       }
@@ -589,21 +607,16 @@ function App() {
     let unlisten: (() => void) | undefined;
     async function setupLaunchListener() {
       try {
-        const initialRoute = await invoke<LaunchRoutePayload>("cmd_get_initial_launch_route");
-        if (initialRoute && !initialRouteConsumedRef.current) {
-          initialRouteConsumedRef.current = true;
-          handleLaunchRoutePayload(initialRoute);
-        }
-      } catch {
-        // Dev environment fallback
-      }
-
-      try {
         unlisten = await listen<LaunchRoutePayload>("launch-route", (event) => {
           if (event.payload) {
             handleLaunchRoutePayload(event.payload);
           }
         });
+        const initialRoute = await invoke<LaunchRoutePayload>("cmd_get_initial_launch_route");
+        if (initialRoute && !initialRouteConsumedRef.current) {
+          initialRouteConsumedRef.current = true;
+          handleLaunchRoutePayload(initialRoute);
+        }
       } catch {
         // Dev environment fallback
       }
@@ -633,9 +646,11 @@ function App() {
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
         event.preventDefault();
-        setInitialImportPath(null);
-        setPdfEntryMode('open');
-        setImportOpen(true);
+        void requestOpenPdf();
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "w") {
+        event.preventDefault();
+        closeActiveDocument();
       }
       const target = event.target as HTMLElement;
       if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' && !target.isContentEditable) {
@@ -689,6 +704,18 @@ function App() {
     // newer document's session and the debounced save effect cannot persist one
     // document's page/zoom into another's session row.
     const openRequestId = ++openDocumentRequestId.current;
+    // Clear document-scoped state synchronously. No annotation action can see
+    // a version or selection inherited from the previous PDF while hydration
+    // for this document is in flight.
+    setCurrentVersionId(null);
+    setAnnotationsList([]);
+    setTrashedAnnotations([]);
+    setSelected("");
+    setVersionOffer(null);
+    setVersionStatus(null);
+    setReanchorDecision(null);
+    setReanchorSummary(null);
+    setOperationError(null);
     // Whether this open switches documents — only then is the previous
     // document's selection cleared (a deep link re-opening the SAME document
     // keeps its annotation selection).
@@ -825,6 +852,67 @@ function App() {
     // launch route, import-complete, deep link) keeps the jobs drawer honest
     // (FR-7.6) without duplicating the queue logic here.
   }
+
+  function closeActiveDocument() {
+    openDocumentRequestId.current += 1;
+    if (activeDocumentRef.current) evictPdfDocument(activeDocumentRef.current.id);
+    setActiveDocument(null);
+    setActiveSession(null);
+    setCurrentVersionId(null);
+    setAnnotationsList([]);
+    setTrashedAnnotations([]);
+    setSelected("");
+    setDestination("library");
+  }
+
+  async function openPdfFromPath(path: string, mode: OwnershipMode, source: 'picker' | 'explorer' | 'drop' | 'menu') {
+    setOperationError(null);
+    try {
+      const metadata = await invoke<{ filepath: string; filename: string; sha256_hash: string; file_size_bytes: number; page_count: number; exists: boolean }>(
+        'import_compute_file_metadata', { filepath: path }
+      );
+      if (!metadata.exists) throw new Error(`The PDF no longer exists at ${path}`);
+      const existing = documentsRef.current.find((doc) => doc.sha256_hash === metadata.sha256_hash);
+      if (existing) { await openDocument(existing); return; }
+      let filepath = metadata.filepath;
+      let originalFilepath: string | undefined;
+      if (mode === 'managed_library') {
+        filepath = await invoke<string>('import_copy_to_managed_library', { sourcePath: metadata.filepath });
+        originalFilepath = metadata.filepath;
+      }
+      const record = createDocumentRecord({
+        title: metadata.filename.replace(/\.pdf$/i, ''), filepath,
+        original_filepath: originalFilepath, sha256_hash: metadata.sha256_hash,
+        page_count: Math.max(1, metadata.page_count), ownership_mode: mode,
+      });
+      await invoke('db_add_document', { doc: record });
+      setDocuments((current) => [record, ...current.filter((doc) => doc.id !== record.id)]);
+      await openDocument(record);
+      perfMark(`open.source:${source}`);
+    } catch (error) {
+      setOperationError(`Could not open PDF: ${error instanceof Error ? error.message : String(error)}`);
+      setDestination('library');
+    }
+  }
+
+  async function requestOpenPdf() {
+    try {
+      const selected = await openFileDialog({ multiple: false, directory: false, filters: [{ name: 'PDF Document', extensions: ['pdf'] }] });
+      if (typeof selected === 'string') await openPdfFromPath(selected, 'open_in_place', 'picker');
+    } catch (error) {
+      setOperationError(`The file picker could not be opened: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ command: 'open_pdf' | 'import_pdf_copy' | 'close_document' }>('app-menu-command', ({ payload }) => {
+      if (payload.command === 'open_pdf') void requestOpenPdf();
+      else if (payload.command === 'import_pdf_copy') { setInitialImportPath(null); setPdfEntryMode('import'); setImportOpen(true); }
+      else closeActiveDocument();
+    }).then((stop) => { unlisten = stop; }).catch(() => undefined);
+    return () => unlisten?.();
+  });
 
   // Real extraction progress reported by the reader's background pass. The
   // manager marks the job completed at 100%; completion is persisted.
@@ -1141,8 +1229,7 @@ function App() {
       const filtered = prev.filter((d) => d.id !== newDoc.id);
       return [newDoc, ...filtered];
     });
-    setActiveDocument(newDoc);
-    setDestination("reader");
+    void openDocument(newDoc);
     setImportOpen(false);
   }
 
@@ -1171,17 +1258,44 @@ function App() {
 
   async function handleDeleteRecord(docId: string) {
     try {
-      await invoke('db_delete_document', { id: docId });
-    } catch {
-      // Dev preview environment fallback — proceed with UI removal
+      await invoke('db_remove_document', { id: docId });
+    } catch (error) {
+      setOperationError(`Could not remove this document: ${error instanceof Error ? error.message : String(error)}`);
+      return;
     }
+    const removed = documentsRef.current.find((doc) => doc.id === docId);
+    if (removed) setRemovedDocuments((items) => [{ ...removed, removed_at: new Date().toISOString() }, ...items]);
     setDocuments((prev) => prev.filter((d) => d.id !== docId));
     if (activeDocument?.id === docId) {
-      const remaining = documents.filter((d) => d.id !== docId);
-      setActiveDocument(remaining.length > 0 ? remaining[0] : null);
-      if (remaining.length === 0) {
-        setDestination("library");
-      }
+      evictPdfDocument(activeDocument.id);
+      closeActiveDocument();
+    }
+  }
+
+  async function handleRestoreDocument(docId: string) {
+    setOperationError(null);
+    try {
+      await invoke('db_restore_document', { id: docId });
+      const restored = removedDocuments.find((doc) => doc.id === docId);
+      if (restored) setDocuments((items) => [{ ...restored, removed_at: null }, ...items]);
+      setRemovedDocuments((items) => items.filter((doc) => doc.id !== docId));
+    } catch (error) {
+      setOperationError(`Could not restore this document: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function handlePurgeDocument(doc: DocumentRecord) {
+    const warning = doc.ownership_mode === 'managed_library'
+      ? 'Mereth’s private PDF copy and all linked notes, annotations, and review data will be deleted. The original source file will not be touched.'
+      : 'All linked Mereth notes, annotations, and review data will be deleted. The source PDF will not be touched.';
+    if (!window.confirm(`Permanently delete “${doc.title}”?\n\n${warning}\n\nThis cannot be undone.`)) return;
+    setOperationError(null);
+    try {
+      await invoke('db_purge_document', { id: doc.id });
+      setRemovedDocuments((items) => items.filter((item) => item.id !== doc.id));
+      evictPdfDocument(doc.id);
+    } catch (error) {
+      setOperationError(`Could not permanently delete this document: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -1228,6 +1342,7 @@ function App() {
       )}
 
       <section className="workspace">
+        {operationError && <div className="banner warning app-operation-error" role="alert">{operationError}<button className="icon-button" onClick={() => setOperationError(null)} aria-label="Dismiss error">✕</button></div>}
         {destination === "reader" && (
           <>
             {!activeDocument ? (
@@ -1235,7 +1350,7 @@ function App() {
                 viewType="library"
                 customTitle="No document open"
                 customDescription="Open a PDF from your library or from disk to start reading. Nothing is bundled or fabricated — your documents are the content."
-                onPrimaryAction={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
+                onPrimaryAction={() => void requestOpenPdf()}
               />
             ) : activeDocument.is_missing ? (
               <MissingFileBanner
@@ -1311,16 +1426,19 @@ function App() {
         {destination === "library" && (
           <LibraryView
             documents={documents}
+            removedDocuments={removedDocuments}
             collections={collections}
             activeJobsCount={activeJobsCount}
             onOpenDocument={openDocument}
-            onOpenPdf={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
+            onOpenPdf={() => void requestOpenPdf()}
             onOpenImportModal={() => { setInitialImportPath(null); setPdfEntryMode('import'); setImportOpen(true); }}
             onOpenJobQueue={() => setJobDrawerOpen(true)}
             onToggleFavourite={handleToggleFavourite}
             onToggleArchive={handleToggleArchive}
             onUpdateDocument={handleUpdateDocument}
             onUpdateCollections={handleUpdateCollections}
+            onRestoreDocument={(id) => void handleRestoreDocument(id)}
+            onPurgeDocument={(doc) => void handlePurgeDocument(doc)}
           />
         )}
         {destination === "notes" && (
@@ -1514,6 +1632,7 @@ function Reader(props: ReaderProps) {
   const [pdfLoadFailed, setPdfLoadFailed] = useState(false);
   const [pageTexts, setPageTexts] = useState<PageTextContent[]>([]);
   const [extractionStatus, setExtractionStatus] = useState<'idle' | 'running' | 'done' | 'cancelled'>('idle');
+  const [firstPagePainted, setFirstPagePainted] = useState(false);
   const extractionAbortRef = useRef<AbortController | null>(null);
 
   // Viewport size + the measured natural size of the current page drive
@@ -1620,12 +1739,13 @@ function Reader(props: ReaderProps) {
     setPdfLoadFailed(false);
     setPageTexts([]);
     setExtractionStatus('idle');
+    setFirstPagePainted(false);
     setCurrentPageSize(DEFAULT_PAGE_SIZE);
     extractionAbortRef.current?.abort();
 
     // Task 2.9 in-app gate mark: dev-only no-op unless VITE_PERF_MEASURE=1.
     perfMark(`load.start:${props.activeDocument.filepath.split("/").pop() ?? "unknown"}`);
-    loadPdfDocument(props.activeDocument.filepath).then((info) => {
+    loadPdfDocument(props.activeDocument.id).then((info) => {
       if (!isMounted) return;
       if (info) {
         setLoadedPdf(info);
@@ -1645,7 +1765,7 @@ function Reader(props: ReaderProps) {
   // prioritizes the reading position, yields regularly, and reports real
   // progress to the job record shown in the indexing banner.
   useEffect(() => {
-    if (!loadedPdf || extractionStatus !== 'idle') return;
+    if (!loadedPdf || !firstPagePainted || extractionStatus !== 'idle') return;
 
     const controller = new AbortController();
     extractionAbortRef.current = controller;
@@ -1671,13 +1791,13 @@ function Reader(props: ReaderProps) {
         setExtractionStatus('cancelled');
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedPdf, extractionStatus]);
+  }, [loadedPdf, firstPagePainted, extractionStatus]);
 
   // Task 3.6 (FR-9.9): background scan for embedded (PDF-born) annotations.
   // Batched and cancelled on document change; pages near the reading start
   // are prioritized first (same window the text extractor uses).
   useEffect(() => {
-    if (!loadedPdf || !props.activeDocument) return;
+    if (!loadedPdf || !firstPagePainted || !props.activeDocument) return;
     if (embeddedScanRef.current) embeddedScanRef.current.cancelled = true;
     setEmbeddedByPage(new Map());
     setEmbeddedImported(new Set());
@@ -1714,7 +1834,7 @@ function Reader(props: ReaderProps) {
     return () => {
       scan.cancelled = true;
     };
-  }, [loadedPdf?.doc, loadedPdf?.numPages, props.activeDocument?.id]);
+  }, [loadedPdf?.doc, loadedPdf?.numPages, firstPagePainted, props.activeDocument?.id]);
 
   // Job drawer cancel/restart drives the extraction abort controller.
   const activeJobStatus = props.activeDocumentJob?.status;
@@ -2689,6 +2809,7 @@ function Reader(props: ReaderProps) {
                 onViewportChange={handleViewportChange}
                 onPageSizeMeasured={handlePageSizeMeasured}
                 onScrollPositionChange={handleScrollPositionChange}
+                onFirstPagePaint={() => setFirstPagePainted(true)}
                 onCopySelection={handleCopySelection}
                 annotationsByPage={annotationsByPage}
                 annotationAssets={annotationAssets}

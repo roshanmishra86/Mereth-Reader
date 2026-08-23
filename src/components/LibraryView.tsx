@@ -15,6 +15,7 @@ import { EmptyState } from './EmptyState';
 
 interface LibraryViewProps {
   documents: DocumentRecord[];
+  removedDocuments: DocumentRecord[];
   collections: CollectionItem[];
   activeJobsCount: number;
   onOpenDocument: (doc: DocumentRecord) => void;
@@ -25,10 +26,13 @@ interface LibraryViewProps {
   onToggleArchive: (docId: string, currentStatus: boolean) => void;
   onUpdateDocument: (doc: DocumentRecord) => void;
   onUpdateCollections: (collections: CollectionItem[]) => void;
+  onRestoreDocument: (docId: string) => void;
+  onPurgeDocument: (doc: DocumentRecord) => void;
 }
 
 export function LibraryView({
   documents,
+  removedDocuments,
   collections,
   activeJobsCount,
   onOpenDocument,
@@ -39,6 +43,8 @@ export function LibraryView({
   onToggleArchive,
   onUpdateDocument,
   onUpdateCollections,
+  onRestoreDocument,
+  onPurgeDocument,
 }: LibraryViewProps) {
   const [filterCategory, setFilterCategory] = useState<LibraryFilterCategory>('all');
   const [selectedCollection, setSelectedCollection] = useState<string | undefined>(undefined);
@@ -51,17 +57,18 @@ export function LibraryView({
   const [editingDoc, setEditingDoc] = useState<DocumentRecord | null>(null);
   const [collectionManagerOpen, setCollectionManagerOpen] = useState(false);
 
+  const allRecords = useMemo(() => [...documents, ...removedDocuments], [documents, removedDocuments]);
   const availableTags = useMemo(() => extractAllUniqueTags(documents), [documents]);
 
   const filteredDocs = useMemo(() => {
-    const filtered = filterDocuments(documents, {
+    const filtered = filterDocuments(allRecords, {
       category: filterCategory,
       collectionName: selectedCollection,
       tagName: selectedTag,
       searchQuery,
     });
     return sortDocuments(filtered, sortBy, sortOrder);
-  }, [documents, filterCategory, selectedCollection, selectedTag, searchQuery, sortBy, sortOrder]);
+  }, [allRecords, filterCategory, selectedCollection, selectedTag, searchQuery, sortBy, sortOrder]);
 
   const handleSelectCategory = (cat: LibraryFilterCategory) => {
     setFilterCategory(cat);
@@ -117,6 +124,11 @@ export function LibraryView({
           >
             <span>📦 Archive</span>
             <span className="badge">{documents.filter((d) => d.is_archived).length}</span>
+          </button>
+
+          <button className={`sidebar-nav-item ${filterCategory === 'recently_removed' ? 'active' : ''}`} onClick={() => handleSelectCategory('recently_removed')}>
+            <span>🗑 Recently Removed</span>
+            <span className="badge">{removedDocuments.length}</span>
           </button>
         </div>
 
@@ -193,10 +205,11 @@ export function LibraryView({
               {filterCategory === 'favourites' && '⭐ Favourite Documents'}
               {filterCategory === 'recents' && '🕒 Recently Opened'}
               {filterCategory === 'archive' && '📦 Archived Documents'}
+              {filterCategory === 'recently_removed' && '🗑 Recently Removed'}
               {filterCategory === 'collection' && `📁 Collection: ${selectedCollection ?? ''}`}
               {filterCategory === 'tag' && `# Tag: ${selectedTag ?? ''}`}
             </h2>
-            <span className="dimmed micro">Showing {filteredDocs.length} of {documents.length} records</span>
+            <span className="dimmed micro">Showing {filteredDocs.length} of {allRecords.length} records</span>
           </div>
 
           <div className="header-actions">
@@ -286,7 +299,7 @@ export function LibraryView({
                 <div className="card-top-row">
                   <span className="doc-type-icon">📄</span>
                   <div className="card-header-text">
-                    <h3 className="doc-title" title={doc.title} onClick={() => onOpenDocument(doc)}>
+                    <h3 className="doc-title" title={doc.title} onClick={() => !doc.removed_at && onOpenDocument(doc)}>
                       {doc.title}
                     </h3>
                     {doc.author && <span className="doc-author">{doc.author}</span>}
@@ -325,6 +338,10 @@ export function LibraryView({
                   </span>
 
                   <div className="card-action-buttons">
+                    {doc.removed_at ? <>
+                      <button className="button secondary micro" onClick={() => onRestoreDocument(doc.id)}>Restore</button>
+                      <button className="button primary micro" onClick={() => onPurgeDocument(doc)}>Permanently Delete</button>
+                    </> : <>
                     <button
                       className="button secondary micro"
                       onClick={() => onToggleArchive(doc.id, Boolean(doc.is_archived))}
@@ -347,6 +364,7 @@ export function LibraryView({
                     >
                       Read
                     </button>
+                    </>}
                   </div>
                 </div>
               </div>

@@ -14,7 +14,6 @@ import {
   validatePdfFilePath,
 } from '../utils/pdfImport';
 
-import { loadPdfDocument } from '../utils/pdfViewer';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface ImportModalProps {
@@ -136,23 +135,12 @@ export function ImportModal({
         return;
       }
 
-      // Authoritative PDF.js page count detection for compressed PDFs
-      let authoritativePageCount = metadata.page_count;
-      try {
-        const pdfInfo = await loadPdfDocument(metadata.filepath);
-        if (pdfInfo && pdfInfo.numPages > 0) {
-          authoritativePageCount = pdfInfo.numPages;
-        }
-      } catch {
-        // Fall back to backend metadata page count
-      }
-
       setCandidate({
         filepath: metadata.filepath,
         filename: metadata.filename,
         sha256_hash: metadata.sha256_hash,
         file_size_bytes: metadata.file_size_bytes,
-        page_count: authoritativePageCount,
+        page_count: metadata.page_count,
         exists: metadata.exists,
       });
 
@@ -170,7 +158,7 @@ export function ImportModal({
           filename: metadata.filename,
           sha256_hash: metadata.sha256_hash,
           file_size_bytes: metadata.file_size_bytes,
-          page_count: authoritativePageCount,
+          page_count: metadata.page_count,
           exists: metadata.exists,
         }, 'open_in_place');
       }

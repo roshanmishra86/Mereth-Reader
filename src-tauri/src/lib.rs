@@ -24,6 +24,9 @@ use std::path::Path;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
+#[derive(Clone, serde::Serialize)]
+struct AppMenuCommandPayload { command: &'static str }
+
 pub struct AppState {
   pub db: Mutex<Option<Database>>,
 }
@@ -151,6 +154,66 @@ fn db_delete_document(id: String, state: State<'_, AppState>) -> Result<(), Stri
   let lock = state.db.lock().unwrap();
   let db = lock.as_ref().ok_or("Database not initialized")?;
   db.delete_document(&id)
+}
+
+#[tauri::command]
+fn db_remove_document(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.remove_document(&id)
+}
+
+#[tauri::command]
+fn db_restore_document(id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.restore_document(&id)
+}
+
+#[tauri::command]
+fn db_get_removed_documents(state: State<'_, AppState>) -> Result<Vec<Document>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_removed_documents()
+}
+
+#[tauri::command]
+fn db_purge_document(app_handle: tauri::AppHandle, id: String, state: State<'_, AppState>) -> Result<(), String> {
+  let app_dir = app_handle.path().app_data_dir().map_err(|e| e.to_string())?;
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  let doc = db.get_document_by_id(&id)?.ok_or("Document not found")?;
+
+  // Only Mereth-owned copies may be removed from disk. Canonical confinement
+  // prevents forged database paths and traversal from escaping documents/.
+  let staged = if doc.ownership_mode == "managed_library" {
+    let managed_dir = app_dir.join("documents");
+    let canonical_dir = std::fs::canonicalize(&managed_dir)
+      .map_err(|e| format!("Managed documents directory is unavailable: {e}"))?;
+    let canonical_file = std::fs::canonicalize(&doc.filepath)
+      .map_err(|e| format!("Managed PDF is unavailable: {e}"))?;
+    if !canonical_file.starts_with(&canonical_dir) || canonical_file.parent() != Some(canonical_dir.as_path()) {
+      return Err("Refusing to delete a managed PDF outside Mereth's private documents directory".into());
+    }
+    let staged_path = canonical_dir.join(format!(".purging-{}.pdf", uuid::Uuid::new_v4()));
+    std::fs::rename(&canonical_file, &staged_path)
+      .map_err(|e| format!("Could not stage managed PDF for deletion: {e}"))?;
+    Some((canonical_file, staged_path))
+  } else {
+    None
+  };
+
+  if let Err(error) = db.delete_document(&id) {
+    if let Some((original, staged_path)) = &staged {
+      let _ = std::fs::rename(staged_path, original);
+    }
+    return Err(error);
+  }
+  if let Some((_original, staged_path)) = staged {
+    std::fs::remove_file(staged_path)
+      .map_err(|e| format!("Library data was removed, but cleanup of the private PDF copy failed: {e}"))?;
+  }
+  Ok(())
 }
 
 #[tauri::command]
@@ -467,11 +530,13 @@ fn verify_document_file_exists(document_id: String, state: State<'_, AppState>) 
 }
 
 #[tauri::command]
-fn db_get_pdf_bytes(filepath: String) -> Result<tauri::ipc::Response, String> {
-  validate_pdf_filepath_basic(&filepath)?;
-  let p = Path::new(&filepath);
+fn db_get_pdf_bytes(document_id: String, state: State<'_, AppState>) -> Result<tauri::ipc::Response, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  let doc = db.get_document_by_id(&document_id)?.ok_or("Document not found")?;
+  let p = Path::new(&doc.filepath);
   if !p.exists() {
-    return Err(format!("File not found: {filepath}"));
+    return Err(format!("File not found: {}", doc.filepath));
   }
   // Returned as a raw binary IPC payload (application/octet-stream), which the
   // webview receives as an ArrayBuffer. Returning Vec<u8> directly would take
@@ -898,6 +963,10 @@ pub fn run() {
       db_delete_collection,
       db_update_document_filepath,
       db_delete_document,
+      db_remove_document,
+      db_restore_document,
+      db_get_removed_documents,
+      db_purge_document,
       db_get_pages,
       db_add_job,
       db_get_jobs,
@@ -973,7 +1042,29 @@ pub fn run() {
       perf::perf_rss_snapshot,
       #[cfg(debug_assertions)]
       perf::perf_write_report,
-    ]);
+    ])
+    .menu(|app| {
+      use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+      let open = MenuItem::with_id(app, "open_pdf", "Open PDF…", true, Some("Ctrl+O"))?;
+      let import = MenuItem::with_id(app, "import_pdf_copy", "Import a Copy…", true, None::<&str>)?;
+      let close = MenuItem::with_id(app, "close_document", "Close PDF", true, Some("Ctrl+W"))?;
+      let separator = PredefinedMenuItem::separator(app)?;
+      let exit = MenuItem::with_id(app, "exit_mereth", "Exit Mereth Reader", true, None::<&str>)?;
+      let file = Submenu::with_items(app, "File", true, &[&open, &import, &close, &separator, &exit])?;
+      Menu::with_items(app, &[&file])
+    })
+    .on_menu_event(|app, event| {
+      let command = event.id().0.as_str();
+      if command == "exit_mereth" {
+        app.exit(0);
+      } else if matches!(command, "open_pdf" | "import_pdf_copy" | "close_document") {
+        let _ = app.emit("app-menu-command", AppMenuCommandPayload { command: match command {
+          "open_pdf" => "open_pdf",
+          "import_pdf_copy" => "import_pdf_copy",
+          _ => "close_document",
+        }});
+      }
+    });
 
   // OQ-18 (single-instance window): enforce one application instance and route
   // launch arguments — e.g. "Open with" from the OS, or a second invocation —

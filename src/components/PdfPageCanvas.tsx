@@ -54,6 +54,8 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
   const textLayerRef = useRef<HTMLDivElement | null>(null);
   const [renderedSize, setRenderedSize] = useState<PageSize | null>(null);
   const [failed, setFailed] = useState(false);
+  const [textLayerFailed, setTextLayerFailed] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -61,6 +63,7 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
     if (!canvas) return;
     let isMounted = true;
     setFailed(false);
+    setTextLayerFailed(false);
 
     renderPdfPageToCanvas({
       pdfDoc: doc,
@@ -71,10 +74,11 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
       textLayerContainer: textLayer ?? undefined,
     }).then((result) => {
       if (!isMounted) return;
-      if (result) {
-        setRenderedSize(result);
-        onRendered?.(pageNumber, result);
-      } else {
+      if (result.bitmap === 'rendered') {
+        setRenderedSize(result.dimensions);
+        setTextLayerFailed(result.textLayer === 'failed');
+        onRendered?.(pageNumber, result.dimensions);
+      } else if (result.bitmap === 'failed') {
         setFailed(true);
       }
     });
@@ -83,7 +87,7 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
       isMounted = false;
       cancelCanvasRender(canvas);
     };
-  }, [doc, pageNumber, scale, rotation, onRendered]);
+  }, [doc, pageNumber, scale, rotation, onRendered, retryKey]);
 
   // --scale-factor feeds --total-scale-factor, which the text layer's span
   // sizing and the layer's own dimensions resolve against (pdf.js v6
@@ -131,7 +135,13 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
       )}
       {failed && (
         <div className="pdf-page-error" role="alert">
-          Page {pageNumber} could not be rendered.
+          <span>Page {pageNumber} could not be rendered.</span>
+          <button className="button secondary micro" onClick={() => setRetryKey((key) => key + 1)}>Retry page</button>
+        </div>
+      )}
+      {textLayerFailed && !failed && (
+        <div className="pdf-text-layer-warning" role="status">
+          Selectable text is temporarily unavailable on page {pageNumber}. The page and area annotations still work.
         </div>
       )}
     </div>

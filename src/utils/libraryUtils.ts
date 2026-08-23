@@ -6,7 +6,7 @@
 
 import { DocumentRecord } from './pdfImport';
 
-export type LibraryFilterCategory = 'all' | 'favourites' | 'recents' | 'archive' | 'collection' | 'tag';
+export type LibraryFilterCategory = 'all' | 'favourites' | 'recents' | 'archive' | 'recently_removed' | 'collection' | 'tag';
 export type LibrarySortField = 'title' | 'date_added' | 'last_opened' | 'page_count';
 export type LibrarySortOrder = 'asc' | 'desc';
 
@@ -50,6 +50,8 @@ export function filterDocuments(
 
     // 2. Category Filter
     switch (options.category) {
+      case 'recently_removed':
+        return Boolean(doc.removed_at);
       case 'favourites':
         return Boolean(doc.is_favourite) && !doc.is_archived;
 
@@ -72,7 +74,7 @@ export function filterDocuments(
 
       case 'all':
       default:
-        return !doc.is_archived;
+        return !doc.is_archived && !doc.removed_at;
     }
   });
 }
