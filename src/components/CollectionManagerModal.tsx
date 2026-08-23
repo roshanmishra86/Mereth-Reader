@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { CollectionItem, createCollection } from '../utils/libraryUtils';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface CollectionManagerModalProps {
   isOpen: boolean;
@@ -77,11 +78,20 @@ export function CollectionManagerModal({
     onUpdateCollections(filtered);
   };
 
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
+
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet collection-manager-sheet" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={trapRef}
+        className="sheet collection-manager-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="collection-manager-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="sheet-header">
-          <h3>Collection Manager (FR-7.5)</h3>
+          <h3 id="collection-manager-title">Collection Manager (FR-7.5)</h3>
           <button className="icon-button" onClick={onClose} aria-label="Close manager">✕</button>
         </header>
 

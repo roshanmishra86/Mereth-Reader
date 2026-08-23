@@ -1,6 +1,8 @@
 import React from 'react';
 import { DocumentRecord } from '../utils/pdfImport';
 import { DuplicateConfirmationState, DuplicateResolutionAction } from '../utils/duplicateCheck';
+import { useFocusTrap } from '../hooks/useFocusTrap';
+import { evaluateResilientState } from '../utils/resilientStateMatrix';
 
 interface DuplicateConfirmModalProps {
   isOpen: boolean;
@@ -13,15 +15,25 @@ export function DuplicateConfirmModal({
   duplicateState,
   onResolve,
 }: DuplicateConfirmModalProps) {
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose: () => onResolve('cancel') });
+
   if (!isOpen || !duplicateState || !duplicateState.hasDuplicate) return null;
 
   const existingDoc = duplicateState.existingDocument;
+  const resilientState = evaluateResilientState({ duplicateDetected: true });
 
   return (
     <div className="sheet-backdrop" onClick={() => onResolve('cancel')}>
-      <div className="sheet duplicate-confirm-sheet" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={trapRef}
+        className="sheet duplicate-confirm-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="duplicate-dialog-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="sheet-header alert-header">
-          <h3>⚠️ Duplicate Document Detected (FR-7.7)</h3>
+          <h3 id="duplicate-dialog-title">⚠️ {resilientState.title} (FR-7.7)</h3>
           <button
             className="icon-button"
             onClick={() => onResolve('cancel')}
@@ -33,7 +45,7 @@ export function DuplicateConfirmModal({
 
         <div className="sheet-body">
           <p>
-            The PDF file you are trying to import has an identical SHA-256 fingerprint matching a document already present in your library:
+            {resilientState.description} It matches a document already present in your library:
           </p>
 
           {existingDoc && (

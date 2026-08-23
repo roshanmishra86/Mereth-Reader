@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 export type ExportFormat = 'markdown' | 'json_backup';
 export interface ExportModalProps {
@@ -12,6 +13,7 @@ export function ExportModal({ isOpen, onClose, onExport }: ExportModalProps) {
   const [destination, setDestination] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
 
   useEffect(() => { if (isOpen) { setFormat('markdown'); setDestination(''); setBusy(false); setError(null); } }, [isOpen]);
   if (!isOpen) return null;
@@ -24,7 +26,7 @@ export function ExportModal({ isOpen, onClose, onExport }: ExportModalProps) {
   };
 
   return <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
-    <div className="modal" style={{ width: 'min(560px, 100%)' }}>
+    <div ref={trapRef} className="modal" style={{ width: 'min(560px, 100%)' }}>
       <button className="modal-close" type="button" onClick={onClose} aria-label="Close export dialog">x</button>
       <span className="eyebrow">FR-14 · portable output</span>
       <h2 id="export-modal-title">Export your work</h2>

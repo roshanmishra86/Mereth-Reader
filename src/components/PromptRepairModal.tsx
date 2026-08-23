@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ReviewPromptRecord } from '../utils/promptTypes';
 import { buildPromptRepair, getPromptRepairOptions, type PromptRepairAction } from '../utils/promptRepair';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface PromptRepairModalProps {
   isOpen: boolean;
@@ -14,6 +15,7 @@ export function PromptRepairModal({ isOpen, prompt, failureCount, onClose, onRep
   const [action, setAction] = useState<PromptRepairAction>('add_cue');
   const [input, setInput] = useState('');
   const [secondInput, setSecondInput] = useState('');
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
   const options = getPromptRepairOptions(failureCount);
   if (!isOpen || options.length === 0) return null;
 
@@ -29,7 +31,7 @@ export function PromptRepairModal({ isOpen, prompt, failureCount, onClose, onRep
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="prompt-repair-title">
-      <div className="modal prompt-modal">
+      <div ref={trapRef} className="modal prompt-modal">
         <button className="modal-close" type="button" onClick={onClose} aria-label="Close prompt repair">x</button>
         <span className="eyebrow">FR-11.12 repeated failure</span>
         <h2 id="prompt-repair-title">Repair this prompt</h2>

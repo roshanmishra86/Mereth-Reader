@@ -18,6 +18,7 @@ import {
   promptHasSource,
 } from '../utils/promptTypes';
 import { createReviewPrompt, updateReviewPrompt } from '../utils/promptsIo';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 export interface PromptEditorModalProps {
   isOpen: boolean;
@@ -125,9 +126,11 @@ export const PromptEditorModal: React.FC<PromptEditorModalProps> = ({
     }
   };
 
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
+
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-title">
-      <div className="modal-card prompt-editor-modal" style={{ maxWidth: '600px', width: '90%' }}>
+      <div ref={trapRef} className="modal-card prompt-editor-modal" style={{ maxWidth: '600px', width: '90%' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
           <h2 id="prompt-modal-title" style={{ margin: 0, fontSize: '16px' }}>
             {initialPrompt?.id ? 'Edit Review Prompt' : 'Remember: Author Prompt'}

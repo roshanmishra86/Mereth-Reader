@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { validatePdfPassword } from '../utils/recoveryUtils';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface PasswordDialogProps {
   isOpen: boolean;
@@ -21,6 +22,7 @@ export function PasswordDialog({
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose: onCancel });
 
   if (!isOpen) return null;
 
@@ -37,7 +39,7 @@ export function PasswordDialog({
 
   return (
     <div className="sheet-backdrop" role="presentation">
-      <div className="sheet password-dialog-sheet" role="dialog" aria-modal="true" aria-labelledby="password-dialog-title">
+      <div ref={trapRef} className="sheet password-dialog-sheet" role="dialog" aria-modal="true" aria-labelledby="password-dialog-title">
         <header className="sheet-header">
           <h3 id="password-dialog-title">🔒 Password-Protected PDF</h3>
           <button className="icon-button" onClick={onCancel} aria-label="Cancel and close">

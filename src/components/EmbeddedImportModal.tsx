@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 import {
   EmbeddedImportPreview,
   countImportPreviews,
@@ -62,20 +63,21 @@ export function EmbeddedImportModal({
 
   const importable = previews.filter((p) => p.mappedType !== null && !importedSourceIds.has(p.item.sourceId));
   const selectedCount = importable.filter((p) => selected.has(p.item.sourceId)).length;
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen: true, onClose: onCancel });
 
   return (
     <div
       className="modal-backdrop embedded-import-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Import embedded annotations"
+      aria-labelledby="embedded-import-title"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget && !busy) onCancel();
       }}
     >
-      <div className="modal embedded-import-modal">
+      <div ref={trapRef} className="modal embedded-import-modal">
         <button className="modal-close" onClick={onCancel} disabled={busy} aria-label="Close">✕</button>
-        <h2>Import embedded annotations</h2>
+        <h2 id="embedded-import-title">Import embedded annotations</h2>
         <p>
           This PDF carries {counts.newCount + counts.duplicateCount} annotati{counts.newCount + counts.duplicateCount === 1 ? 'on' : 'ons'} it
           was authored with{counts.newCount + counts.duplicateCount === 1 ? '' : 's'}. Importing copies them into editable Reader
