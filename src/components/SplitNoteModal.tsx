@@ -6,6 +6,7 @@ import React, { useState, useMemo } from 'react';
 import type { NoteRecord } from '../utils/notesTypes';
 import { validateConceptTitleGuidance } from '../utils/notesTypes';
 import { splitNoteContent, SplitNoteResult } from '../utils/noteSplit';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface SplitNoteModalProps {
   isOpen: boolean;
@@ -24,6 +25,7 @@ export const SplitNoteModal: React.FC<SplitNoteModalProps> = ({
 }) => {
   const [newTitle, setNewTitle] = useState('');
   const [additionalProse, setAdditionalProse] = useState('');
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
 
   const guidance = useMemo(() => validateConceptTitleGuidance(newTitle), [newTitle]);
 
@@ -45,7 +47,7 @@ export const SplitNoteModal: React.FC<SplitNoteModalProps> = ({
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="split-modal-title">
-      <div className="modal-card split-note-modal">
+      <div ref={trapRef} className="modal-card split-note-modal">
         <h2 id="split-modal-title">Split into Atomic Concept Note (FR-10.6)</h2>
         <p className="modal-description">
           The selected passage will be extracted into a new concept note, and a forward link will be inserted in this note.

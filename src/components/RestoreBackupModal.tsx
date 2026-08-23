@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { previewBackupRestore } from '../utils/backupRestore';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface RestoreBackupModalProps {
   isOpen: boolean;
@@ -10,6 +11,7 @@ interface RestoreBackupModalProps {
 
 export function RestoreBackupModal({ isOpen, backupJson, onClose, onRestore }: RestoreBackupModalProps) {
   const [busy, setBusy] = useState(false);
+  const trapRef = useFocusTrap<HTMLElement>({ isOpen, onClose });
   const preview = useMemo(() => {
     try {
       return previewBackupRestore(JSON.parse(backupJson));
@@ -32,7 +34,7 @@ export function RestoreBackupModal({ isOpen, backupJson, onClose, onRestore }: R
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="restore-backup-title">
-      <section className="modal prompt-modal">
+      <section ref={trapRef} className="modal prompt-modal">
         <button className="modal-close" type="button" onClick={onClose} aria-label="Close restore dialog">x</button>
         <span className="eyebrow">Backup restore</span>
         <h2 id="restore-backup-title">Restore into a clean profile</h2>

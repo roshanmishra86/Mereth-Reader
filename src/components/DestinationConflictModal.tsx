@@ -1,4 +1,5 @@
 import { suggestCopyPath } from '../utils/destinationSafety';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface DestinationConflictModalProps {
   isOpen: boolean;
@@ -17,10 +18,11 @@ export function DestinationConflictModal({
   onRename,
   onCancel,
 }: DestinationConflictModalProps) {
+  const trapRef = useFocusTrap<HTMLElement>({ isOpen, onClose: onCancel });
   if (!isOpen) return null;
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="destination-conflict-title">
-      <section className="modal prompt-modal">
+      <section ref={trapRef} className="modal prompt-modal">
         <button className="modal-close" type="button" onClick={onCancel} aria-label="Close destination conflict">x</button>
         <span className="eyebrow">Export conflict</span>
         <h2 id="destination-conflict-title">Destination already exists</h2>

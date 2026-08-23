@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useId } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { interceptExternalLink } from '../utils/securityBoundary';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 export interface ExternalLinkModalProps {
   url: string | null;
@@ -12,6 +13,7 @@ export function ExternalLinkModal({ url, isOpen, onClose }: ExternalLinkModalPro
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
   const [error, setError] = useState<string | null>(null);
   const openButtonRef = useRef<HTMLButtonElement | null>(null);
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose, initialFocusRef: openButtonRef });
   const titleId = useId();
   const descId = useId();
 
@@ -73,7 +75,7 @@ export function ExternalLinkModal({ url, isOpen, onClose }: ExternalLinkModalPro
       aria-describedby={descId}
       onKeyDown={handleKeyDown}
     >
-      <div className="modal" style={{ maxWidth: '560px' }}>
+      <div ref={trapRef} className="modal" style={{ maxWidth: '560px' }}>
         <button
           className="modal-close"
           onClick={onClose}

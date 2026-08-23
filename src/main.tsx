@@ -1206,6 +1206,8 @@ function App() {
               key={id}
               onClick={() => setDestination(id)}
               title={label}
+              aria-label={label}
+              aria-current={destination === id ? "page" : undefined}
             >
               <Glyph>{glyph}</Glyph>
               <span>{label}</span>
@@ -1216,6 +1218,8 @@ function App() {
             className={destination === "settings" ? "rail-item active rail-bottom" : "rail-item rail-bottom"}
             onClick={() => setDestination("settings")}
             title="Settings"
+            aria-label="Settings"
+            aria-current={destination === "settings" ? "page" : undefined}
           >
             <Glyph>☷</Glyph>
             <span>Settings</span>
@@ -3400,47 +3404,75 @@ function SettingsView({
 
   return (
     <section className="settings-view">
-      <aside>
-        <b
+      <aside role="tablist" aria-label="Settings sections">
+        <button
+          type="button"
+          role="tab"
+          id="tab-privacy"
+          aria-selected={settingTab === 'privacy'}
+          aria-controls="settings-tabpanel"
           className={settingTab === 'privacy' ? 'selected-setting' : ''}
           onClick={() => setSettingTab('privacy')}
-          style={{ cursor: 'pointer' }}
         >
           AI & privacy
-        </b>
-        <b
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-shortcuts"
+          aria-selected={settingTab === 'shortcuts'}
+          aria-controls="settings-tabpanel"
           className={settingTab === 'shortcuts' ? 'selected-setting' : ''}
           onClick={() => setSettingTab('shortcuts')}
-          style={{ cursor: 'pointer' }}
         >
           Shortcuts
-        </b>
-        <b
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-appearance"
+          aria-selected={settingTab === 'appearance'}
+          aria-controls="settings-tabpanel"
           className={settingTab === 'appearance' ? 'selected-setting' : ''}
           onClick={() => setSettingTab('appearance')}
-          style={{ cursor: 'pointer' }}
         >
           Appearance
-        </b>
-        <b
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-annotations"
+          aria-selected={settingTab === 'annotations'}
+          aria-controls="settings-tabpanel"
           className={settingTab === 'annotations' ? 'selected-setting' : ''}
           onClick={() => setSettingTab('annotations')}
-          style={{ cursor: 'pointer' }}
         >
           Annotations
-        </b>
-        <b>Reading</b>
-        <b
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-review"
+          aria-selected={settingTab === 'review'}
+          aria-controls="settings-tabpanel"
           className={settingTab === 'review' ? 'selected-setting' : ''}
           onClick={() => setSettingTab('review')}
-          style={{ cursor: 'pointer' }}
         >
           Review
-        </b>
-        <b>Storage</b>
-        <b className={settingTab === 'export' ? 'selected-setting' : ''} onClick={() => setSettingTab('export')} style={{ cursor: 'pointer' }}>Export</b>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-export"
+          aria-selected={settingTab === 'export'}
+          aria-controls="settings-tabpanel"
+          className={settingTab === 'export' ? 'selected-setting' : ''}
+          onClick={() => setSettingTab('export')}
+        >
+          Export
+        </button>
       </aside>
-      <article>
+      <article id="settings-tabpanel" role="tabpanel" aria-labelledby={`tab-${settingTab}`}>
         {settingTab === 'shortcuts' ? (
           <SettingsShortcuts />
         ) : settingTab === 'appearance' ? (

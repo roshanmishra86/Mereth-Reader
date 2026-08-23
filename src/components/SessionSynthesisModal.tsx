@@ -7,6 +7,7 @@ import {
   skipSynthesisAttempt,
   updateSynthesisAnswer,
 } from '../utils/sessionSynthesis';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface SessionSynthesisModalProps {
   isOpen: boolean;
@@ -23,6 +24,7 @@ export function SessionSynthesisModal({
 }: SessionSynthesisModalProps) {
   const [state, setState] = useState(() => createSessionSynthesisState());
   const [isSaving, setIsSaving] = useState(false);
+  const trapRef = useFocusTrap<HTMLElement>({ isOpen, onClose });
   if (!isOpen) return null;
 
   const reveal = () => setState((prev) => completeSynthesisAttempt(prev));
@@ -39,7 +41,7 @@ export function SessionSynthesisModal({
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="session-synthesis-title">
-      <section className="modal prompt-modal">
+      <section ref={trapRef} className="modal prompt-modal">
         <button className="modal-close" type="button" onClick={onClose} aria-label="Close synthesis">x</button>
         <span className="eyebrow">Optional recall</span>
         <h2 id="session-synthesis-title">End-of-session synthesis</h2>
