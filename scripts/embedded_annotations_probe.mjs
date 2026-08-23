@@ -15,9 +15,11 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 const corpusDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'corpus');
 const file = process.argv[2] ?? 'embedded_annotations.pdf';
 const pageNumber = Number(process.argv[3] ?? 1);
+const pdfjsDir = path.dirname(import.meta.resolve('pdfjs-dist/package.json').replace('file://', ''));
+const standardFontDataUrl = path.join(pdfjsDir, 'standard_fonts') + '/';
 
 const data = new Uint8Array(readFileSync(path.join(corpusDir, file)));
-const task = pdfjsLib.getDocument({ data, isEvalSupported: false, disableFontFace: true });
+const task = pdfjsLib.getDocument({ data, isEvalSupported: false, disableFontFace: true, standardFontDataUrl });
 const doc = await task.promise;
 const page = await doc.getPage(pageNumber);
 const annots = await page.getAnnotations();

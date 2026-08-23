@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { DocumentRecord } from '../utils/pdfImport';
 import { CollectionItem } from '../utils/libraryUtils';
 import { parseEmbeddedPdfInfo } from '../utils/metadataUtils';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface MetadataEditorModalProps {
   isOpen: boolean;
@@ -101,11 +102,20 @@ export function MetadataEditorModal({
     onClose();
   };
 
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
+
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet metadata-editor-sheet" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={trapRef}
+        className="sheet metadata-editor-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="metadata-editor-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="sheet-header">
-          <h3>Edit Document Metadata (FR-7.4)</h3>
+          <h3 id="metadata-editor-title">Edit Document Metadata (FR-7.4)</h3>
           <button className="icon-button" onClick={onClose} aria-label="Close editor">✕</button>
         </header>
 

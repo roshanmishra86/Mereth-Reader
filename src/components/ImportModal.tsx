@@ -15,6 +15,7 @@ import {
 } from '../utils/pdfImport';
 
 import { loadPdfDocument } from '../utils/pdfViewer';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface ImportModalProps {
   isOpen: boolean;
@@ -246,11 +247,20 @@ export function ImportModal({
     }
   }
 
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
+
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet import-sheet" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={trapRef}
+        className="sheet import-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="import-modal-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="sheet-header">
-          <h3>{isOpenFlow ? 'Open PDF' : 'Import PDF copy'}</h3>
+          <h3 id="import-modal-title">{isOpenFlow ? 'Open PDF' : 'Import PDF copy'}</h3>
           <button className="icon-button" onClick={onClose} aria-label="Close modal">✕</button>
         </header>
 

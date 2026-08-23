@@ -94,8 +94,24 @@ export const PageAnnotationLayer = memo(function PageAnnotationLayer({
         if (annotation.annotation_type === 'highlight' || annotation.annotation_type === 'underline') {
           const rects = annotationPixelRects(annotation, pageBaseSize, scale, rotation);
           if (rects.length === 0) return null;
+          const semanticLabel = paletteLabelFor(annotation.color, palette);
+          const ariaLabel = `${semanticLabel} ${annotation.annotation_type} on page ${pageNumber}: "${annotation.quote}"`;
           return (
-            <span {...common} key={annotation.id}>
+            <span
+              {...common}
+              key={annotation.id}
+              role="button"
+              tabIndex={0}
+              aria-label={ariaLabel}
+              onClick={() => onSelectAnnotation(annotation.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  onSelectAnnotation(annotation.id);
+                }
+              }}
+              style={{ cursor: 'pointer', pointerEvents: 'auto' }}
+            >
               {rects.map((rect, i) => (
                 <span
                   key={i}
@@ -105,7 +121,7 @@ export const PageAnnotationLayer = memo(function PageAnnotationLayer({
                       ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height, borderBottomColor: color }
                       : { left: rect.left, top: rect.top, width: rect.width, height: rect.height, background: withAlpha(color, 0.45) }
                   }
-                  title={`${paletteLabelFor(annotation.color, palette)}: ${annotation.quote}`}
+                  title={`${semanticLabel}: ${annotation.quote}`}
                 />
               ))}
             </span>

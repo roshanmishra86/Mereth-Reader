@@ -1557,3 +1557,55 @@
   color: #f3f2f2;
 }
 
+/* Task 5.2 Accessibility Enhancements: Settings Tablist & Focus Visibility */
+.settings-tab-btn {
+  display: block;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: inherit;
+  font-family: inherit;
+}
+
+.settings-tab-btn:hover {
+  background: #e2e1e1;
+}
+
+.settings-tab-btn.selected-setting {
+  border-left: 4px solid #ec3013;
+  background: #f3f2f2;
+  font-weight: 800;
+}
+
+:root[data-theme="dark"] .settings-tab-btn:hover {
+  background: #323030;
+}
+
+:root[data-theme="dark"] .settings-tab-btn.selected-setting {
+  border-left: 4px solid #ec3013;
+  background: #201e1d;
+  font-weight: 800;
+}
+
+/* Logical visible focus state (§8.3) */
+:focus-visible {
+  outline: 2px solid #ec3013 !important;
+  outline-offset: 2px !important;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

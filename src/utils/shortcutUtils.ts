@@ -270,3 +270,21 @@ export function formatControlTooltip(
   }
   return `${label}${keyPart}`;
 }
+
+/**
+ * Detects whether a key combination collides with any registered shortcuts.
+ */
+export function checkShortcutCollision(
+  shortcutId: string,
+  keyCombo: string,
+  shortcutList: KeyboardShortcut[] = SHORTCUT_LIST
+): { hasCollision: boolean; conflictingShortcut?: KeyboardShortcut } {
+  const normalized = keyCombo.trim().toLowerCase();
+  const conflicting = shortcutList.find(
+    (s) => s.id !== shortcutId && s.keys.trim().toLowerCase() === normalized
+  );
+  return {
+    hasCollision: Boolean(conflicting),
+    conflictingShortcut: conflicting,
+  };
+}

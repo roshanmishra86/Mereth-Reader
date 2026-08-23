@@ -87,6 +87,7 @@ import {
 } from "./utils/appearanceUtils";
 import { SettingsAppearance } from "./components/SettingsAppearance";
 import { PasswordDialog } from "./components/PasswordDialog";
+import { ExternalLinkModal } from "./components/ExternalLinkModal";
 import { ScannedPdfBanner } from "./components/ScannedPdfBanner";
 import { VersionMismatchBanner } from "./components/VersionMismatchBanner";
 import { RendererErrorBoundary } from "./components/RendererErrorBoundary";
@@ -247,6 +248,25 @@ function App() {
   const [scannedPdfBannerVisible, setScannedPdfBannerVisible] = useState(false);
   const [versionMismatchBannerVisible, setVersionMismatchBannerVisible] = useState(false);
   const [sessionSynthesisOpen, setSessionSynthesisOpen] = useState(false);
+  const [externalLinkUrl, setExternalLinkUrl] = useState<string | null>(null);
+
+  // Task 5.1 (FR-8.8): Intercept all external link clicks and disclose destination before browser handoff
+  useEffect(() => {
+    const handleDocumentClick = (e: MouseEvent) => {
+      const target = (e.target as HTMLElement | null)?.closest('a');
+      if (!target) return;
+      const href = target.getAttribute('href');
+      if (!href) return;
+      if (href.startsWith('#') || href.startsWith('mereth://')) {
+        return; // Handled internally
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      setExternalLinkUrl(href);
+    };
+    document.addEventListener('click', handleDocumentClick, true);
+    return () => document.removeEventListener('click', handleDocumentClick, true);
+  }, []);
 
   // Task 4.4 (FR-11.1): Prompt Editor Modal for Remember actions
   const [promptEditorModal, setPromptEditorModal] = useState<{
@@ -1186,6 +1206,8 @@ function App() {
               key={id}
               onClick={() => setDestination(id)}
               title={label}
+              aria-label={label}
+              aria-current={destination === id ? "page" : undefined}
             >
               <Glyph>{glyph}</Glyph>
               <span>{label}</span>
@@ -1196,6 +1218,8 @@ function App() {
             className={destination === "settings" ? "rail-item active rail-bottom" : "rail-item rail-bottom"}
             onClick={() => setDestination("settings")}
             title="Settings"
+            aria-label="Settings"
+            aria-current={destination === "settings" ? "page" : undefined}
           >
             <Glyph>☷</Glyph>
             <span>Settings</span>
@@ -1364,6 +1388,11 @@ function App() {
         annotations={annotationsList}
         onClose={() => setSessionSynthesisOpen(false)}
         onSaveNote={handleSaveSynthesisNote}
+      />
+      <ExternalLinkModal
+        isOpen={Boolean(externalLinkUrl)}
+        url={externalLinkUrl}
+        onClose={() => setExternalLinkUrl(null)}
       />
     </main>
   );
@@ -3375,47 +3404,75 @@ function SettingsView({
 
   return (
     <section className="settings-view">
-      <aside>
-        <b
+      <aside role="tablist" aria-label="Settings sections">
+        <button
+          type="button"
+          role="tab"
+          id="tab-privacy"
+          aria-selected={settingTab === 'privacy'}
+          aria-controls="settings-tabpanel"
           className={settingTab === 'privacy' ? 'selected-setting' : ''}
           onClick={() => setSettingTab('privacy')}
-          style={{ cursor: 'pointer' }}
         >
           AI & privacy
-        </b>
-        <b
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-shortcuts"
+          aria-selected={settingTab === 'shortcuts'}
+          aria-controls="settings-tabpanel"
           className={settingTab === 'shortcuts' ? 'selected-setting' : ''}
           onClick={() => setSettingTab('shortcuts')}
-          style={{ cursor: 'pointer' }}
         >
           Shortcuts
-        </b>
-        <b
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-appearance"
+          aria-selected={settingTab === 'appearance'}
+          aria-controls="settings-tabpanel"
           className={settingTab === 'appearance' ? 'selected-setting' : ''}
           onClick={() => setSettingTab('appearance')}
-          style={{ cursor: 'pointer' }}
         >
           Appearance
-        </b>
-        <b
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-annotations"
+          aria-selected={settingTab === 'annotations'}
+          aria-controls="settings-tabpanel"
           className={settingTab === 'annotations' ? 'selected-setting' : ''}
           onClick={() => setSettingTab('annotations')}
-          style={{ cursor: 'pointer' }}
         >
           Annotations
-        </b>
-        <b>Reading</b>
-        <b
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-review"
+          aria-selected={settingTab === 'review'}
+          aria-controls="settings-tabpanel"
           className={settingTab === 'review' ? 'selected-setting' : ''}
           onClick={() => setSettingTab('review')}
-          style={{ cursor: 'pointer' }}
         >
           Review
-        </b>
-        <b>Storage</b>
-        <b className={settingTab === 'export' ? 'selected-setting' : ''} onClick={() => setSettingTab('export')} style={{ cursor: 'pointer' }}>Export</b>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-export"
+          aria-selected={settingTab === 'export'}
+          aria-controls="settings-tabpanel"
+          className={settingTab === 'export' ? 'selected-setting' : ''}
+          onClick={() => setSettingTab('export')}
+        >
+          Export
+        </button>
       </aside>
-      <article>
+      <article id="settings-tabpanel" role="tabpanel" aria-labelledby={`tab-${settingTab}`}>
         {settingTab === 'shortcuts' ? (
           <SettingsShortcuts />
         ) : settingTab === 'appearance' ? (

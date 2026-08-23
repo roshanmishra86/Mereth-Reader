@@ -149,6 +149,7 @@ export function getSecureDocumentLoadOptions(pdfBytes: Uint8Array): SecureDocume
   return {
     data: pdfBytes,
     disableScripting: true,
-    isEvalSupported: false
+    isEvalSupported: false,
+    standardFontDataUrl: '/pdfjs/standard_fonts/'
   };
 }

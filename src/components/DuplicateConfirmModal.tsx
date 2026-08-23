@@ -1,6 +1,7 @@
 import React from 'react';
 import { DocumentRecord } from '../utils/pdfImport';
 import { DuplicateConfirmationState, DuplicateResolutionAction } from '../utils/duplicateCheck';
+import { useFocusTrap } from '../hooks/useFocusTrap';
 
 interface DuplicateConfirmModalProps {
   isOpen: boolean;
@@ -13,15 +14,24 @@ export function DuplicateConfirmModal({
   duplicateState,
   onResolve,
 }: DuplicateConfirmModalProps) {
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose: () => onResolve('cancel') });
+
   if (!isOpen || !duplicateState || !duplicateState.hasDuplicate) return null;
 
   const existingDoc = duplicateState.existingDocument;
 
   return (
     <div className="sheet-backdrop" onClick={() => onResolve('cancel')}>
-      <div className="sheet duplicate-confirm-sheet" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={trapRef}
+        className="sheet duplicate-confirm-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="duplicate-dialog-title"
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="sheet-header alert-header">
-          <h3>⚠️ Duplicate Document Detected (FR-7.7)</h3>
+          <h3 id="duplicate-dialog-title">⚠️ Duplicate Document Detected (FR-7.7)</h3>
           <button
             className="icon-button"
             onClick={() => onResolve('cancel')}
