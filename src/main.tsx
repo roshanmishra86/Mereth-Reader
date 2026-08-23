@@ -167,6 +167,8 @@ import { SessionSynthesisModal } from "./components/SessionSynthesisModal";
 import { resolveDeepLinkUiAction } from "./utils/deepLinkRouter";
 import { ExportModal, type ExportFormat } from "./components/ExportModal";
 import { RestoreBackupModal } from "./components/RestoreBackupModal";
+import { DiagnosticExportModal } from "./components/DiagnosticExportModal";
+import { buildDiagnosticReport } from "./utils/diagnosticExport";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
 
@@ -3391,6 +3393,27 @@ function SettingsView({
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [backupJson, setBackupJson] = useState('');
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [diagnosticCounts, setDiagnosticCounts] = useState({
+    documentCount: 0, annotationCount: 0, noteCount: 0, reviewPromptCount: 0, reviewEventCount: 0,
+  });
+
+  const diagnosticReport = buildDiagnosticReport(
+    {
+      appVersion: "0.1.0",
+      platform: navigator.platform || "unknown",
+      arch: "unknown",
+      memoryRssMb: null,
+      totalSystemMemoryMb: null,
+      theme: appearance.theme,
+    },
+    diagnosticCounts
+  );
+
+  const openDiagnostics = async () => {
+    setDiagnosticCounts(await invoke<typeof diagnosticCounts>('db_get_diagnostic_counts'));
+    setDiagnosticsOpen(true);
+  };
 
   const runExport = async (format: ExportFormat, destination: string) => {
     if (!destination) throw new Error('Choose an explicit destination first.');
@@ -3491,12 +3514,30 @@ function SettingsView({
               <div><b>Export</b><p>Write a Markdown package or versioned JSON backup to an explicit destination.</p></div>
               <button className="wide-action primary" onClick={() => setExportOpen(true)}>Export...</button>
             </div>
+            <div className="setting-state">
+              <div><b>Local diagnostics</b><p>Inspect aggregate system and storage counts before copying or saving them. No document or note content is included.</p></div>
+              <button className="wide-action" onClick={() => void openDiagnostics()}>Inspect diagnostics...</button>
+            </div>
             <label className="field-label" htmlFor="restore-json">Backup JSON
               <textarea id="restore-json" rows={8} value={backupJson} onChange={(event) => setBackupJson(event.target.value)} placeholder="Paste the contents of a Mereth JSON backup." />
             </label>
             <button className="wide-action" disabled={!backupJson.trim()} onClick={() => setRestoreOpen(true)}>Preview restore</button>
             {exportStatus && <p role="status">{exportStatus}</p>}
             <ExportModal isOpen={exportOpen} onClose={() => setExportOpen(false)} onExport={runExport} />
+            <DiagnosticExportModal
+              isOpen={diagnosticsOpen}
+              onClose={() => setDiagnosticsOpen(false)}
+              report={diagnosticReport}
+              onSaveJson={(json) => {
+                const blob = new Blob([json], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = "mereth-diagnostics.json";
+                link.click();
+                URL.revokeObjectURL(url);
+              }}
+            />
             <RestoreBackupModal isOpen={restoreOpen} backupJson={backupJson} onClose={() => setRestoreOpen(false)} onRestore={async () => {
               await invoke('db_restore_from_backup', { backupJson });
               setExportStatus('Restore completed. Reopen the destination views to refresh restored records.');

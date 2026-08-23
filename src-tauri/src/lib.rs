@@ -6,7 +6,7 @@ pub mod launch;
 pub mod perf;
 pub mod security;
 
-use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
+use db::{CollectionRecord, Database, DiagnosticCounts, Document, Job, Page, ReadingSession, Setting};
 use db::annotations::{Annotation, AnnotationAsset};
 use db::evidence::EvidenceBlock;
 use db::note_links::{BacklinkRecord, NoteLink};
@@ -46,6 +46,13 @@ fn db_get_documents(state: State<'_, AppState>) -> Result<Vec<Document>, String>
   let lock = state.db.lock().unwrap();
   let db = lock.as_ref().ok_or("Database not initialized")?;
   db.get_documents()
+}
+
+#[tauri::command]
+fn db_get_diagnostic_counts(state: State<'_, AppState>) -> Result<DiagnosticCounts, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.diagnostic_counts()
 }
 
 #[tauri::command]
@@ -886,6 +893,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       db_init,
       db_get_documents,
+      db_get_diagnostic_counts,
       db_get_document_by_hash,
       db_add_document,
       db_update_document_metadata,
