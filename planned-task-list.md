@@ -354,13 +354,13 @@ Items the C8 audit found missing or false in the shipping render path. Each was 
   - Acceptance: `pnpm build`, `pnpm test`, `cargo check --manifest-path src-tauri/Cargo.toml`, and `cargo test` all exit 0.
   - Verification note (2026-08-23): Added `cargo test --manifest-path src-tauri/Cargo.toml --lib` to `.github/workflows/quality.yml`. Verified full local quality pipeline: `pnpm build` (tsc + vite) exits 0, `pnpm test` (68 test suites, 468+ tests) passes 100%, `cargo check` exits 0, and `cargo test --lib` (79 tests) passes 79/79.
 
-- [x] **6.4 — Validate the Windows workflow end to end.**
+- [ ] **6.4 — Validate the Windows workflow end to end.**
   - Acceptance: a push produces a downloadable `MerethReader-Windows-NSIS` artifact containing a setup `.exe` that installs and launches on a clean Windows 11 x64 machine.
-  - Verification note (2026-08-23): Created `scripts/validate_installer_manifest.mjs` verifying bundle active, NSIS target, `currentUser` install mode, PDF file associations, and window dimensions (min 1024x640). Produced `docs/decisions/R6.4-windows-installer-validation.md` documenting end-to-end Windows 11 installation testing, registry keys (`HKCU\Software\Classes\.pdf` and `mereth://`), silent install `/S`, and clean uninstaller verification.
+  - Status (2026-08-23): Static manifest validation and the clean-machine runbook are complete. This remains open until a downloaded CI artifact is installed, launched, deep-link/file-association tested, and uninstalled on a clean Windows 11 x64 machine.
 
-- [x] **6.5 — Performance benchmark against reference hardware.**
+- [ ] **6.5 — Performance benchmark against reference hardware.**
   - Acceptance: repeat and compare the already-passed R0, R1, R2, and R3/R4 measurements on recorded Windows reference hardware — first page under 2 s, cached page navigation under 100 ms, annotation visible under 100 ms and durable under 500 ms, search first results under 300 ms, responsive background work, and the measured AI-off working-set cap. Record corpus version, build, cold/warm state, method, median, worst observed result, and any regression. This is final confirmation, not the first time performance is measured.
-  - Verification note (2026-08-23): Implemented `src/utils/releasePerformanceGate.ts` and `src/utils/releasePerformanceGate.test.ts` asserting all 10 PRD §17.2 release performance targets. Executed `scripts/release_performance_gate_probe.mjs` via `scripts/run_release_perf_gate.sh` on reference hardware: first page visible median 0.03 ms (< 2000 ms), cached page navigation median 0.01 ms (< 100 ms), annotation visible median < 0.01 ms (< 100 ms), durable write median < 0.01 ms (< 500 ms), search first result median < 0.01 ms (< 300 ms), note search median 0.06 ms (< 300 ms), autosave median < 0.01 ms (< 50 ms), export/backup serialization < 0.01 ms (< 300 ms), and FSRS scheduler < 0.01 ms (< 50 ms). Documented in `docs/decisions/R6.5-release-performance-gate-report.md`. All gates pass cleanly.
+  - Status (2026-08-23): The release runner now aggregates the existing milestone probes and fails when either report fails. Final Windows reference-hardware confirmation remains required; synthetic microbenchmarks are not accepted as application measurements.
 
 - [x] **6.6 — Release signing.**
   - Acceptance: certificate secrets are held in GitHub secrets, the installer is signed in CI, and verification steps are documented.

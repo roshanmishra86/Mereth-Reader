@@ -11,8 +11,8 @@ export interface DiagnosticSystemInfo {
   readonly appVersion: string;
   readonly platform: string;
   readonly arch: string;
-  readonly memoryRssMb: number;
-  readonly totalSystemMemoryMb: number;
+  readonly memoryRssMb: number | null;
+  readonly totalSystemMemoryMb: number | null;
   readonly theme: string;
 }
 
@@ -24,8 +24,8 @@ export interface DiagnosticReport {
   readonly system: {
     readonly platform: string;
     readonly arch: string;
-    readonly memoryRssMb: number;
-    readonly totalSystemMemoryMb: number;
+    readonly memoryRssMb: number | null;
+    readonly totalSystemMemoryMb: number | null;
   };
   readonly storage: DiagnosticDatabaseStats;
   readonly configuration: {
@@ -101,8 +101,8 @@ export function formatDiagnosticReportText(report: DiagnosticReport): string {
     "",
     "## System Environment",
     `- OS: ${report.system.platform} (${report.system.arch})`,
-    `- Memory RSS: ${report.system.memoryRssMb} MB`,
-    `- Total Memory: ${report.system.totalSystemMemoryMb} MB`,
+    `- Memory RSS: ${report.system.memoryRssMb === null ? "Unavailable" : `${report.system.memoryRssMb} MB`}`,
+    `- Total Memory: ${report.system.totalSystemMemoryMb === null ? "Unavailable" : `${report.system.totalSystemMemoryMb} MB`}`,
     "",
     "## Storage Inventory",
     `- Documents: ${report.storage.documentCount}`,
