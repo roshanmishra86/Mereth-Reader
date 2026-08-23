@@ -4,10 +4,20 @@ on:
   push:
     branches:
       - release
+      - feature/phase-6-packaging-and-release
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - release
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   windows-nsis:
@@ -27,6 +37,11 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
