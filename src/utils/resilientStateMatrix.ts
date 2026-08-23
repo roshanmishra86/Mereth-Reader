@@ -55,6 +55,8 @@ export interface ResilientStateDescriptor {
 
 export interface ResilientEvaluationInput {
   documentCount?: number;
+  isFirstRun?: boolean;
+  hasActiveLibraryFilter?: boolean;
   searchQuery?: string;
   searchResultsCount?: number;
   jobState?: 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'failed';
@@ -68,6 +70,8 @@ export interface ResilientEvaluationInput {
   diskFreeBytes?: number;
   cacheValid?: boolean;
   backupValid?: boolean;
+  duplicateDetected?: boolean;
+  exportConflict?: boolean;
 }
 
 /**
@@ -416,6 +420,9 @@ export function evaluateResilientState(input: ResilientEvaluationInput): Resilie
   if (input.cacheValid === false) {
     return RESILIENT_STATE_CATALOG.corrupt_cache_rebuild;
   }
+  if (input.exportConflict) {
+    return RESILIENT_STATE_CATALOG.export_conflict;
+  }
 
   // Check document integrity states
   if (input.isEncrypted) {
@@ -429,6 +436,9 @@ export function evaluateResilientState(input: ResilientEvaluationInput): Resilie
   }
   if (input.hasTextLayer === false) {
     return RESILIENT_STATE_CATALOG.scanned_pdf;
+  }
+  if (input.duplicateDetected) {
+    return RESILIENT_STATE_CATALOG.duplicate_import;
   }
 
   // Check job lifecycle
@@ -446,7 +456,9 @@ export function evaluateResilientState(input: ResilientEvaluationInput): Resilie
 
   // Check library view states
   if (input.documentCount === 0) {
-    return RESILIENT_STATE_CATALOG.first_run;
+    return input.isFirstRun === false || input.hasActiveLibraryFilter
+      ? RESILIENT_STATE_CATALOG.empty
+      : RESILIENT_STATE_CATALOG.first_run;
   }
 
   return RESILIENT_STATE_CATALOG.success;

@@ -3411,7 +3411,7 @@ function SettingsView({
           id="tab-privacy"
           aria-selected={settingTab === 'privacy'}
           aria-controls="settings-tabpanel"
-          className={settingTab === 'privacy' ? 'selected-setting' : ''}
+          className={`settings-tab-btn${settingTab === 'privacy' ? ' selected-setting' : ''}`}
           onClick={() => setSettingTab('privacy')}
         >
           AI & privacy
@@ -3422,7 +3422,7 @@ function SettingsView({
           id="tab-shortcuts"
           aria-selected={settingTab === 'shortcuts'}
           aria-controls="settings-tabpanel"
-          className={settingTab === 'shortcuts' ? 'selected-setting' : ''}
+          className={`settings-tab-btn${settingTab === 'shortcuts' ? ' selected-setting' : ''}`}
           onClick={() => setSettingTab('shortcuts')}
         >
           Shortcuts
@@ -3433,7 +3433,7 @@ function SettingsView({
           id="tab-appearance"
           aria-selected={settingTab === 'appearance'}
           aria-controls="settings-tabpanel"
-          className={settingTab === 'appearance' ? 'selected-setting' : ''}
+          className={`settings-tab-btn${settingTab === 'appearance' ? ' selected-setting' : ''}`}
           onClick={() => setSettingTab('appearance')}
         >
           Appearance
@@ -3444,7 +3444,7 @@ function SettingsView({
           id="tab-annotations"
           aria-selected={settingTab === 'annotations'}
           aria-controls="settings-tabpanel"
-          className={settingTab === 'annotations' ? 'selected-setting' : ''}
+          className={`settings-tab-btn${settingTab === 'annotations' ? ' selected-setting' : ''}`}
           onClick={() => setSettingTab('annotations')}
         >
           Annotations
@@ -3455,7 +3455,7 @@ function SettingsView({
           id="tab-review"
           aria-selected={settingTab === 'review'}
           aria-controls="settings-tabpanel"
-          className={settingTab === 'review' ? 'selected-setting' : ''}
+          className={`settings-tab-btn${settingTab === 'review' ? ' selected-setting' : ''}`}
           onClick={() => setSettingTab('review')}
         >
           Review
@@ -3466,7 +3466,7 @@ function SettingsView({
           id="tab-export"
           aria-selected={settingTab === 'export'}
           aria-controls="settings-tabpanel"
-          className={settingTab === 'export' ? 'selected-setting' : ''}
+          className={`settings-tab-btn${settingTab === 'export' ? ' selected-setting' : ''}`}
           onClick={() => setSettingTab('export')}
         >
           Export

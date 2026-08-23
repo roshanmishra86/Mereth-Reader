@@ -1,4 +1,5 @@
 use std::process::Command;
+use url::Url;
 
 /// Validates an external URL to ensure it uses strictly http or https schemes.
 /// Rejects all other protocols (e.g. file://, javascript:, data:, cmd:, shell:),
@@ -14,15 +15,11 @@ pub fn validate_external_url(raw_url: &str) -> Result<String, String> {
     return Err("External URL contains forbidden control characters".into());
   }
 
-  let lower = trimmed.to_ascii_lowercase();
-  if !lower.starts_with("http://") && !lower.starts_with("https://") {
+  let parsed = Url::parse(trimmed).map_err(|_| "External URL is malformed".to_string())?;
+  if parsed.scheme() != "http" && parsed.scheme() != "https" {
     return Err("Blocked unsafe scheme: only http:// and https:// external URLs are permitted".into());
   }
-
-  // Basic structure check: must have a host after scheme
-  let prefix_len = if lower.starts_with("https://") { 8 } else { 7 };
-  let rest = &trimmed[prefix_len..];
-  if rest.is_empty() || rest.starts_with('/') || rest.starts_with(':') {
+  if parsed.host_str().is_none() {
     return Err("External URL lacks a valid host component".into());
   }
 
@@ -101,6 +98,8 @@ pub mod tests {
     assert!(validate_external_url("https://example.com\r\nmalicious").is_err());
     assert!(validate_external_url("https://example.com\0payload").is_err());
     assert!(validate_external_url("https://").is_err());
+    assert!(validate_external_url("https://?query").is_err());
+    assert!(validate_external_url("https://#fragment").is_err());
     assert!(validate_external_url("http:///").is_err());
   }
 }

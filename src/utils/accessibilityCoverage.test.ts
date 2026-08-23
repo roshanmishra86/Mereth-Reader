@@ -3,6 +3,8 @@ import { SHORTCUT_LIST, checkShortcutCollision } from './shortcutUtils';
 import { calculateContrastRatio, meetsWcagAA } from './contrastChecker';
 import { findFocusableElements, getNextFocusableElement } from './focusTrap';
 import { paletteLabelFor, DEFAULT_ANNOTATION_PALETTE } from './annotationTypes';
+import fs from 'node:fs';
+import path from 'node:path';
 
 function createMockElement(id: string): HTMLElement {
   return { id } as unknown as HTMLElement;
@@ -17,6 +19,14 @@ function createMockContainer(elements: HTMLElement[]): HTMLElement {
 
 describe('Task 5.2 Accessibility and Keyboard Coverage (PRD §8.3, §17.4)', () => {
   describe('1. Keyboard Navigation and Shortcut Coverage', () => {
+    it('applies the settings tab button styles to every semantic tab', () => {
+      const source = fs.readFileSync(path.resolve(process.cwd(), 'src/main.tsx'), 'utf8');
+      const settingsTabs = source.match(/role="tab"/g) ?? [];
+      const styledTabs = source.match(/className=\{`settings-tab-btn/g) ?? [];
+      expect(settingsTabs.length).toBeGreaterThan(0);
+      expect(styledTabs).toHaveLength(settingsTabs.length);
+    });
+
     it('provides exhaustive default shortcuts for core reader workflows without mouse', () => {
       const requiredCategories = [
         'View',

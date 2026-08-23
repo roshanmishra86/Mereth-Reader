@@ -1,5 +1,6 @@
 import { suggestCopyPath } from '../utils/destinationSafety';
 import { useFocusTrap } from '../hooks/useFocusTrap';
+import { evaluateResilientState } from '../utils/resilientStateMatrix';
 
 interface DestinationConflictModalProps {
   isOpen: boolean;
@@ -19,14 +20,15 @@ export function DestinationConflictModal({
   onCancel,
 }: DestinationConflictModalProps) {
   const trapRef = useFocusTrap<HTMLElement>({ isOpen, onClose: onCancel });
+  const resilientState = evaluateResilientState({ exportConflict: true });
   if (!isOpen) return null;
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="destination-conflict-title">
       <section ref={trapRef} className="modal prompt-modal">
         <button className="modal-close" type="button" onClick={onCancel} aria-label="Close destination conflict">x</button>
         <span className="eyebrow">Export conflict</span>
-        <h2 id="destination-conflict-title">Destination already exists</h2>
-        <p>Review the difference before replacing anything.</p>
+        <h2 id="destination-conflict-title">{resilientState.title}</h2>
+        <p>{resilientState.description} Review the difference before replacing anything.</p>
         <pre>{diffPreview}</pre>
         <div className="modal-actions">
           <button className="button" type="button" onClick={onCancel}>Cancel</button>
@@ -37,4 +39,3 @@ export function DestinationConflictModal({
     </div>
   );
 }
-

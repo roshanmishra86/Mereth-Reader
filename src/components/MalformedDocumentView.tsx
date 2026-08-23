@@ -1,5 +1,6 @@
 import React from 'react';
 import { DocumentRecord } from '../utils/pdfImport';
+import { evaluateResilientState } from '../utils/resilientStateMatrix';
 
 interface MalformedDocumentViewProps {
   document: DocumentRecord;
@@ -14,6 +15,7 @@ export function MalformedDocumentView({
   onDeleteRecord,
   errorMessage,
 }: MalformedDocumentViewProps) {
+  const resilientState = evaluateResilientState({ isMalformed: true });
   return (
     <div
       className="malformed-document-container"
@@ -42,14 +44,14 @@ export function MalformedDocumentView({
           <span style={{ fontSize: '32px' }}>🚫</span>
           <div>
             <h3 style={{ margin: 0, fontSize: '18px', color: '#ae1800' }}>
-              Malformed or Corrupted PDF
+              {resilientState.title}
             </h3>
             <span className="dimmed micro">Document ID: {document.id}</span>
           </div>
         </div>
 
         <p style={{ fontSize: '13px', color: '#444141', lineHeight: 1.5, margin: '0 0 12px' }}>
-          The PDF document <strong>"{document.title}"</strong> could not be opened or rendered.
+          The PDF document <strong>"{document.title}"</strong> could not be opened or rendered. {resilientState.preservedData}
         </p>
 
         <div

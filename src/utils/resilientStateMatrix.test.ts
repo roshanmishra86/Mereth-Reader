@@ -52,6 +52,16 @@ describe('Task 5.3 Complete Resilient-State Matrix (PRD §17.6, Appendix A)', ()
       expect(state.suggestedActions[0].id).toBe('import_first_pdf');
     });
 
+    it('distinguishes an empty filtered view from a first-run library', () => {
+      expect(evaluateResilientState({ documentCount: 0, isFirstRun: false }).key).toBe('empty');
+      expect(evaluateResilientState({ documentCount: 0, hasActiveLibraryFilter: true }).key).toBe('empty');
+    });
+
+    it('evaluates duplicate imports and export conflicts', () => {
+      expect(evaluateResilientState({ duplicateDetected: true }).key).toBe('duplicate_import');
+      expect(evaluateResilientState({ exportConflict: true }).key).toBe('export_conflict');
+    });
+
     it('evaluates migration_failure and preserves pre-migration backup', () => {
       const state = evaluateResilientState({ errorCode: 'MIGRATION_FAILED' });
       expect(state.key).toBe('migration_failure');
