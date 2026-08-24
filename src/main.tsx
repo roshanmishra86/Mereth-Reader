@@ -2474,10 +2474,14 @@ function Reader(props: ReaderProps) {
       if (popupLocked) {
         // FR-9.2 locked mode: keep the chosen tool settings armed, but discard
         // the consumed snapshot so it cannot be applied twice accidentally.
-        window.getSelection()?.removeAllRanges();
         setPopupComment("");
         if (type === "highlight" || type === "underline") setLockedAnnotationType(type);
       }
+      // The browser's blue live-selection paint sits above annotation
+      // overlays. Clear it only after the durable write succeeds so the
+      // semantic highlight colour is visible immediately; on failure the
+      // selection remains available for a safe retry.
+      window.getSelection()?.removeAllRanges();
       setSelectionPopup(null);
     } catch (err) {
       setPopupError(err instanceof Error ? err.message : String(err));
