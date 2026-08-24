@@ -145,4 +145,22 @@ describe('extractPdfPageTexts (background extraction pipeline)', () => {
     expect(extractionOrder).toEqual([3, 4]);
     expect(published).toEqual([3, 4]);
   });
+
+  it('continues after a page-local extraction failure and reports the page', async () => {
+    const failures: number[] = [];
+    const doc = {
+      numPages: 3,
+      getPage: async (pageNumber: number) => ({
+        getTextContent: async () => {
+          if (pageNumber === 2) throw new Error('bad text stream');
+          return { items: [{ str: `page ${pageNumber}` }] };
+        },
+      }),
+    } as unknown as Parameters<typeof extractPdfPageTexts>[0];
+    const result = await extractPdfPageTexts(doc, { onPageError: (page) => failures.push(page) });
+    expect(result.completed).toBe(true);
+    expect(result.pages).toHaveLength(2);
+    expect(result.failedPageNumbers).toEqual([2]);
+    expect(failures).toEqual([2]);
+  });
 });

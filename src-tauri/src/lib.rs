@@ -238,6 +238,13 @@ fn db_upsert_page_for_version(page: Page, version_hash: String, state: State<'_,
 }
 
 #[tauri::command]
+fn db_upsert_pages_for_version(pages: Vec<Page>, version_hash: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.upsert_pages_for_version(pages, &version_hash)
+}
+
+#[tauri::command]
 fn db_add_job(job: Job, state: State<'_, AppState>) -> Result<(), String> {
   let lock = state.db.lock().unwrap();
   let db = lock.as_ref().ok_or("Database not initialized")?;
@@ -984,6 +991,7 @@ pub fn run() {
       db_get_pages,
       db_get_pages_for_version,
       db_upsert_page_for_version,
+      db_upsert_pages_for_version,
       db_add_job,
       db_get_jobs,
       db_update_job,

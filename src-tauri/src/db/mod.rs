@@ -540,24 +540,31 @@ impl Database {
   }
 
   pub fn upsert_page_for_version(&self, page: Page, version_hash: &str) -> Result<(), String> {
+    self.upsert_pages_for_version(vec![page], version_hash)
+  }
+
+  pub fn upsert_pages_for_version(&self, pages: Vec<Page>, version_hash: &str) -> Result<(), String> {
     if version_hash.trim().is_empty() { return Err("Version hash is required".into()); }
+    if pages.is_empty() { return Ok(()); }
     let mut conn = self.conn.lock().unwrap();
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute(
-      "INSERT INTO pages (id, document_id, page_number, width, height, text_content, created_at, provenance, version_hash)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-       ON CONFLICT(document_id, version_hash, page_number) DO UPDATE SET
-         text_content = excluded.text_content, width = excluded.width, height = excluded.height,
-         created_at = excluded.created_at, provenance = excluded.provenance",
-      params![page.id, page.document_id, page.page_number, page.width, page.height,
-        page.text_content, page.created_at, page.provenance, version_hash],
-    ).map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM fts_document_text WHERE document_id = ?1 AND page_number = ?2", params![page.document_id, page.page_number])
-      .map_err(|e| e.to_string())?;
-    tx.execute(
-      "INSERT INTO fts_document_text (document_id, page_number, text_content, provenance) VALUES (?1, ?2, ?3, ?4)",
-      params![page.document_id, page.page_number, page.text_content, page.provenance],
-    ).map_err(|e| e.to_string())?;
+    for page in pages {
+      tx.execute(
+        "INSERT INTO pages (id, document_id, page_number, width, height, text_content, created_at, provenance, version_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(document_id, version_hash, page_number) DO UPDATE SET
+           text_content = excluded.text_content, width = excluded.width, height = excluded.height,
+           created_at = excluded.created_at, provenance = excluded.provenance",
+        params![page.id, page.document_id, page.page_number, page.width, page.height,
+          page.text_content, page.created_at, page.provenance, version_hash],
+      ).map_err(|e| e.to_string())?;
+      tx.execute("DELETE FROM fts_document_text WHERE document_id = ?1 AND page_number = ?2", params![page.document_id, page.page_number])
+        .map_err(|e| e.to_string())?;
+      tx.execute(
+        "INSERT INTO fts_document_text (document_id, page_number, text_content, provenance) VALUES (?1, ?2, ?3, ?4)",
+        params![page.document_id, page.page_number, page.text_content, page.provenance],
+      ).map_err(|e| e.to_string())?;
+    }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
   }

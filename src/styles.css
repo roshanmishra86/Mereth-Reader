@@ -882,7 +882,7 @@
 
 /* Compact selection popover (FR-9.2): colours, comment, one-tap actions. */
 .selection-popup {
-  position: absolute;
+  position: fixed;
   z-index: 20;
   width: 252px;
   padding: 10px;
@@ -940,6 +940,17 @@
 
 .popup-swatch:disabled {
   cursor: default;
+}
+
+.popup-color-meaning {
+  margin: -2px 0 0;
+  color: #605d5d;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.popup-color-meaning strong {
+  color: #201e1d;
 }
 
 .popup-field {
@@ -1645,4 +1656,3 @@
     scroll-behavior: auto !important;
   }
 }
-

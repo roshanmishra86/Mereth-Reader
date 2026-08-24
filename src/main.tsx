@@ -43,7 +43,7 @@ import {
 } from "./utils/viewModeUtils";
 import { ReaderCanvas } from "./components/ReaderCanvas";
 import { SearchOptions, performAdvancedSearch, getNextMatchIndex, DEFAULT_SEARCH_OPTIONS } from "./utils/searchUtils";
-import { loadVersionedPageTexts, persistVersionedPageText } from "./utils/pageTextIo";
+import { loadVersionedPageTexts, persistVersionedPageTexts } from "./utils/pageTextIo";
 import { parseOutlineTree } from "./utils/navigationUtils";
 import { resolveShortcutAction } from "./utils/shortcutUtils";
 import { getPdfPageEmbeddedAnnotations } from "./utils/pdfViewer";
@@ -1642,6 +1642,7 @@ function Reader(props: ReaderProps) {
   const [extractionStatus, setExtractionStatus] = useState<'idle' | 'running' | 'done' | 'cancelled'>('idle');
   const [pageCacheHydrated, setPageCacheHydrated] = useState(false);
   const [pageCacheWriteFailed, setPageCacheWriteFailed] = useState(false);
+  const [textExtractionFailures, setTextExtractionFailures] = useState<number[]>([]);
   const cachedPageNumbersRef = useRef<Set<number>>(new Set());
   const [firstPagePainted, setFirstPagePainted] = useState(false);
   const extractionAbortRef = useRef<AbortController | null>(null);
@@ -1759,6 +1760,7 @@ function Reader(props: ReaderProps) {
     cachedPageNumbersRef.current = new Set();
     setPageCacheHydrated(false);
     setPageCacheWriteFailed(false);
+    setTextExtractionFailures([]);
     setExtractionStatus('idle');
     setFirstPagePainted(false);
     setCurrentPageSize(DEFAULT_PAGE_SIZE);
@@ -1794,7 +1796,12 @@ function Reader(props: ReaderProps) {
         cachedPageNumbersRef.current = new Set(cached.map((page) => page.pageNumber));
         setPageTexts(cached);
         setPageCacheHydrated(true);
-        if (cached.length >= loadedPdf.numPages) setExtractionStatus('done');
+        if (cached.length >= loadedPdf.numPages) {
+          setExtractionStatus('done');
+          if (props.activeDocumentJob?.id) {
+            props.onJobProgress?.(props.activeDocumentJob.id, loadedPdf.numPages);
+          }
+        }
       })
       .catch(() => {
         if (!cancelled) setPageCacheHydrated(true);
@@ -1813,6 +1820,16 @@ function Reader(props: ReaderProps) {
     extractionAbortRef.current = controller;
     setExtractionStatus('running');
     const jobId = props.activeDocumentJob?.id;
+    const pageWriteBatch: PageTextContent[] = [];
+    const flushPageWriteBatch = async () => {
+      if (pageWriteBatch.length === 0) return;
+      const pending = pageWriteBatch.splice(0, pageWriteBatch.length);
+      try {
+        await persistVersionedPageTexts(props.activeDocument.id, versionHash, pending);
+      } catch {
+        setPageCacheWriteFailed(true);
+      }
+    };
 
     extractPdfPageTexts(loadedPdf.doc, {
       signal: controller.signal,
@@ -1824,13 +1841,11 @@ function Reader(props: ReaderProps) {
           next.set(page.pageNumber, page);
           return [...next.values()].sort((a, b) => a.pageNumber - b.pageNumber);
         });
-        try {
-          await persistVersionedPageText(props.activeDocument.id, versionHash, page);
-        } catch {
-          // Search remains useful for this session. Report that reopen caching
-          // is degraded, but never abort extraction because one write failed.
-          setPageCacheWriteFailed(true);
-        }
+        pageWriteBatch.push(page);
+        if (pageWriteBatch.length >= 16) await flushPageWriteBatch();
+      },
+      onPageError: (pageNumber) => {
+        setTextExtractionFailures((current) => current.includes(pageNumber) ? current : [...current, pageNumber]);
       },
       onProgress: (processed, total) => {
         // Task 2.9 in-app gate mark: dev-only no-op unless VITE_PERF_MEASURE=1.
@@ -1840,7 +1855,8 @@ function Reader(props: ReaderProps) {
         }
       },
     })
-      .then((result) => {
+      .then(async (result) => {
+        await flushPageWriteBatch();
         // Each page was already published as it completed. Keep partial search
         // results available even when cancellation stops the remaining work.
         setExtractionStatus(result.completed ? 'done' : 'cancelled');
@@ -2348,10 +2364,9 @@ function Reader(props: ReaderProps) {
     }
     const quote = sel.toString().replace(/\s+/g, " ").trim();
     if (viewportRects.length === 0 || !quote) return null;
-    const containerRect = container.getBoundingClientRect();
     return {
-      left: maxR - containerRect.left + 10,
-      top: maxB - containerRect.top + 8,
+      left: maxR + 10,
+      top: maxB + 8,
       pageNumber,
       pageBox,
       viewportRects,
@@ -2368,15 +2383,32 @@ function Reader(props: ReaderProps) {
       const snapshot = captureSelectionSnapshot();
       if (!snapshot) return;
       event.preventDefault();
-      setSelectionPopup({ ...snapshot, left: event.clientX - (canvasContainerRef.current?.getBoundingClientRect().left ?? 0), top: event.clientY - (canvasContainerRef.current?.getBoundingClientRect().top ?? 0) });
+      setSelectionPopup({ ...snapshot, left: event.clientX, top: event.clientY });
+    };
+    const dismissOutside = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('.selection-popup')) return;
+      setSelectionPopup(null);
+      setPopupError(null);
+    };
+    const dismissOnScroll = (event: Event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('.selection-popup')) return;
+      setSelectionPopup(null);
     };
     document.addEventListener("pointerup", capture);
     document.addEventListener("keyup", capture);
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("scroll", dismissOnScroll, true);
+    window.addEventListener("resize", dismissOnScroll);
     canvasContainerRef.current?.addEventListener("contextmenu", handleContextMenu);
     const container = canvasContainerRef.current;
     return () => {
       document.removeEventListener("pointerup", capture);
       document.removeEventListener("keyup", capture);
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("scroll", dismissOnScroll, true);
+      window.removeEventListener("resize", dismissOnScroll);
       container?.removeEventListener("contextmenu", handleContextMenu);
     };
   }, [captureSelectionSnapshot]);
@@ -2784,6 +2816,11 @@ function Reader(props: ReaderProps) {
           {pageCacheWriteFailed && (
             <div className="indexing-progress-banner" role="status">
               Search is available for this session, but some indexed pages could not be cached for reopen. Indexing will retry next time.
+            </div>
+          )}
+          {textExtractionFailures.length > 0 && extractionStatus === 'done' && (
+            <div className="indexing-progress-banner" role="status">
+              Indexing finished, but text could not be extracted from {textExtractionFailures.length} page{textExtractionFailures.length === 1 ? '' : 's'}. Those pages remain viewable.
             </div>
           )}
 

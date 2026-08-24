@@ -319,11 +319,14 @@ export interface ExtractPagesOptions {
   skipPageNumbers?: ReadonlySet<number>;
   /** Publishes one completed page immediately; may await durable storage. */
   onPage?: (page: PageTextContent) => void | Promise<void>;
+  /** Reports page-local extraction failures without aborting the document job. */
+  onPageError?: (pageNumber: number, error: unknown) => void;
 }
 
 export interface ExtractPagesResult {
   pages: PageTextContent[];
   completed: boolean;
+  failedPageNumbers: number[];
 }
 
 /**
@@ -340,14 +343,27 @@ export async function extractPdfPageTexts(
   const order = prioritizePageWindow(totalPages, options.prioritizeFromPage ?? 1, 3);
   const yieldEvery = Math.max(1, options.yieldEveryPages ?? 4);
   const pages: PageTextContent[] = [];
+  const failedPageNumbers: number[] = [];
   let processed = options.skipPageNumbers?.size ?? 0;
 
   for (const pageNumber of order) {
     if (options.skipPageNumbers?.has(pageNumber)) continue;
     if (options.signal?.aborted) {
-      return { pages: sortByPage(pages), completed: false };
+      return { pages: sortByPage(pages), completed: false, failedPageNumbers };
     }
-    const text = await getPdfPageText(doc, pageNumber);
+    let text = '';
+    try {
+      text = await getPdfPageText(doc, pageNumber);
+    } catch (error) {
+      failedPageNumbers.push(pageNumber);
+      options.onPageError?.(pageNumber, error);
+      processed++;
+      options.onProgress?.(processed, totalPages);
+      if (processed % yieldEvery === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      continue;
+    }
     const page = { pageNumber, text };
     pages.push(page);
     await options.onPage?.(page);
@@ -358,7 +374,7 @@ export async function extractPdfPageTexts(
     }
   }
 
-  return { pages: sortByPage(pages), completed: true };
+  return { pages: sortByPage(pages), completed: true, failedPageNumbers };
 }
 
 function sortByPage(pages: PageTextContent[]): PageTextContent[] {

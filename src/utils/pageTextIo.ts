@@ -37,3 +37,23 @@ export async function persistVersionedPageText(
   };
   await invoke('db_upsert_page_for_version', { page: stored, versionHash });
 }
+
+export async function persistVersionedPageTexts(
+  documentId: string,
+  versionHash: string,
+  pages: PageTextContent[],
+): Promise<void> {
+  if (pages.length === 0) return;
+  const createdAt = new Date().toISOString();
+  const stored: StoredPage[] = pages.map((page) => ({
+    id: `${documentId}:${versionHash}:${page.pageNumber}`,
+    document_id: documentId,
+    page_number: page.pageNumber,
+    width: 0,
+    height: 0,
+    text_content: page.text,
+    created_at: createdAt,
+    provenance: 'source_extracted',
+  }));
+  await invoke('db_upsert_pages_for_version', { pages: stored, versionHash });
+}
