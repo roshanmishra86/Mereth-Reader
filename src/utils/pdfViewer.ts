@@ -261,7 +261,8 @@ export async function getPdfPageEmbeddedAnnotations(
  */
 export async function getPdfPageTextItems(
   doc: pdfjsLib.PDFDocumentProxy,
-  pageNumber: number
+  pageNumber: number,
+  throwOnError = false,
 ): Promise<PDFTextItem[]> {
   if (pageNumber < 1 || pageNumber > doc.numPages) return [];
   const entry = findCacheEntry(doc);
@@ -289,7 +290,8 @@ export async function getPdfPageTextItems(
     entry?.pageItemsCache.set(pageNumber, items);
     entry?.pageTextCache.set(pageNumber, items.map((it) => it.str).join(' '));
     return items;
-  } catch {
+  } catch (error) {
+    if (throwOnError) throw error;
     return [];
   }
 }
@@ -297,12 +299,13 @@ export async function getPdfPageTextItems(
 /** Joined text for a single page (cached). */
 export async function getPdfPageText(
   doc: pdfjsLib.PDFDocumentProxy,
-  pageNumber: number
+  pageNumber: number,
+  throwOnError = false,
 ): Promise<string> {
   const entry = findCacheEntry(doc);
   const cached = entry?.pageTextCache.get(pageNumber);
   if (cached !== undefined) return cached;
-  const items = await getPdfPageTextItems(doc, pageNumber);
+  const items = await getPdfPageTextItems(doc, pageNumber, throwOnError);
   return items.map((it) => it.str).join(' ');
 }
 
@@ -353,7 +356,7 @@ export async function extractPdfPageTexts(
     }
     let text = '';
     try {
-      text = await getPdfPageText(doc, pageNumber);
+      text = await getPdfPageText(doc, pageNumber, true);
     } catch (error) {
       failedPageNumbers.push(pageNumber);
       options.onPageError?.(pageNumber, error);
