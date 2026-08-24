@@ -43,6 +43,7 @@ import {
 } from "./utils/viewModeUtils";
 import { ReaderCanvas } from "./components/ReaderCanvas";
 import { SearchOptions, performAdvancedSearch, getNextMatchIndex, DEFAULT_SEARCH_OPTIONS } from "./utils/searchUtils";
+import { loadVersionedPageTexts, persistVersionedPageText } from "./utils/pageTextIo";
 import { parseOutlineTree } from "./utils/navigationUtils";
 import { resolveShortcutAction } from "./utils/shortcutUtils";
 import { getPdfPageEmbeddedAnnotations } from "./utils/pdfViewer";
@@ -335,6 +336,7 @@ function App() {
   // `reanchorDecision` records the user's choice; `reanchorSummary` is the
   // result of the re-anchoring pass.
   const [versionStatus, setVersionStatus] = useState<VersionCheckResult["status"] | null>(null);
+  const [activeFileHash, setActiveFileHash] = useState<string | null>(null);
   const [versionOffer, setVersionOffer] = useState<{
     documentId: string;
     previousVersionId: string | null;
@@ -713,6 +715,7 @@ function App() {
     setSelected("");
     setVersionOffer(null);
     setVersionStatus(null);
+    setActiveFileHash(null);
     setReanchorDecision(null);
     setReanchorSummary(null);
     setOperationError(null);
@@ -798,6 +801,7 @@ function App() {
       });
       if (openRequestId !== openDocumentRequestId.current) return;
       setVersionStatus(check.status);
+      setActiveFileHash(check.file_sha256_hash ?? check.document_sha256_hash);
       if (check.status === "changed") {
         setVersionOffer({ documentId: doc.id, previousVersionId: check.current_version_id ?? null });
         setReanchorDecision(null);
@@ -810,6 +814,7 @@ function App() {
       // Dev preview without the backend: nothing to report.
       if (openRequestId !== openDocumentRequestId.current) return;
       setVersionStatus(null);
+      setActiveFileHash(doc.sha256_hash);
       setVersionOffer(null);
       setVersionMismatchBannerVisible(false);
     }
@@ -1381,6 +1386,7 @@ function App() {
                 onTargetPageConsumed={() => setTargetPage(undefined)}
                 annotationsList={annotationsList}
                 currentVersionId={currentVersionId}
+                versionHash={activeFileHash}
                 trashedAnnotations={trashedAnnotations}
                 palette={palette}
                 onAnnotationCreated={handleAnnotationCreated}
@@ -1535,6 +1541,8 @@ type ReaderProps = {
   annotationsList: AnnotationRecord[];
   /** Task 3.4: the version row new annotations bind to (null until registered). */
   currentVersionId: string | null;
+  /** Fingerprint of the bytes currently loaded, including changed-in-place files. */
+  versionHash: string | null;
   /** Task 3.5: recoverable trash rows for the open document (FR-9.8). */
   trashedAnnotations: AnnotationRecord[];
   /** Task 3.5: the user's semantic palette (FR-9.3). */
@@ -1632,6 +1640,9 @@ function Reader(props: ReaderProps) {
   const [pdfLoadFailed, setPdfLoadFailed] = useState(false);
   const [pageTexts, setPageTexts] = useState<PageTextContent[]>([]);
   const [extractionStatus, setExtractionStatus] = useState<'idle' | 'running' | 'done' | 'cancelled'>('idle');
+  const [pageCacheHydrated, setPageCacheHydrated] = useState(false);
+  const [pageCacheWriteFailed, setPageCacheWriteFailed] = useState(false);
+  const cachedPageNumbersRef = useRef<Set<number>>(new Set());
   const [firstPagePainted, setFirstPagePainted] = useState(false);
   const extractionAbortRef = useRef<AbortController | null>(null);
 
@@ -1650,12 +1661,19 @@ function Reader(props: ReaderProps) {
 
   // ---- Task 3.4: annotation creation state (FR-9.1/FR-9.2/FR-9.4) ----
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
-  const [selectionPopup, setSelectionPopup] = useState<(SelectionPopupAnchor & { pageBox: PageBox }) | null>(null);
+  type CapturedSelection = SelectionPopupAnchor & {
+    pageBox: PageBox;
+    viewportRects: ViewportRect[];
+    quote: string;
+  };
+  const [selectionPopup, setSelectionPopup] = useState<CapturedSelection | null>(null);
   const [popupColor, setPopupColor] = useState(DEFAULT_ANNOTATION_COLOR);
   const [popupComment, setPopupComment] = useState("");
   const [popupLocked, setPopupLocked] = useState(false);
+  const [lockedAnnotationType, setLockedAnnotationType] = useState<"highlight" | "underline" | null>(null);
   const [popupBusy, setPopupBusy] = useState(false);
   const [popupError, setPopupError] = useState<string | null>(null);
+  const selectionActionRef = useRef<((type: "highlight" | "underline" | "comment", colorOverride?: string) => Promise<void>) | null>(null);
   const [captureActive, setCaptureActive] = useState(false);
   const [areaPending, setAreaPending] = useState<AreaCaptureResult | null>(null);
   const [areaCaption, setAreaCaption] = useState("");
@@ -1738,6 +1756,9 @@ function Reader(props: ReaderProps) {
     setLoadedPdf(null);
     setPdfLoadFailed(false);
     setPageTexts([]);
+    cachedPageNumbersRef.current = new Set();
+    setPageCacheHydrated(false);
+    setPageCacheWriteFailed(false);
     setExtractionStatus('idle');
     setFirstPagePainted(false);
     setCurrentPageSize(DEFAULT_PAGE_SIZE);
@@ -1761,11 +1782,32 @@ function Reader(props: ReaderProps) {
     };
   }, [props.activeDocument.id, props.activeDocument.filepath]);
 
+  // Hydrate only text extracted from these exact source bytes. Older-version
+  // rows remain isolated and can never make changed PDFs appear searchable.
+  useEffect(() => {
+    if (!loadedPdf || !props.versionHash) return;
+    const versionHash = props.versionHash;
+    let cancelled = false;
+    void loadVersionedPageTexts(props.activeDocument.id, versionHash)
+      .then((cached) => {
+        if (cancelled) return;
+        cachedPageNumbersRef.current = new Set(cached.map((page) => page.pageNumber));
+        setPageTexts(cached);
+        setPageCacheHydrated(true);
+        if (cached.length >= loadedPdf.numPages) setExtractionStatus('done');
+      })
+      .catch(() => {
+        if (!cancelled) setPageCacheHydrated(true);
+      });
+    return () => { cancelled = true; };
+  }, [loadedPdf, props.activeDocument.id, props.versionHash]);
+
   // Background text extraction (FR-7.6): starts after the document renders,
   // prioritizes the reading position, yields regularly, and reports real
   // progress to the job record shown in the indexing banner.
   useEffect(() => {
-    if (!loadedPdf || !firstPagePainted || extractionStatus !== 'idle') return;
+    if (!loadedPdf || !props.versionHash || !firstPagePainted || !pageCacheHydrated || extractionStatus !== 'idle') return;
+    const versionHash = props.versionHash;
 
     const controller = new AbortController();
     extractionAbortRef.current = controller;
@@ -1775,6 +1817,21 @@ function Reader(props: ReaderProps) {
     extractPdfPageTexts(loadedPdf.doc, {
       signal: controller.signal,
       prioritizeFromPage: currentPageRef.current,
+      skipPageNumbers: cachedPageNumbersRef.current,
+      onPage: async (page) => {
+        setPageTexts((current) => {
+          const next = new Map(current.map((entry) => [entry.pageNumber, entry]));
+          next.set(page.pageNumber, page);
+          return [...next.values()].sort((a, b) => a.pageNumber - b.pageNumber);
+        });
+        try {
+          await persistVersionedPageText(props.activeDocument.id, versionHash, page);
+        } catch {
+          // Search remains useful for this session. Report that reopen caching
+          // is degraded, but never abort extraction because one write failed.
+          setPageCacheWriteFailed(true);
+        }
+      },
       onProgress: (processed, total) => {
         // Task 2.9 in-app gate mark: dev-only no-op unless VITE_PERF_MEASURE=1.
         perfMark(`extract.progress:${processed}:${total}`);
@@ -1784,14 +1841,15 @@ function Reader(props: ReaderProps) {
       },
     })
       .then((result) => {
-        setPageTexts(result.pages);
+        // Each page was already published as it completed. Keep partial search
+        // results available even when cancellation stops the remaining work.
         setExtractionStatus(result.completed ? 'done' : 'cancelled');
       })
       .catch(() => {
         setExtractionStatus('cancelled');
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedPdf, firstPagePainted, extractionStatus]);
+  }, [loadedPdf, firstPagePainted, pageCacheHydrated, extractionStatus, props.activeDocument.id, props.versionHash]);
 
   // Task 3.6 (FR-9.9): background scan for embedded (PDF-born) annotations.
   // Batched and cancelled on document change; pages near the reading start
@@ -2203,10 +2261,10 @@ function Reader(props: ReaderProps) {
           props.setRightOpen(!props.rightOpen);
           break;
         case 'annot.highlight.yellow':
-          if (props.annotationsList.length > 0) props.setSelected(props.annotationsList[0].id);
+          void selectionActionRef.current?.('highlight', 'claim');
           break;
         case 'annot.highlight.green':
-          if (props.annotationsList.length > 1) props.setSelected(props.annotationsList[1].id);
+          void selectionActionRef.current?.('highlight', 'evidence');
           break;
         case 'annot.areaCapture':
           setCaptureActive((prev) => !prev);
@@ -2242,92 +2300,89 @@ function Reader(props: ReaderProps) {
   }, [loadedPdf]);
 
   // ---- Task 3.4: selection popover (FR-9.2) ----
-  // The popover tracks `selectionchange`, but a collapse caused by clicking a
-  // popover control must not yank the popover away before the click lands —
-  // clicks inside the popup set suppress, which skips the hide.
-  const popupSuppressRef = useRef(false);
-  useEffect(() => {
-    let raf = 0;
-    const handler = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        if (popupSuppressRef.current) {
-          popupSuppressRef.current = false;
-          return;
-        }
-        const container = canvasContainerRef.current;
-        if (!container || !props.currentVersionId || captureActiveRef.current) {
-          setSelectionPopup(null);
-          return;
-        }
-        const sel = window.getSelection();
-        if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-          setSelectionPopup(null);
-          return;
-        }
-        const anchorNode = sel.anchorNode;
-        if (!anchorNode) {
-          setSelectionPopup(null);
-          return;
-        }
-        const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode.parentElement;
-        const pageEl = anchorEl?.closest(".pdf-page") as HTMLElement | null;
-        if (!pageEl || !pageEl.closest(".reader-canvas-container")) {
-          setSelectionPopup(null);
-          return;
-        }
-        const pageNumber = Number(pageEl.dataset.pageNumber ?? 0);
-        if (!pageNumber) {
-          setSelectionPopup(null);
-          return;
-        }
-        const pageRect = pageEl.getBoundingClientRect();
-        const pageBox: PageBox = {
-          left: pageRect.left,
-          top: pageRect.top,
-          right: pageRect.right,
-          bottom: pageRect.bottom,
-          width: pageRect.width,
-          height: pageRect.height,
-        };
-        let minL = Number.POSITIVE_INFINITY;
-        let minT = Number.POSITIVE_INFINITY;
-        let maxR = Number.NEGATIVE_INFINITY;
-        let maxB = Number.NEGATIVE_INFINITY;
-        for (let i = 0; i < sel.rangeCount; i++) {
-          const range = sel.getRangeAt(i);
-          for (const cr of range.getClientRects()) {
-            if (cr.bottom <= pageBox.top || cr.top >= pageBox.bottom || cr.right <= pageBox.left || cr.left >= pageBox.right) continue;
-            minL = Math.min(minL, Math.max(cr.left, pageBox.left));
-            minT = Math.min(minT, Math.max(cr.top, pageBox.top));
-            maxR = Math.max(maxR, Math.min(cr.right, pageBox.right));
-            maxB = Math.max(maxB, Math.min(cr.bottom, pageBox.bottom));
-          }
-        }
-        if (!Number.isFinite(minL) || minL >= maxR || minT >= maxB) {
-          setSelectionPopup(null);
-          return;
-        }
-        const containerRect = container.getBoundingClientRect();
-        setSelectionPopup({
-          left: maxR - containerRect.left + 10,
-          top: maxB - containerRect.top + 8,
-          pageNumber,
-          pageBox,
-        });
-      });
+  // Capture an immutable snapshot only when selection interaction completes.
+  // Popup, context-menu, and keyboard actions all consume this snapshot; none
+  // re-read the live DOM Selection after a control can collapse it.
+  const captureSelectionSnapshot = useCallback((): CapturedSelection | null => {
+    const container = canvasContainerRef.current;
+    if (!container || !props.currentVersionId || captureActiveRef.current) return null;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+    const anchorNode = sel.anchorNode;
+    const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement;
+    const pageEl = anchorEl?.closest(".pdf-page") as HTMLElement | null;
+    if (!pageEl || !pageEl.closest(".reader-canvas-container")) return null;
+    const focusNode = sel.focusNode;
+    const focusEl = focusNode instanceof Element ? focusNode : focusNode?.parentElement;
+    if (focusEl?.closest(".pdf-page") !== pageEl) {
+      setPopupError("Create one annotation per page; this selection crosses a page boundary.");
+      return null;
+    }
+    const pageNumber = Number(pageEl.dataset.pageNumber ?? 0);
+    if (!pageNumber) return null;
+    const pageRect = pageEl.getBoundingClientRect();
+    const pageBox: PageBox = {
+      left: pageRect.left,
+      top: pageRect.top,
+      right: pageRect.right,
+      bottom: pageRect.bottom,
+      width: pageRect.width,
+      height: pageRect.height,
     };
-    document.addEventListener("selectionchange", handler);
-    return () => {
-      cancelAnimationFrame(raf);
-      document.removeEventListener("selectionchange", handler);
+    const viewportRects: ViewportRect[] = [];
+    let maxR = Number.NEGATIVE_INFINITY;
+    let maxB = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < sel.rangeCount; i++) {
+      for (const cr of sel.getRangeAt(i).getClientRects()) {
+        if (cr.bottom <= pageBox.top || cr.top >= pageBox.bottom || cr.right <= pageBox.left || cr.left >= pageBox.right) continue;
+        const clipped = {
+          left: Math.max(cr.left, pageBox.left),
+          top: Math.max(cr.top, pageBox.top),
+          right: Math.min(cr.right, pageBox.right),
+          bottom: Math.min(cr.bottom, pageBox.bottom),
+        };
+        viewportRects.push(clipped);
+        maxR = Math.max(maxR, clipped.right);
+        maxB = Math.max(maxB, clipped.bottom);
+      }
+    }
+    const quote = sel.toString().replace(/\s+/g, " ").trim();
+    if (viewportRects.length === 0 || !quote) return null;
+    const containerRect = container.getBoundingClientRect();
+    return {
+      left: maxR - containerRect.left + 10,
+      top: maxB - containerRect.top + 8,
+      pageNumber,
+      pageBox,
+      viewportRects,
+      quote,
     };
   }, [props.currentVersionId]);
 
-  // Task 3.4: create a highlight/underline/comment from the current DOM
-  // selection (FR-9.1/9.2/9.4). Anchors are re-measured at save time so the
-  // stored rects always match what the user last selected.
-  const handleCreateFromSelection = async (type: "highlight" | "underline" | "comment") => {
+  useEffect(() => {
+    const capture = () => {
+      const snapshot = captureSelectionSnapshot();
+      if (snapshot) setSelectionPopup(snapshot);
+    };
+    const handleContextMenu = (event: MouseEvent) => {
+      const snapshot = captureSelectionSnapshot();
+      if (!snapshot) return;
+      event.preventDefault();
+      setSelectionPopup({ ...snapshot, left: event.clientX - (canvasContainerRef.current?.getBoundingClientRect().left ?? 0), top: event.clientY - (canvasContainerRef.current?.getBoundingClientRect().top ?? 0) });
+    };
+    document.addEventListener("pointerup", capture);
+    document.addEventListener("keyup", capture);
+    canvasContainerRef.current?.addEventListener("contextmenu", handleContextMenu);
+    const container = canvasContainerRef.current;
+    return () => {
+      document.removeEventListener("pointerup", capture);
+      document.removeEventListener("keyup", capture);
+      container?.removeEventListener("contextmenu", handleContextMenu);
+    };
+  }, [captureSelectionSnapshot]);
+
+  // Task 3.4: create from the immutable snapshot captured on release.
+  const handleCreateFromSelection = async (type: "highlight" | "underline" | "comment", colorOverride?: string) => {
     const popup = selectionPopup;
     if (!popup || !loadedPdf || !props.currentVersionId) {
       setSelectionPopup(null);
@@ -2336,31 +2391,12 @@ function Reader(props: ReaderProps) {
     setPopupBusy(true);
     setPopupError(null);
     try {
-      const sel = window.getSelection();
-      if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-        throw new Error("The selection collapsed — select the text again.");
-      }
-      const rects: ViewportRect[] = [];
-      for (let i = 0; i < sel.rangeCount; i++) {
-        const range = sel.getRangeAt(i);
-        for (const cr of range.getClientRects()) {
-          if (cr.bottom <= popup.pageBox.top || cr.top >= popup.pageBox.bottom || cr.right <= popup.pageBox.left || cr.left >= popup.pageBox.right) continue;
-          rects.push({
-            left: Math.max(cr.left, popup.pageBox.left),
-            top: Math.max(cr.top, popup.pageBox.top),
-            right: Math.min(cr.right, popup.pageBox.right),
-            bottom: Math.min(cr.bottom, popup.pageBox.bottom),
-          });
-        }
-      }
-      const normalized = mergeSelectionRects(rects, popup.pageBox, rotation);
+      const normalized = mergeSelectionRects(popup.viewportRects, popup.pageBox, rotation);
       if (normalized.length === 0) {
         throw new Error("The selection is empty on this page.");
       }
-      const quote = sel.toString().replace(/\s+/g, " ").trim();
-      if (!quote) {
-        throw new Error("No readable text selected.");
-      }
+      const quote = popup.quote;
+      const annotationColor = colorOverride ?? popupColor;
 
       // FR-9.4 anchor fields from the real text layer: prefix/suffix context
       // and the text-layer checksum (same ordered text re-anchoring matches).
@@ -2382,7 +2418,7 @@ function Reader(props: ReaderProps) {
           pageLabel,
           rects: normalized,
           comment: popupComment.trim(),
-          color: popupColor,
+          color: annotationColor,
         });
         await props.onAnnotationCreated(record);
       } else {
@@ -2397,26 +2433,32 @@ function Reader(props: ReaderProps) {
           prefix,
           suffix,
           textLayerChecksum,
-          color: popupColor,
+          color: annotationColor,
           comment: popupComment.trim(),
         });
         await props.onAnnotationCreated(record);
       }
 
       if (popupLocked) {
-        // FR-9.2 locked mode: keep the popup armed for the next selection.
-        popupSuppressRef.current = true;
+        // FR-9.2 locked mode: keep the chosen tool settings armed, but discard
+        // the consumed snapshot so it cannot be applied twice accidentally.
         window.getSelection()?.removeAllRanges();
         setPopupComment("");
-      } else {
-        setSelectionPopup(null);
+        if (type === "highlight" || type === "underline") setLockedAnnotationType(type);
       }
+      setSelectionPopup(null);
     } catch (err) {
       setPopupError(err instanceof Error ? err.message : String(err));
     } finally {
       setPopupBusy(false);
     }
   };
+  selectionActionRef.current = handleCreateFromSelection;
+  useEffect(() => {
+    if (selectionPopup && popupLocked && lockedAnnotationType && !popupBusy) {
+      void selectionActionRef.current?.(lockedAnnotationType);
+    }
+  }, [selectionPopup, popupLocked, lockedAnnotationType, popupBusy]);
 
   // Task 3.4: resolve area-crop assets into object URLs for the overlay.
   useEffect(() => {
@@ -2664,6 +2706,8 @@ function Reader(props: ReaderProps) {
           searchOptions={searchOptions}
           onSearchOptionsChange={setSearchOptions}
           searchMatches={searchMatches}
+          indexedPages={pageTexts.length}
+          extractionStatus={extractionStatus}
           currentMatchIndex={currentMatchIndex}
           onNextMatch={handleNextMatch}
           onPrevMatch={handlePrevMatch}
@@ -2735,6 +2779,11 @@ function Reader(props: ReaderProps) {
                   Cancel Indexing
                 </button>
               )}
+            </div>
+          )}
+          {pageCacheWriteFailed && (
+            <div className="indexing-progress-banner" role="status">
+              Search is available for this session, but some indexed pages could not be cached for reopen. Indexing will retry next time.
             </div>
           )}
 
@@ -2832,7 +2881,10 @@ function Reader(props: ReaderProps) {
               comment={popupComment}
               onCommentChange={setPopupComment}
               locked={popupLocked}
-              onToggleLocked={() => setPopupLocked((prev) => !prev)}
+              onToggleLocked={() => setPopupLocked((prev) => {
+                if (prev) setLockedAnnotationType(null);
+                return !prev;
+              })}
               busy={popupBusy}
               error={popupError}
               onCreate={(type) => void handleCreateFromSelection(type)}

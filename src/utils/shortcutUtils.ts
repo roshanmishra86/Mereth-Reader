@@ -194,18 +194,18 @@ export const SHORTCUT_LIST: KeyboardShortcut[] = [
   // Annotations & Notes
   {
     id: 'annot.highlight.yellow',
-    name: 'Yellow Highlight (Evidence)',
+    name: 'Yellow Highlight (Claim)',
     category: 'Annotations & Notes',
     keys: 'Alt + 1',
-    description: 'Highlight selected text with Yellow (Evidence label)',
+    description: 'Highlight selected text with Yellow (Claim label)',
     match: (e) => e.altKey && !e.ctrlKey && e.key === '1',
   },
   {
     id: 'annot.highlight.green',
-    name: 'Green Highlight (Claim)',
+    name: 'Green Highlight (Evidence)',
     category: 'Annotations & Notes',
     keys: 'Alt + 2',
-    description: 'Highlight selected text with Green (Claim label)',
+    description: 'Highlight selected text with Green (Evidence label)',
     match: (e) => e.altKey && !e.ctrlKey && e.key === '2',
   },
   {
@@ -288,4 +288,3 @@ export function checkShortcutCollision(
     conflictingShortcut: conflicting,
   };
 }
-

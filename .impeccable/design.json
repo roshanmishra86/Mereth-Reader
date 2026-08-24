@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-24T00:00:00Z",
+  "title": "Design System: Mereth Reader",
+  "extends": "../DESIGN.md",
+  "extensions": {
+    "colorMeta": {
+      "ground": { "role": "neutral", "displayName": "Desk Ground", "ref": "{colors.ground}", "tonalRamp": ["#f8f4f4", "#eae7e7", "#d7d3d3", "#bab6b6", "#9b9797", "#7d7979", "#605d5d", "#444141", "#2d2b2b"] },
+      "surface": { "role": "neutral", "displayName": "Work Surface", "ref": "{colors.surface}" },
+      "ink": { "role": "neutral", "displayName": "Desk Ink", "ref": "{colors.ink}" },
+      "accent": { "role": "primary", "displayName": "Signal Red", "ref": "{colors.accent}", "tonalRamp": ["#fff2ef", "#ffe0d9", "#ffc4b8", "#ff9783", "#ff563c", "#dd2b0f", "#ae1800", "#7c1405", "#4d170e"] },
+      "annotation-claim": { "role": "semantic", "displayName": "Claim", "ref": "{colors.annotation-claim}" },
+      "annotation-evidence": { "role": "semantic", "displayName": "Evidence", "ref": "{colors.annotation-evidence}" },
+      "annotation-question": { "role": "semantic", "displayName": "Question", "ref": "{colors.annotation-question}" },
+      "annotation-disagree": { "role": "semantic", "displayName": "Disagree", "ref": "{colors.annotation-disagree}" },
+      "annotation-support": { "role": "semantic", "displayName": "Support", "ref": "{colors.annotation-support}" }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "ref": "{typography.display}", "purpose": "Rare section introductions and empty states." },
+      "heading": { "displayName": "Heading", "ref": "{typography.heading}", "purpose": "Pane and dialog titles." },
+      "body": { "displayName": "Body", "ref": "{typography.body}", "purpose": "Interface prose, excerpts, and notes." },
+      "label": { "displayName": "Label", "ref": "{typography.label}", "purpose": "Compact controls, navigation, and metadata." }
+    },
+    "shadows": [
+      { "name": "pdf-sheet", "value": "0 3px 10px rgba(45, 43, 43, 0.16)", "purpose": "Separates document paper from desk ground." },
+      { "name": "transient-ui", "value": "0 6px 18px rgba(45, 43, 43, 0.20)", "purpose": "Selection popup and context menu only." },
+      { "name": "dialog", "value": "0 12px 32px rgba(45, 43, 43, 0.22)", "purpose": "Maximum elevation for modal dialogs." }
+    ],
+    "motion": [
+      { "name": "duration-fast", "value": "100ms", "purpose": "Hover, focus, and pressed-state feedback." },
+      { "name": "duration-standard", "value": "160ms", "purpose": "Pane and transient UI state changes." },
+      { "name": "ease-standard", "value": "cubic-bezier(0.2, 0, 0, 1)", "purpose": "Direct, low-overshoot interface transitions." },
+      { "name": "reduced-motion", "value": "0ms", "purpose": "Replace non-essential transitions when reduced motion is requested." }
+    ],
+    "focus": { "outline": "2px solid {colors.accent}", "outlineOffset": "2px", "rule": "Use :focus-visible; never remove focus without an equivalent visible treatment." },
+    "breakpoints": [
+      { "name": "minimum-window", "value": "1024px", "height": "640px", "behavior": "Keep canvas and primary reader controls reachable; collapse right pane, then left pane." },
+      { "name": "dual-pane-comfort", "value": "1180px", "behavior": "Below this width, do not open both side panes automatically." },
+      { "name": "wide-workspace", "value": "1440px", "behavior": "Both side panes may remain open while preserving a comfortable page canvas." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single highest-priority action in a local region.",
+      "html": "<button class=\"ds-button ds-button--primary\">Save annotation</button>",
+      "css": ".ds-button{min-height:36px;padding:8px 12px;border:1px solid rgba(32,30,29,.4);border-radius:0;font:800 11px/1.2 Archivo,Arial,sans-serif;letter-spacing:.08em;text-align:left;cursor:pointer}.ds-button--primary{background:#ec3013;color:#f3f2f2;border-color:#ec3013}.ds-button--primary:hover{background:#dd2b0f}.ds-button:focus-visible{outline:2px solid #ec3013;outline-offset:2px}"
+    },
+    {
+      "name": "Search Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Search with an explicit label and honest indexing coverage.",
+      "html": "<label class=\"ds-field\"><span>Search document</span><input type=\"search\" aria-describedby=\"ds-search-status\"><small id=\"ds-search-status\">Indexed 18 of 42 pages</small></label>",
+      "css": ".ds-field{display:grid;gap:4px;color:#201e1d;font:800 11px/1.2 Archivo,Arial,sans-serif;letter-spacing:.04em}.ds-field input{min-height:36px;padding:6px 10px;border:1px solid rgba(32,30,29,.4);border-radius:0;background:#eae9e9;color:#201e1d;font:400 14px/1.55 Archivo,Arial,sans-serif}.ds-field input:focus-visible{outline:2px solid #ec3013;outline-offset:2px}.ds-field small{color:#605d5d;font-weight:400;letter-spacing:0}"
+    },
+    {
+      "name": "Navigation Rail Item",
+      "kind": "nav",
+      "refersTo": "rail-item",
+      "description": "A full-width destination with visible active structure.",
+      "html": "<nav class=\"ds-rail\" aria-label=\"Main\"><a href=\"#reader\" aria-current=\"page\"><svg aria-hidden=\"true\" width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M4 19.5A2.5 2.5 0 0 1 6.5 17H20\"/><path d=\"M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z\"/></svg><span>Reader</span></a></nav>",
+      "css": ".ds-rail{width:66px;background:#eae9e9;border-right:2px solid rgba(32,30,29,.4)}.ds-rail a{min-height:55px;display:grid;place-items:center;padding:8px 2px;border-left:3px solid transparent;color:#605d5d;text-decoration:none;font:800 10px/1.2 Archivo,Arial,sans-serif}.ds-rail a[aria-current=page]{border-left-color:#ec3013;background:#f3f2f2;color:#201e1d}.ds-rail a:focus-visible{outline:2px solid #ec3013;outline-offset:-2px}"
+    },
+    {
+      "name": "Pane Tabs",
+      "kind": "nav",
+      "description": "Ruled tabs for switching a pane without card-like containers.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\" aria-label=\"Source pane\"><button role=\"tab\" aria-selected=\"true\">Outline</button><button role=\"tab\" aria-selected=\"false\">Pages</button></div>",
+      "css": ".ds-tabs{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid rgba(32,30,29,.4);background:#eae9e9}.ds-tabs button{min-height:36px;border:0;border-right:1px solid rgba(32,30,29,.4);border-bottom:2px solid transparent;border-radius:0;background:transparent;color:#605d5d;font:800 11px/1.2 Archivo,Arial,sans-serif;text-transform:uppercase}.ds-tabs button[aria-selected=true]{border-bottom-color:#ec3013;background:#f3f2f2;color:#ae1800}.ds-tabs button:focus-visible{outline:2px solid #ec3013;outline-offset:-2px}"
+    },
+    {
+      "name": "Annotation Filter",
+      "kind": "chip",
+      "description": "Semantic filter that pairs its swatch with a label and selected mark.",
+      "html": "<button class=\"ds-filter\" aria-pressed=\"true\"><span class=\"ds-swatch\" aria-hidden=\"true\"></span><span>Evidence</span><svg aria-hidden=\"true\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"m20 6-11 11-5-5\"/></svg></button>",
+      "css": ".ds-filter{min-height:36px;display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border:1px solid rgba(32,30,29,.4);border-radius:0;background:#eae9e9;color:#201e1d;font:400 14px/1.2 Archivo,Arial,sans-serif}.ds-filter[aria-pressed=true]{border-left:3px solid #ec3013}.ds-swatch{width:12px;height:12px;background:#8fb583;border:1px solid #201e1d}.ds-filter:focus-visible{outline:2px solid #ec3013;outline-offset:2px}"
+    },
+    {
+      "name": "Annotation Row",
+      "kind": "card",
+      "refersTo": "annotation-row",
+      "description": "A flat evidence row with source, category, and page identity.",
+      "html": "<article class=\"ds-annotation\"><header><strong>Evidence</strong><span>p. 18</span></header><blockquote>Retrieval precedes source reveal.</blockquote><p>User comment stays distinct from the quote.</p></article>",
+      "css": ".ds-annotation{padding:12px;border:0;border-bottom:1px solid rgba(32,30,29,.4);border-left:3px solid #8fb583;background:#eae9e9;color:#201e1d;font:400 14px/1.55 Archivo,Arial,sans-serif}.ds-annotation header{display:flex;justify-content:space-between;color:#605d5d;font-size:11px}.ds-annotation header strong{color:#201e1d}.ds-annotation blockquote{margin:8px 0;padding-left:8px;border-left:2px solid rgba(32,30,29,.4)}.ds-annotation p{margin:8px 0 0}"
+    },
+    {
+      "name": "Selection Popup",
+      "kind": "custom",
+      "description": "Transient annotation actions bound to a captured selection snapshot.",
+      "html": "<div class=\"ds-selection\" role=\"toolbar\" aria-label=\"Annotate selection\"><button aria-label=\"Highlight as claim\"><span aria-hidden=\"true\"></span>Claim</button><button>Add comment</button></div>",
+      "css": ".ds-selection{display:flex;border:1px solid rgba(32,30,29,.55);background:#eae9e9;box-shadow:0 6px 18px rgba(45,43,43,.20)}.ds-selection button{min-height:36px;display:flex;align-items:center;gap:6px;padding:6px 10px;border:0;border-right:1px solid rgba(32,30,29,.4);border-radius:0;background:transparent;color:#201e1d;font:800 11px/1.2 Archivo,Arial,sans-serif}.ds-selection button:hover{background:#d7d3d3}.ds-selection button:focus-visible{outline:2px solid #ec3013;outline-offset:-2px}.ds-selection span{width:10px;height:10px;background:#d9bd3a;border:1px solid #201e1d}"
+    },
+    {
+      "name": "Context Menu",
+      "kind": "custom",
+      "description": "Keyboard-safe alternate route to the same captured-selection actions.",
+      "html": "<menu class=\"ds-menu\" aria-label=\"Selection actions\"><li><button>Highlight as evidence</button></li><li><button>Copy with source link</button></li></menu>",
+      "css": ".ds-menu{width:220px;margin:0;padding:4px 0;border:1px solid rgba(32,30,29,.55);border-radius:0;background:#eae9e9;box-shadow:0 6px 18px rgba(45,43,43,.20);list-style:none}.ds-menu button{width:100%;min-height:36px;padding:8px 12px;border:0;border-radius:0;background:transparent;color:#201e1d;text-align:left;font:400 14px/1.2 Archivo,Arial,sans-serif}.ds-menu button:hover{background:#d7d3d3}.ds-menu button:focus-visible{outline:2px solid #ec3013;outline-offset:-2px}"
+    },
+    {
+      "name": "Dialog",
+      "kind": "custom",
+      "refersTo": "dialog",
+      "description": "A square modal surface with explicit title and ordered actions.",
+      "html": "<section class=\"ds-dialog\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"ds-dialog-title\"><h2 id=\"ds-dialog-title\">Remove annotation?</h2><p>The annotation moves to recoverable deleted state.</p><footer><button>Cancel</button><button class=\"primary\">Remove</button></footer></section>",
+      "css": ".ds-dialog{width:min(440px,calc(100vw - 32px));padding:16px;border:1px solid rgba(32,30,29,.55);border-top:2px solid #ec3013;border-radius:0;background:#eae9e9;color:#201e1d;box-shadow:0 12px 32px rgba(45,43,43,.22);font:400 14px/1.55 Archivo,Arial,sans-serif}.ds-dialog h2{margin:0 0 12px;font-size:20px}.ds-dialog footer{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}.ds-dialog button{min-height:36px;padding:8px 12px;border:1px solid rgba(32,30,29,.4);border-radius:0;background:#f3f2f2}.ds-dialog .primary{background:#ec3013;color:#f3f2f2;border-color:#ec3013}.ds-dialog button:focus-visible{outline:2px solid #ec3013;outline-offset:2px}"
+    },
+    {
+      "name": "Review Rating Group",
+      "kind": "custom",
+      "description": "Calm, source-hidden retrieval ratings with tabular interval previews.",
+      "html": "<fieldset class=\"ds-ratings\"><legend>Rate this attempt</legend><button>Again <small>10m</small></button><button>Hard <small>2d</small></button><button>Good <small>4d</small></button><button>Easy <small>8d</small></button></fieldset>",
+      "css": ".ds-ratings{display:grid;grid-template-columns:repeat(4,1fr);padding:0;border:1px solid rgba(32,30,29,.4);background:#eae9e9}.ds-ratings legend{grid-column:1/-1;padding:0 0 8px;font:800 11px/1.2 Archivo,Arial,sans-serif;letter-spacing:.08em}.ds-ratings button{min-height:48px;border:0;border-right:1px solid rgba(32,30,29,.4);border-radius:0;background:transparent;color:#201e1d;font:800 11px/1.2 Archivo,Arial,sans-serif}.ds-ratings button:last-child{border-right:0}.ds-ratings button:hover{background:#d7d3d3}.ds-ratings button:focus-visible{outline:2px solid #ec3013;outline-offset:-2px}.ds-ratings small{display:block;color:#605d5d;font-variant-numeric:tabular-nums}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Quiet Research Desk",
+    "overview": "Mereth is a focused Modernist work surface where documents, provenance, and the reader's thought outrank decorative chrome. Architectural rules, square geometry, a warm neutral ground, and one red accent provide a restrained hierarchy. Zotero informs interaction quality but not Mereth's visual language or citation scope.",
+    "keyCharacteristics": ["Flat architectural surfaces", "Visible modular grid", "One red interface accent", "Explicit provenance", "Keyboard and scaling resilience"],
+    "rules": [
+      { "name": "The One Red Voice Rule", "body": "Signal Red is the only interface accent; semantic annotation colors do not decorate navigation.", "section": "colors" },
+      { "name": "The Reading Voice Rule", "body": "Heavy type establishes structure while regular type carries thought.", "section": "typography" },
+      { "name": "The Flat-by-Default Rule", "body": "Persistent surfaces use rules and tonal layers; shadows are reserved for paper, transient UI, and dialogs.", "section": "elevation" }
+    ],
+    "dos": ["Use 2px rules for major structure.", "Pair annotation color with semantic labels.", "Keep core controls reachable at 1024 by 640.", "Honor reduced motion and visible focus."],
+    "donts": ["Do not add gradients or ornamental effects.", "Do not introduce rounded cards or pill filters.", "Do not imitate Zotero's visual language.", "Do not present post-v1 features as disabled v1 promises."]
+  }
+}

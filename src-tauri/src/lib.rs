@@ -224,6 +224,20 @@ fn db_get_pages(document_id: String, state: State<'_, AppState>) -> Result<Vec<P
 }
 
 #[tauri::command]
+fn db_get_pages_for_version(document_id: String, version_hash: String, state: State<'_, AppState>) -> Result<Vec<Page>, String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.get_pages_for_version(&document_id, &version_hash)
+}
+
+#[tauri::command]
+fn db_upsert_page_for_version(page: Page, version_hash: String, state: State<'_, AppState>) -> Result<(), String> {
+  let lock = state.db.lock().unwrap();
+  let db = lock.as_ref().ok_or("Database not initialized")?;
+  db.upsert_page_for_version(page, &version_hash)
+}
+
+#[tauri::command]
 fn db_add_job(job: Job, state: State<'_, AppState>) -> Result<(), String> {
   let lock = state.db.lock().unwrap();
   let db = lock.as_ref().ok_or("Database not initialized")?;
@@ -968,6 +982,8 @@ pub fn run() {
       db_get_removed_documents,
       db_purge_document,
       db_get_pages,
+      db_get_pages_for_version,
+      db_upsert_page_for_version,
       db_add_job,
       db_get_jobs,
       db_update_job,

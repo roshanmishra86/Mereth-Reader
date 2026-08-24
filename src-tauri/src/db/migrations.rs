@@ -18,7 +18,7 @@ pub enum MigrationError {
 }
 
 /// The highest migration version this engine knows how to apply.
-const LATEST_MIGRATION_VERSION: i32 = 13;
+const LATEST_MIGRATION_VERSION: i32 = 14;
 
 /// Runs forward-only migrations.
 ///
@@ -869,6 +869,32 @@ pub fn run_migrations(conn: &mut Connection, db_dir: &Path, db_existed: bool) ->
       tx.execute(
         "INSERT INTO migration_metadata (version, applied_at, checksum)
          VALUES (13, datetime('now'), 'migration_13_document_ownership_removal');",
+        [],
+      )?;
+      tx.commit()?;
+    }
+
+    if current_version < 14 {
+      let has_version_hash: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('pages') WHERE name = 'version_hash')",
+        [], |row| row.get(0),
+      )?;
+      let tx = conn.transaction()?;
+      if !has_version_hash {
+        tx.execute("ALTER TABLE pages ADD COLUMN version_hash TEXT NOT NULL DEFAULT '';", [])?;
+      }
+      // Pre-v14 rows cannot be attributed to a particular source version.
+      // Dropping them is safer than serving stale text after a PDF changes;
+      // the background extractor recreates the cache on next open.
+      tx.execute("DELETE FROM fts_document_text;", [])?;
+      tx.execute("DELETE FROM pages;", [])?;
+      tx.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_document_version_page ON pages(document_id, version_hash, page_number);",
+        [],
+      )?;
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+         VALUES (14, datetime('now'), 'migration_14_versioned_page_text_cache');",
         [],
       )?;
       tx.commit()?;

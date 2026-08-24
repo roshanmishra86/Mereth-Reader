@@ -40,7 +40,7 @@ describe('pdfViewer load path', () => {
 });
 
 describe('renderPdfPageToCanvas', () => {
-  it('returns null for invalid page numbers', async () => {
+  it('returns a discriminated bitmap failure for invalid page numbers', async () => {
     const dummyCanvas = (typeof document !== 'undefined'
       ? document.createElement('canvas')
       : { getContext: () => null }) as HTMLCanvasElement;
@@ -56,7 +56,13 @@ describe('renderPdfPageToCanvas', () => {
       scale: 1.0,
     });
 
-    expect(outOfBounds).toBeNull();
+    expect(outOfBounds).toEqual({
+      bitmap: 'failed',
+      textLayer: 'not_started',
+      dimensions: null,
+      errorCategory: 'bitmap',
+      message: 'Page is outside the document.',
+    });
   });
 });
 
@@ -125,5 +131,18 @@ describe('extractPdfPageTexts (background extraction pipeline)', () => {
     expect(result.completed).toBe(false);
     expect(result.pages.length).toBeLessThan(10);
     expect(result.pages.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('skips version-cached pages and publishes each new page immediately', async () => {
+    const extractionOrder: number[] = [];
+    const published: number[] = [];
+    const doc = createFakeDoc(4, (page) => extractionOrder.push(page));
+    const result = await extractPdfPageTexts(doc, {
+      skipPageNumbers: new Set([1, 2]),
+      onPage: (page) => { published.push(page.pageNumber); },
+    });
+    expect(result.completed).toBe(true);
+    expect(extractionOrder).toEqual([3, 4]);
+    expect(published).toEqual([3, 4]);
   });
 });

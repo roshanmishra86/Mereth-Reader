@@ -525,6 +525,43 @@ impl Database {
     Ok(pages)
   }
 
+  pub fn get_pages_for_version(&self, document_id: &str, version_hash: &str) -> Result<Vec<Page>, String> {
+    let conn = self.conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+      "SELECT id, document_id, page_number, width, height, text_content, created_at, provenance
+       FROM pages WHERE document_id = ?1 AND version_hash = ?2 ORDER BY page_number ASC",
+    ).map_err(|e| e.to_string())?;
+    let pages = stmt.query_map(params![document_id, version_hash], |row| Ok(Page {
+      id: row.get(0)?, document_id: row.get(1)?, page_number: row.get(2)?,
+      width: row.get(3)?, height: row.get(4)?, text_content: row.get(5)?,
+      created_at: row.get(6)?, provenance: row.get(7)?,
+    })).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
+    Ok(pages)
+  }
+
+  pub fn upsert_page_for_version(&self, page: Page, version_hash: &str) -> Result<(), String> {
+    if version_hash.trim().is_empty() { return Err("Version hash is required".into()); }
+    let mut conn = self.conn.lock().unwrap();
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+      "INSERT INTO pages (id, document_id, page_number, width, height, text_content, created_at, provenance, version_hash)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+       ON CONFLICT(document_id, version_hash, page_number) DO UPDATE SET
+         text_content = excluded.text_content, width = excluded.width, height = excluded.height,
+         created_at = excluded.created_at, provenance = excluded.provenance",
+      params![page.id, page.document_id, page.page_number, page.width, page.height,
+        page.text_content, page.created_at, page.provenance, version_hash],
+    ).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM fts_document_text WHERE document_id = ?1 AND page_number = ?2", params![page.document_id, page.page_number])
+      .map_err(|e| e.to_string())?;
+    tx.execute(
+      "INSERT INTO fts_document_text (document_id, page_number, text_content, provenance) VALUES (?1, ?2, ?3, ?4)",
+      params![page.document_id, page.page_number, page.text_content, page.provenance],
+    ).map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+  }
+
   pub fn add_page(&self, page: Page) -> Result<(), String> {
     let mut conn = self.conn.lock().unwrap();
     // Insert the page row and its FTS index entry atomically: a failure between
@@ -532,8 +569,8 @@ impl Database {
     // full index rebuild is triggered.
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute(
-      "INSERT INTO pages (id, document_id, page_number, width, height, text_content, created_at, provenance)
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+      "INSERT INTO pages (id, document_id, page_number, width, height, text_content, created_at, provenance, version_hash)
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, (SELECT sha256_hash FROM documents WHERE id = ?2))",
       params![
         page.id,
         page.document_id,
@@ -665,7 +702,8 @@ impl Database {
     let count: usize = tx
       .execute(
         "INSERT INTO fts_document_text (document_id, page_number, text_content, provenance)
-         SELECT document_id, page_number, text_content, provenance FROM pages",
+         SELECT p.document_id, p.page_number, p.text_content, p.provenance
+         FROM pages p JOIN documents d ON d.id = p.document_id AND d.sha256_hash = p.version_hash",
         [],
       )
       .map_err(|e| e.to_string())?;
@@ -919,6 +957,35 @@ mod tests {
     // Verify search still works after rebuild
     let results_after = db.search_fts("breach").unwrap();
     assert_eq!(results_after.len(), 1);
+  }
+
+  #[test]
+  fn test_versioned_page_text_cache_isolated_and_upserted() {
+    let db = Database::in_memory().unwrap();
+    let doc_id = Uuid::new_v4().to_string();
+    db.add_document(Document {
+      id: doc_id.clone(), title: "Versioned cache".into(), filepath: "/tmp/cache.pdf".into(),
+      sha256_hash: "hash-v2".into(), page_count: 1, created_at: "2026-08-24T00:00:00Z".into(),
+      updated_at: "2026-08-24T00:00:00Z".into(), provenance: "source_extracted".into(),
+      author: None, subject: None, keywords: None, creation_date: None, doi: None, isbn: None,
+      is_favourite: false, is_archived: false, last_opened_at: None, tags: vec![], collections: vec![],
+      ownership_mode: "open_in_place".into(), original_filepath: None, removed_at: None,
+    }).unwrap();
+    let make_page = |id: &str, text: &str| Page {
+      id: id.into(), document_id: doc_id.clone(), page_number: 1, width: 0.0, height: 0.0,
+      text_content: text.into(), created_at: "2026-08-24T00:00:00Z".into(), provenance: "source_extracted".into(),
+    };
+    db.upsert_page_for_version(make_page("v1-page", "old bytes"), "hash-v1").unwrap();
+    db.upsert_page_for_version(make_page("v2-page", "new bytes"), "hash-v2").unwrap();
+    db.upsert_page_for_version(make_page("v2-page-retry", "new bytes refreshed"), "hash-v2").unwrap();
+
+    assert_eq!(db.get_pages_for_version(&doc_id, "hash-v1").unwrap()[0].text_content, "old bytes");
+    let current = db.get_pages_for_version(&doc_id, "hash-v2").unwrap();
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0].text_content, "new bytes refreshed");
+    db.rebuild_fts_index().unwrap();
+    assert!(db.search_fts("old").unwrap().is_empty(), "rebuild must exclude stale source versions");
+    assert_eq!(db.search_fts("refreshed").unwrap().len(), 1);
   }
 
   #[test]
@@ -1380,7 +1447,7 @@ mod tests {
       let rows: i64 = conn
         .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
         .unwrap();
-      assert_eq!(rows, 13);
+      assert_eq!(rows, 14);
     }
   }
 
@@ -1477,7 +1544,7 @@ mod tests {
       let rows: i64 = conn
         .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
         .unwrap();
-      assert_eq!(rows, 13);
+      assert_eq!(rows, 14);
       drop(conn);
       // Pre-existing data survived the forward migration.
       let doc = db.get_document_by_id(&doc_id).unwrap().expect("document preserved");

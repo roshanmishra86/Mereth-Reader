@@ -32,6 +32,8 @@ interface ReaderToolbarProps {
   searchOptions: SearchOptions;
   onSearchOptionsChange: (options: SearchOptions) => void;
   searchMatches: DetailedSearchMatch[];
+  indexedPages: number;
+  extractionStatus: 'idle' | 'running' | 'done' | 'cancelled';
   currentMatchIndex: number;
   onNextMatch: () => void;
   onPrevMatch: () => void;
@@ -373,8 +375,15 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
           <b>
             {props.searchMatches.length > 0
               ? `${props.currentMatchIndex + 1} / ${props.searchMatches.length}`
-              : props.searchQuery.trim() ? '0 matches' : ''}
+              : props.searchQuery.trim()
+                ? `0 matches${props.indexedPages < props.totalPages ? ` in ${props.indexedPages} of ${props.totalPages} indexed pages` : ''}`
+                : ''}
           </b>
+          {props.searchQuery.trim() && props.indexedPages < props.totalPages && (
+            <span role="status" className="search-index-coverage">
+              Search coverage: {props.indexedPages}/{props.totalPages} pages ({props.extractionStatus})
+            </span>
+          )}
 
           <button
             className="search-nav-btn"

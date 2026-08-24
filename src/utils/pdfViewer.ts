@@ -315,6 +315,10 @@ export interface ExtractPagesOptions {
   prioritizeFromPage?: number;
   /** Yield to the event loop every N pages so rendering stays responsive. */
   yieldEveryPages?: number;
+  /** Pages already hydrated from the versioned persistent cache. */
+  skipPageNumbers?: ReadonlySet<number>;
+  /** Publishes one completed page immediately; may await durable storage. */
+  onPage?: (page: PageTextContent) => void | Promise<void>;
 }
 
 export interface ExtractPagesResult {
@@ -336,14 +340,17 @@ export async function extractPdfPageTexts(
   const order = prioritizePageWindow(totalPages, options.prioritizeFromPage ?? 1, 3);
   const yieldEvery = Math.max(1, options.yieldEveryPages ?? 4);
   const pages: PageTextContent[] = [];
-  let processed = 0;
+  let processed = options.skipPageNumbers?.size ?? 0;
 
   for (const pageNumber of order) {
+    if (options.skipPageNumbers?.has(pageNumber)) continue;
     if (options.signal?.aborted) {
       return { pages: sortByPage(pages), completed: false };
     }
     const text = await getPdfPageText(doc, pageNumber);
-    pages.push({ pageNumber, text });
+    const page = { pageNumber, text };
+    pages.push(page);
+    await options.onPage?.(page);
     processed++;
     options.onProgress?.(processed, totalPages);
     if (processed % yieldEvery === 0) {
