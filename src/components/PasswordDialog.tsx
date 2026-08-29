@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import React, { useState } from 'react';
 import { validatePdfPassword } from '../utils/recoveryUtils';
 import { useFocusTrap } from '../hooks/useFocusTrap';
@@ -43,7 +44,7 @@ export function PasswordDialog({
         <header className="sheet-header">
           <h3 id="password-dialog-title">🔒 Password-Protected PDF</h3>
           <button className="icon-button" onClick={onCancel} aria-label="Cancel and close">
-            ✕
+            <Icon name="x" />
           </button>
         </header>
 

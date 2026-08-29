@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import React, { useState, useMemo } from 'react';
 import { DocumentRecord } from '../utils/pdfImport';
 import {
@@ -143,7 +144,7 @@ export function LibraryView({
               onClick={() => setCollectionManagerOpen(true)}
               title="Manage collections"
             >
-              ⚙️
+              <Icon name="settings" size={12} />
             </button>
           </div>
 
@@ -223,7 +224,7 @@ export function LibraryView({
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
               {searchQuery && (
-                <button className="clear-search-btn" onClick={() => setSearchQuery('')}>✕</button>
+                <button className="clear-search-btn" onClick={() => setSearchQuery('')}><Icon name="x" /></button>
               )}
             </div>
 
@@ -256,19 +257,19 @@ export function LibraryView({
                 onClick={() => setViewLayout('grid')}
                 title="Grid view"
               >
-                ▤
+                <Icon name="library" />
               </button>
               <button
                 className={`icon-button ${viewLayout === 'list' ? 'active' : ''}`}
                 onClick={() => setViewLayout('list')}
                 title="List view"
               >
-                ☰
+                <Icon name="list" />
               </button>
             </div>
 
             <button className="button secondary compact" onClick={onOpenJobQueue} title="Background jobs">
-              ⚙️ Jobs {activeJobsCount > 0 && <span className="badge running">{activeJobsCount}</span>}
+              <Icon name="settings" size={12} /> Jobs {activeJobsCount > 0 && <span className="badge running">{activeJobsCount}</span>}
             </button>
 
             <button className="button primary compact" onClick={onOpenPdf}>
@@ -299,9 +300,15 @@ export function LibraryView({
                 <div className="card-top-row">
                   <span className="doc-type-icon">📄</span>
                   <div className="card-header-text">
-                    <h3 className="doc-title" title={doc.title} onClick={() => !doc.removed_at && onOpenDocument(doc)}>
+                    <button
+                      type="button"
+                      className="doc-title doc-title-button"
+                      title={doc.title}
+                      onClick={() => !doc.removed_at && onOpenDocument(doc)}
+                      disabled={Boolean(doc.removed_at)}
+                    >
                       {doc.title}
-                    </h3>
+                    </button>
                     {doc.author && <span className="doc-author">{doc.author}</span>}
                   </div>
 

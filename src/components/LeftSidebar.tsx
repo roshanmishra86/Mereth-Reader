@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { OutlineTree } from './OutlineTree';
 import { ThumbnailPanel } from './ThumbnailPanel';
 import { ParsedOutlineNode, PageLabelMapping } from '../utils/navigationUtils';
+import { Icon } from './icons';
 
 interface LeftSidebarProps {
   outlineNodes: ParsedOutlineNode[];
@@ -30,14 +31,14 @@ export function LeftSidebar({
           onClick={() => setActiveTab('outline')}
           title="Document outline tree (Ctrl+Shift+L)"
         >
-          <span className="tab-glyph">☰</span> Outline
+          <Icon name="list" /> Outline
         </button>
         <button
           className={`sidebar-tab-btn ${activeTab === 'thumbnails' ? 'active' : ''}`}
           onClick={() => setActiveTab('thumbnails')}
           title="Page thumbnails panel"
         >
-          <span className="tab-glyph">▤</span> Thumbnails ({totalPages})
+          <Icon name="library" /> Thumbnails ({totalPages})
         </button>
       </div>
 

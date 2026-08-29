@@ -4,6 +4,7 @@ import { SearchOptions, DetailedSearchMatch } from '../utils/searchUtils';
 import { formatControlTooltip } from '../utils/shortcutUtils';
 import { NavigationHistoryState } from '../utils/pdfUtils';
 import { formatExtendedPageLabel, PageLabelMapping } from '../utils/navigationUtils';
+import { Icon } from './icons';
 
 interface ReaderToolbarProps {
   // Navigation & Page State
@@ -45,8 +46,6 @@ interface ReaderToolbarProps {
   onToggleRightOpen: () => void;
   readingOnly: boolean;
   onToggleReadingOnly: () => void;
-  aiOn: boolean;
-  onToggleAi: () => void;
   onOpenPdf: () => void;
 
   // Task 3.4 annotation tools (FR-9.1/9.2)
@@ -127,7 +126,7 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
         onClick={props.onToggleLeftOpen}
         title={formatControlTooltip('Toggle Outline Sidebar', 'pane.left.toggle')}
       >
-        <span className="glyph">☰</span> Outline
+        <Icon name="list" /> Outline
       </button>
 
       <div className="toolbar-rule" />
@@ -216,7 +215,7 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
         onClick={() => props.onRotateChange('cw')}
         title={formatControlTooltip('Rotate 90° Clockwise', 'view.rotate.cw')}
       >
-        ↻ {props.rotation !== 0 && `${props.rotation}°`}
+        <Icon name="rotate" /> {props.rotation !== 0 && `${props.rotation}°`}
       </button>
 
       <div className="toolbar-rule" />
@@ -228,7 +227,7 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
         title={formatControlTooltip('Area Capture — drag across a figure or region', 'annot.areaCapture')}
         aria-pressed={props.areaCaptureActive}
       >
-        ▭ Capture area
+        <Icon name="crop" /> Capture area
       </button>
       <button
         className={`outline-button ${props.currentPageBookmarked ? 'active' : ''}`}
@@ -239,7 +238,7 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
         )}
         aria-pressed={props.currentPageBookmarked}
       >
-        {props.currentPageBookmarked ? '▮ Bookmarked' : '▯ Bookmark'}
+        {props.currentPageBookmarked ? <><Icon name="bookmarkFilled" /> Bookmarked</> : <><Icon name="bookmark" /> Bookmark</>}
       </button>
 
       <div className="toolbar-rule" />
@@ -322,7 +321,7 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
       {/* Advanced Full-Text Reader Search Box */}
       <div className="search-control-container" style={{ position: 'relative' }}>
         <label className="search-control" title={formatControlTooltip('Search document text layer (NO AI)', 'search.focus')}>
-          <span className="glyph">⌕</span>
+          <Icon name="search" />
           <input
             ref={searchInputRef}
             aria-label="Search document text"
@@ -458,17 +457,9 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
         onClick={props.onToggleRightOpen}
         title={formatControlTooltip('Toggle Annotations Side Pane', 'pane.right.toggle')}
       >
-        <span className="glyph">▯</span> Side pane
+        <Icon name="panelRight" /> Side pane
       </button>
 
-      {/* Local AI Toggle */}
-      <button
-        className={props.aiOn ? 'ai-toggle on' : 'ai-toggle'}
-        onClick={props.onToggleAi}
-        title="Local AI status toggle"
-      >
-        <i /> Local AI · {props.aiOn ? 'On' : 'Off'}
-      </button>
     </div>
   );
 }

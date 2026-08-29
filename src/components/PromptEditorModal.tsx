@@ -82,6 +82,21 @@ export const PromptEditorModal: React.FC<PromptEditorModalProps> = ({
     [promptType, question, answer, cue]
   );
 
+  // U12: advisory lint is never blocking — "Keep anyway" hides the panel until
+  // the issues change, and cue-related warnings get a one-click fix affordance.
+  const [lintDismissed, setLintDismissed] = useState(false);
+  const [dismissedIssueCount, setDismissedIssueCount] = useState(0);
+  useEffect(() => {
+    setLintDismissed(false);
+    setDismissedIssueCount(0);
+  }, [lintResult.issues.length]);
+
+  const cueIssue = useMemo(
+    () => lintResult.issues.find((issue) => issue.message.toLowerCase().includes('cue')) ?? null,
+    [lintResult.issues]
+  );
+  const showLintPanel = lintResult.issues.length > 0 && !lintDismissed;
+
   if (!isOpen) return null;
 
   const handleSave = async (adopt: boolean) => {
@@ -242,8 +257,8 @@ export const PromptEditorModal: React.FC<PromptEditorModalProps> = ({
           />
         </div>
 
-        {/* Advisory Quality Lint (FR-11.4) */}
-        {lintResult.issues.length > 0 && (
+        {/* Advisory Quality Lint (FR-11.4) — advisory only; Keep anyway dismisses until issues change */}
+        {showLintPanel && (
           <div
             style={{
               padding: '8px 10px',
@@ -263,7 +278,38 @@ export const PromptEditorModal: React.FC<PromptEditorModalProps> = ({
                 <li key={idx}>{issue.message}</li>
               ))}
             </ul>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '6px', marginTop: '6px' }}>
+              {(cueIssue || !cue.trim()) && (
+                <button
+                  type="button"
+                  className="button micro"
+                  onClick={() => {
+                    if (cueIssue) setCue('');
+                    document.getElementById('prompt-cue')?.focus();
+                  }}
+                  title={cueIssue ? 'Clear the vague cue and enter a specific conceptual anchor' : 'Jump to the retrieval cue field'}
+                >
+                  Add a cue
+                </button>
+              )}
+              <button
+                type="button"
+                className="button micro"
+                onClick={() => {
+                  setLintDismissed(true);
+                  setDismissedIssueCount(lintResult.issues.length);
+                }}
+                title="These tips are advisory — keep the prompt as written"
+              >
+                Keep anyway
+              </button>
+            </div>
           </div>
+        )}
+        {lintDismissed && dismissedIssueCount > 0 && (
+          <p style={{ margin: '0 0 10px', fontSize: '10px', color: '#856404' }}>
+            {dismissedIssueCount} quality tip{dismissedIssueCount === 1 ? '' : 's'} kept as written.
+          </p>
         )}
 
         {saveError && (

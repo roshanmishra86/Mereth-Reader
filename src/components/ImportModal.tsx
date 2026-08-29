@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import React, { useState } from 'react';
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog';
 import { invoke, isTauri } from '@tauri-apps/api/core';
@@ -39,8 +40,25 @@ export function ImportModal({
   const [error, setError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [duplicateMatch, setDuplicateMatch] = useState<DocumentRecord | null>(null);
+  // U11: show the computed fingerprint and the real managed-copy destination.
+  const [managedDocsDir, setManagedDocsDir] = useState<string | null>(null);
 
   const isOpenFlow = mode === 'open';
+
+  React.useEffect(() => {
+    if (!isOpen || !isTauri()) return;
+    let cancelled = false;
+    invoke<string>('import_managed_documents_dir')
+      .then((dir) => {
+        if (!cancelled) setManagedDocsDir(dir);
+      })
+      .catch(() => {
+        // Destination stays undisclosed if the path cannot be resolved; import still works.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
 
   React.useEffect(() => {
     if (!isOpen) {
@@ -249,7 +267,7 @@ export function ImportModal({
       >
         <header className="sheet-header">
           <h3 id="import-modal-title">{isOpenFlow ? 'Open PDF' : 'Import PDF copy'}</h3>
-          <button className="icon-button" onClick={onClose} aria-label="Close modal">✕</button>
+          <button className="icon-button" onClick={onClose} aria-label="Close modal"><Icon name="x" /></button>
         </header>
 
         <div className="sheet-body">
@@ -277,8 +295,22 @@ export function ImportModal({
                 <span className="file-icon">📄</span>
                 <div className="file-info">
                   <strong>{candidate.filename}</strong>
-                  <span className="dimmed">{candidate.filepath}</span>
-                  <span className="file-size">{formatFileSize(candidate.file_size_bytes)} · SHA-256: {candidate.sha256_hash.substring(0, 12)}...</span>
+                  <span className="dimmed">
+                    {isOpenFlow || ownershipMode === 'open_in_place'
+                      ? `Source (opens in place): ${candidate.filepath}`
+                      : `Source: ${candidate.filepath}`}
+                  </span>
+                  <span className="file-size">{formatFileSize(candidate.file_size_bytes)}</span>
+                  <span className="file-fingerprint" title={candidate.sha256_hash}>
+                    Fingerprint (SHA-256): <code>{candidate.sha256_hash}</code>
+                  </span>
+                  {!isOpenFlow && ownershipMode === 'managed_library' && (
+                    <span className="dimmed file-destination" title={managedDocsDir ?? undefined}>
+                      Destination copy: {managedDocsDir
+                        ? `${managedDocsDir.replace(/[\\/]+$/, '')}${candidate.filepath.includes('\\') ? '\\' : '/'}${candidate.filename}`
+                        : 'the managed library folder inside application data'}
+                    </span>
+                  )}
                 </div>
                 <button className="button secondary micro" onClick={() => setCandidate(null)}>Change file</button>
               </div>

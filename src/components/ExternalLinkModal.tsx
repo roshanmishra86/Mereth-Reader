@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import { useState, useEffect, useRef, useId } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { interceptExternalLink } from '../utils/securityBoundary';
@@ -81,7 +82,7 @@ export function ExternalLinkModal({ url, isOpen, onClose }: ExternalLinkModalPro
           onClick={onClose}
           aria-label="Close external link modal"
         >
-          ✕
+          <Icon name="x" />
         </button>
         <span className="eyebrow">Security Boundary Disclosure</span>
         <h2 id={titleId}>External Link Navigation</h2>

@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import React, { useState } from 'react';
 import type { EvidenceBlockRecord } from '../utils/evidenceTypes';
 
@@ -100,7 +101,7 @@ export const EvidenceBlockCard: React.FC<EvidenceBlockCardProps> = ({
             onClick={onDelete}
             title="Remove Evidence Block"
           >
-            ✕
+            <Icon name="x" />
           </button>
         </div>
       </div>

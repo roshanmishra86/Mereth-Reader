@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import React from 'react';
 import { BackgroundJob, JobType } from '../utils/jobQueue';
 import { EmptyState } from './EmptyState';
@@ -39,10 +40,10 @@ export function JobQueueDrawer({
       <div className="sheet job-queue-sheet" onClick={(e) => e.stopPropagation()}>
         <header className="sheet-header">
           <h3>
-            ⚙️ Background Jobs (FR-7.6)
+            <Icon name="settings" size={12} /> Background Jobs (FR-7.6)
             {runningCount > 0 && <span className="badge running">{runningCount} active</span>}
           </h3>
-          <button className="icon-button" onClick={onClose} aria-label="Close jobs drawer">✕</button>
+          <button className="icon-button" onClick={onClose} aria-label="Close jobs drawer"><Icon name="x" /></button>
         </header>
 
         <div className="sheet-body">

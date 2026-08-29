@@ -23,6 +23,7 @@ import {
   LoadedPdfInfo,
 } from "./utils/pdfViewer";
 import { ImportModal } from "./components/ImportModal";
+import { Icon, IconName } from "./components/icons";
 import { MissingFileBanner } from "./components/MissingFileBanner";
 import { DeepLinkRoute } from "./utils/launchRouting";
 import {
@@ -159,17 +160,27 @@ import {
   updateUserResponse,
 } from "./utils/reviewSession";
 import type { DueReviewPromptRecord, ReviewQueueStats } from "./utils/reviewIo";
-import { getDueReviewPrompts, getReviewHistory, getReviewQueueStats, recordReviewEvent } from "./utils/reviewIo";
+import { getDueReviewPrompts, getReviewHistory, getReviewQueueStats, getRecentReviewEvents, recordReviewEvent } from "./utils/reviewIo";
+import type { RecentReviewEventRecord } from "./utils/reviewIo";
 import { PromptRepairModal } from "./components/PromptRepairModal";
 import { SettingsReview } from "./components/SettingsReview";
 import type { PromptRepairResult } from "./utils/promptRepair";
 import { hasRepeatedFailures } from "./utils/promptRepair";
+import { applyQueueControl } from "./utils/queueControls";
 import { createNote, listNotes } from "./utils/notesIo";
 import { createDefaultNoteRecord } from "./utils/notesTypes";
 import { SessionSynthesisModal } from "./components/SessionSynthesisModal";
 import { resolveDeepLinkUiAction } from "./utils/deepLinkRouter";
 import { ExportModal, type ExportFormat } from "./components/ExportModal";
 import { RestoreBackupModal } from "./components/RestoreBackupModal";
+import { DestinationConflictModal } from "./components/DestinationConflictModal";
+import { chooseNativeExportDestination } from "./utils/nativeExportDestination";
+import {
+  checkDestination,
+  resolveDestinationSafety,
+  suggestCopyPath,
+  type DestinationSnapshot,
+} from "./utils/destinationSafety";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
 
@@ -191,10 +202,10 @@ interface LaunchRoutePayload {
 }
 
 const nav = [
-  ["library", "Library", "▤"],
-  ["reader", "Reader", "▯"],
-  ["notes", "Notes", "✎"],
-  ["review", "Review", "↻"],
+  ["library", "Library", "library"],
+  ["reader", "Reader", "reader"],
+  ["notes", "Notes", "notes"],
+  ["review", "Review", "review"],
 ] as const;
 
 /** Loads a document's annotations in one pass: active rows + trashed rows. */
@@ -212,8 +223,8 @@ async function loadAnnotationSets(documentId: string): Promise<{
   };
 }
 
-function Glyph({ children }: { children: string }) {
-  return <span className="glyph" aria-hidden="true">{children}</span>;
+function Glyph({ name }: { name: IconName }) {
+  return <Icon name={name} />;
 }
 
 function App() {
@@ -222,8 +233,7 @@ function App() {
   const [destination, setDestination] = useState<Destination>("library");
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
-  const [rightTab, setRightTab] = useState<"annotations" | "note" | "ai">("annotations");
-  const [aiOn, setAiOn] = useState(false);
+  const [rightTab, setRightTab] = useState<"annotations" | "note">("annotations");
   const [selected, setSelected] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [initialImportPath, setInitialImportPath] = useState<string | null>(null);
@@ -1328,7 +1338,7 @@ function App() {
               aria-label={label}
               aria-current={destination === id ? "page" : undefined}
             >
-              <Glyph>{glyph}</Glyph>
+              <Glyph name={glyph} />
               <span>{label}</span>
               {id === "review" && reviewPromptsList.length > 0 && <em>{reviewPromptsList.length}</em>}
             </button>
@@ -1340,14 +1350,14 @@ function App() {
             aria-label="Settings"
             aria-current={destination === "settings" ? "page" : undefined}
           >
-            <Glyph>☷</Glyph>
+            <Glyph name="settings" />
             <span>Settings</span>
           </button>
         </aside>
       )}
 
       <section className="workspace">
-        {operationError && <div className="banner warning app-operation-error" role="alert">{operationError}<button className="icon-button" onClick={() => setOperationError(null)} aria-label="Dismiss error">✕</button></div>}
+        {operationError && <div className="banner warning app-operation-error" role="alert">{operationError}<button className="icon-button" onClick={() => setOperationError(null)} aria-label="Dismiss error"><Icon name="x" /></button></div>}
         {destination === "reader" && (
           <>
             {!activeDocument ? (
@@ -1371,7 +1381,6 @@ function App() {
               />
             ) : (
               <Reader
-                aiOn={aiOn}
                 activeAnnotation={activeAnnotation}
                 activeDocument={activeDocument}
                 activeSession={activeSession}
@@ -1414,7 +1423,6 @@ function App() {
                 onReanchorOutcome={handleReanchorOutcome}
                 onDismissReanchorSummary={() => setReanchorSummary(null)}
                 onReturnToLibrary={handleReturnToLibrary}
-                setAiOn={setAiOn}
                 setImportOpen={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
                 setLeftOpen={setLeftOpen}
                 setReadingOnly={setReadingOnly}
@@ -1456,8 +1464,6 @@ function App() {
         {destination === "review" && <ReviewView initialPromptId={selectedReviewPromptId} />}
         {destination === "settings" && (
           <SettingsView
-            aiOn={aiOn}
-            setAiOn={setAiOn}
             appearance={appearance}
             onUpdateAppearance={handleUpdateAppearance}
             palette={palette}
@@ -1523,7 +1529,6 @@ function App() {
 }
 
 type ReaderProps = {
-  aiOn: boolean;
   activeAnnotation: AnnotationRecord | null;
   activeDocument: DocumentRecord;
   activeSession: ReadingSessionState | null;
@@ -1532,7 +1537,7 @@ type ReaderProps = {
   leftOpen: boolean;
   readingOnly: boolean;
   rightOpen: boolean;
-  rightTab: "annotations" | "note" | "ai";
+  rightTab: "annotations" | "note";
   selected: string;
   targetPage?: number;
   onTargetPageConsumed?: () => void;
@@ -1573,12 +1578,11 @@ type ReaderProps = {
   onReanchorOutcome?: (outcome: { reanchored: number; detached: number }) => void;
   onDismissReanchorSummary?: () => void;
   onReturnToLibrary?: () => void;
-  setAiOn: (value: boolean) => void;
   setImportOpen: (value: boolean) => void;
   setLeftOpen: (value: boolean) => void;
   setReadingOnly: (value: boolean) => void;
   setRightOpen: (value: boolean) => void;
-  setRightTab: (value: "annotations" | "note" | "ai") => void;
+  setRightTab: (value: "annotations" | "note") => void;
   setSelected: (value: string) => void;
   /** Task 3.6 (FR-9.9): embedded PDF annotations present for the open doc. */
   embeddedImportCounts?: { newCount: number; duplicateCount: number; unsupportedCount: number } | null;
@@ -1642,7 +1646,28 @@ function Reader(props: ReaderProps) {
   const [extractionStatus, setExtractionStatus] = useState<'idle' | 'running' | 'done' | 'cancelled'>('idle');
   const [pageCacheHydrated, setPageCacheHydrated] = useState(false);
   const [pageCacheWriteFailed, setPageCacheWriteFailed] = useState(false);
+  const [cacheRebuildInFlight, setCacheRebuildInFlight] = useState(false);
   const [textExtractionFailures, setTextExtractionFailures] = useState<number[]>([]);
+  // U20: corrupt-cache recovery — drop cached rows for this version and let
+  // the normal background-extraction effect repopulate them from scratch.
+  const rebuildPageCache = async () => {
+    if (!props.versionHash || cacheRebuildInFlight) return;
+    setCacheRebuildInFlight(true);
+    try {
+      await invoke('db_clear_page_cache', { documentId: props.activeDocument.id, versionHash: props.versionHash });
+      cachedPageNumbersRef.current = new Set();
+      setPageTexts([]);
+      setPageCacheHydrated(false);
+      setPageCacheWriteFailed(false);
+      setTextExtractionFailures([]);
+      setExtractionStatus('idle');
+    } catch {
+      // Keep the banner visible; the user can retry.
+    } finally {
+      setCacheRebuildInFlight(false);
+    }
+  };
+
   const cachedPageNumbersRef = useRef<Set<number>>(new Set());
   const [firstPagePainted, setFirstPagePainted] = useState(false);
   const extractionAbortRef = useRef<AbortController | null>(null);
@@ -2753,8 +2778,6 @@ function Reader(props: ReaderProps) {
           onToggleRightOpen={() => props.setRightOpen(!props.rightOpen)}
           readingOnly={props.readingOnly}
           onToggleReadingOnly={() => props.setReadingOnly(!props.readingOnly)}
-          aiOn={props.aiOn}
-          onToggleAi={() => props.setAiOn(!props.aiOn)}
           onOpenPdf={() => props.setImportOpen(true)}
           areaCaptureActive={captureActive}
           onToggleAreaCapture={() => setCaptureActive((prev) => !prev)}
@@ -2805,7 +2828,7 @@ function Reader(props: ReaderProps) {
               }}
             >
               <div>
-                ⚙️ <strong>Indexing text:</strong> {props.activeDocumentJob.processed_pages} / {props.activeDocumentJob.total_pages} pages ({props.activeDocumentJob.progress_percent}%) · Document reading and navigation remain fully usable in parallel.
+                <Icon name="settings" size={12} /> <strong>Indexing text:</strong> {props.activeDocumentJob.processed_pages} / {props.activeDocumentJob.total_pages} pages ({props.activeDocumentJob.progress_percent}%) · Document reading and navigation remain fully usable in parallel.
               </div>
               {props.onCancelJob && (
                 <button
@@ -2818,8 +2841,15 @@ function Reader(props: ReaderProps) {
             </div>
           )}
           {pageCacheWriteFailed && (
-            <div className="indexing-progress-banner" role="status">
-              Search is available for this session, but some indexed pages could not be cached for reopen. Indexing will retry next time.
+            <div className="indexing-progress-banner" role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <span>Search is available for this session, but some indexed pages could not be cached for reopen. Indexing will retry next time.</span>
+              <button
+                className="button micro"
+                disabled={cacheRebuildInFlight}
+                onClick={() => void rebuildPageCache()}
+              >
+                {cacheRebuildInFlight ? 'Rebuilding…' : 'Rebuild index'}
+              </button>
             </div>
           )}
           {textExtractionFailures.length > 0 && extractionStatus === 'done' && (
@@ -3006,7 +3036,7 @@ function Reader(props: ReaderProps) {
 }
 
 function RightPane(props: ReaderProps) {
-  const tabs: Array<[typeof props.rightTab, string]> = [["annotations", "Annotations"], ["note", "Note"], ["ai", "AI"]];
+  const tabs: Array<[typeof props.rightTab, string]> = [["annotations", "Annotations"], ["note", "Note"]];
   const list = props.annotationsList || [];
   // ---- Task 3.7 (FR-9.6): sidebar search + filters, reset per document ----
   const [annotationFilters, setAnnotationFilters] = useState<AnnotationFilters>(EMPTY_ANNOTATION_FILTERS);
@@ -3033,9 +3063,23 @@ function RightPane(props: ReaderProps) {
   const patchFilters = (patch: Partial<AnnotationFilters>) =>
     setAnnotationFilters((prev) => ({ ...prev, ...patch }));
 
+  // U6: live per-facet counts so chips show real zero/data states.
+  const typeCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const type of ANNOTATION_TYPES) counts[type] = 0;
+    for (const item of list) counts[item.annotation_type] = (counts[item.annotation_type] ?? 0) + 1;
+    return counts;
+  }, [list]);
+  const paletteCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const entry of props.palette) counts[entry.key] = 0;
+    for (const item of list) counts[item.color] = (counts[item.color] ?? 0) + 1;
+    return counts;
+  }, [list, props.palette]);
+
   return (
     <aside className="right-pane" style={props.rightPaneWidth ? { width: `${props.rightPaneWidth}px` } : undefined}>
-      <div className="pane-tabs">{tabs.map(([id, label]) => <button key={id} className={props.rightTab === id ? "pane-tab active" : "pane-tab"} onClick={() => props.setRightTab(id)}>{label}{id === "ai" && <i className={props.aiOn ? "dot on" : "dot"} />}</button>)}</div>
+      <div className="pane-tabs">{tabs.map(([id, label]) => <button key={id} className={props.rightTab === id ? "pane-tab active" : "pane-tab"} onClick={() => props.setRightTab(id)}>{label}</button>)}</div>
       {props.rightTab === "annotations" && (
         <div className="annotation-list">
           <div className="pane-heading">
@@ -3065,6 +3109,7 @@ function RightPane(props: ReaderProps) {
             <div className="filter-chip-row" role="group" aria-label="Filter by annotation type">
               {ANNOTATION_TYPES.map((type) => {
                 const on = annotationFilters.types.includes(type);
+                const count = typeCounts[type] ?? 0;
                 return (
                   <button
                     key={type}
@@ -3079,7 +3124,7 @@ function RightPane(props: ReaderProps) {
                       })
                     }
                   >
-                    {type}
+                    {type} {count}
                   </button>
                 );
               })}
@@ -3087,6 +3132,7 @@ function RightPane(props: ReaderProps) {
             <div className="filter-chip-row" role="group" aria-label="Filter by colour label">
               {props.palette.map((entry) => {
                 const on = annotationFilters.paletteKeys.includes(entry.key);
+                const count = paletteCounts[entry.key] ?? 0;
                 return (
                   <button
                     key={entry.key}
@@ -3103,7 +3149,7 @@ function RightPane(props: ReaderProps) {
                     }
                   >
                     <i className="annotation-swatch" style={{ background: entry.color }} />
-                    {entry.label}
+                    {entry.label} {count}
                   </button>
                 );
               })}
@@ -3168,7 +3214,7 @@ function RightPane(props: ReaderProps) {
                 className="filter-clear"
                 onClick={() => setAnnotationFilters(EMPTY_ANNOTATION_FILTERS)}
               >
-                ✕ Clear filters
+                <Icon name="x" /> Clear filters
               </button>
             )}
           </div>
@@ -3179,22 +3225,56 @@ function RightPane(props: ReaderProps) {
             <p className="dimmed filter-empty">No annotations match these filters.</p>
           ) : (
             filteredList.map((item) => (
-              <button
+              <div
                 key={item.id}
                 className={props.selected === item.id ? "annotation-item active" : "annotation-item"}
-                onClick={() => {
-                  props.setSelected(item.id);
-                  props.onJumpToAnnotation?.(item.page_index);
-                }}
-                title={item.annotation_type === 'comment' ? item.comment : item.quote || paletteLabelFor(item.color, props.palette)}
               >
-                <i className="annotation-swatch" style={{ background: paletteColorFor(item.color, props.palette) }} />
-                <span>
-                  <b>{paletteLabelFor(item.color, props.palette)} · {item.annotation_type}</b>
-                  <small>p. {item.page_label || item.page_index + 1}</small>
-                  <q>{item.annotation_type === 'area' ? 'Area capture' : item.annotation_type === 'bookmark' ? 'Bookmark' : item.comment || item.quote}</q>
+                <button
+                  className="annotation-item-main"
+                  onClick={() => {
+                    props.setSelected(item.id);
+                    props.onJumpToAnnotation?.(item.page_index);
+                  }}
+                  title={item.annotation_type === 'comment' ? item.comment : item.quote || paletteLabelFor(item.color, props.palette)}
+                >
+                  <i className="annotation-swatch" style={{ background: paletteColorFor(item.color, props.palette) }} />
+                  <span>
+                    <b>{paletteLabelFor(item.color, props.palette)} · {item.annotation_type}</b>
+                    <small>p. {item.page_label || item.page_index + 1}</small>
+                    <q>{item.annotation_type === 'area' ? 'Area capture' : item.annotation_type === 'bookmark' ? 'Bookmark' : item.comment || item.quote}</q>
+                  </span>
+                </button>
+                <span className="annotation-item-actions">
+                  {props.onAddEvidenceToNote && (
+                    <button
+                      type="button"
+                      className="button micro"
+                      disabled={props.linkedAnnotationIds?.has(item.id)}
+                      title={props.linkedAnnotationIds?.has(item.id) ? 'Already linked to a note' : 'Add this annotation as evidence to a note (FR-10.1)'}
+                      onClick={() => {
+                        props.setSelected(item.id);
+                        props.onAddEvidenceToNote?.(item);
+                      }}
+                    >
+                      {props.linkedAnnotationIds?.has(item.id) ? 'In note' : 'Add to note'}
+                    </button>
+                  )}
+                  {props.onRememberAnnotation && (
+                    <button
+                      type="button"
+                      className="button micro"
+                      disabled={props.rememberedAnnotationIds?.has(item.id)}
+                      title={props.rememberedAnnotationIds?.has(item.id) ? 'Already remembered' : 'Create or edit a review prompt for this annotation (FR-11.1)'}
+                      onClick={() => {
+                        props.setSelected(item.id);
+                        props.onRememberAnnotation?.(item);
+                      }}
+                    >
+                      {props.rememberedAnnotationIds?.has(item.id) ? 'Remembered' : 'Remember'}
+                    </button>
+                  )}
                 </span>
-              </button>
+              </div>
             ))
           )}
 
@@ -3255,7 +3335,7 @@ function RightPane(props: ReaderProps) {
                       : 'Document is still registering — retry in a moment'
                   }
                 >
-                  <Glyph>≋</Glyph> Import {props.embeddedImportCounts.newCount + props.embeddedImportCounts.duplicateCount} embedded PDF notes
+                  <Glyph name="layers" /> Import {props.embeddedImportCounts.newCount + props.embeddedImportCounts.duplicateCount} embedded PDF notes
                 </button>
                 <small>
                   This PDF carries its own annotations ({props.embeddedImportCounts.newCount} new ·{' '}
@@ -3271,7 +3351,7 @@ function RightPane(props: ReaderProps) {
             disabled={!props.activeAnnotation}
             title={!props.activeAnnotation ? 'Select a passage and annotate it first' : 'Draft a retrieval review prompt (R4 milestone)'}
           >
-            <Glyph>▰</Glyph> Remember selected evidence
+            <Glyph name="bookmark" /> Remember selected evidence
           </button>
         </div>
       )}
@@ -3312,7 +3392,6 @@ function RightPane(props: ReaderProps) {
           )}
         </div>
       )}
-      {props.rightTab === "ai" && <div className="ai-pane">{props.aiOn ? <><span className="eyebrow">Local AI · selected text only</span><h2>Ask this document</h2><p>Drafts stay separate from your notes until you explicitly adopt them. Every answer must cite its source page.</p><div className="ai-answer"><b>Possible reading</b><p>Testing may improve delayed retention because each attempt strengthens later access, while restudy mainly improves familiar-feeling fluency.</p><small>Source: p. 249–250</small></div><button className="wide-action">Adopt into note</button></> : <><Glyph>✦</Glyph><h2>AI is off</h2><p>Reading, annotations, notes, review, search, and export remain fully available. Turning it on never sends document text off this device.</p><button className="wide-action primary" onClick={() => props.setAiOn(true)}>Turn on local AI</button></>}</div>}
     </aside>
   );
 }
@@ -3329,6 +3408,23 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
   const [editingPrompt, setEditingPrompt] = useState<ReviewPromptRecord | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [sourceContext, setSourceContext] = useState<{ label: string; excerpt: string } | null>(null);
+  // U19: browsable review history (recent events across all prompts).
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [recentEvents, setRecentEvents] = useState<RecentReviewEventRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  // U19: per-prompt queue controls (pause / priority / reschedule / retire).
+  const [queueMenuPromptId, setQueueMenuPromptId] = useState<string | null>(null);
+
+  const applyControl = async (prompt: ReviewPromptRecord, action: Parameters<typeof applyQueueControl>[1]) => {
+    setQueueMenuPromptId(null);
+    const updated = applyQueueControl(prompt, action);
+    try {
+      await updateReviewPrompt(updated);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update prompt.');
+    }
+  };
 
   useEffect(() => {
     if (!session.current) return;
@@ -3373,6 +3469,20 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  const toggleHistory = async () => {
+    const next = !historyOpen;
+    setHistoryOpen(next);
+    if (!next) return;
+    setHistoryLoading(true);
+    try {
+      setRecentEvents(await getRecentReviewEvents(50));
+    } catch {
+      setRecentEvents([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
 
   const currentPrompt = session.current?.prompt ?? null;
 
@@ -3495,6 +3605,35 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
       <h1>Review before you reveal.</h1>
       <p className="review-preamble">You decide the outcome. The source is the feedback authority.</p>
       <div className="destination-rule" />
+      <button className="button compact" onClick={() => void toggleHistory()} aria-expanded={historyOpen}>
+        {historyOpen ? 'Hide review history' : 'Show review history'}
+      </button>
+      {historyOpen && (
+        historyLoading ? (
+          <EmptyState viewType="annotations" customTitle="Loading history" customDescription="Reading recent review events." />
+        ) : recentEvents.length === 0 ? (
+          <EmptyState
+            viewType="annotations"
+            customTitle="No review history yet"
+            customDescription="Rated reviews are recorded here as you work through the queue."
+          />
+        ) : (
+          <ul className="review-history-list" aria-label="Recent review events">
+            {recentEvents.map((event) => (
+              <li key={event.id} className="review-history-item">
+                <span className={`review-history-outcome outcome-${event.outcome}`}>{event.outcome}</span>
+                <div>
+                  <b>{event.prompt_question}</b>
+                  <small>
+                    {new Date(event.reviewed_at).toLocaleString()} · {Math.round(event.duration_ms / 100) / 10}s
+                    {event.user_response ? ' · typed response recorded' : ''}
+                  </small>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )
+      )}
 
       {error && <p className="error-text">{error}</p>}
       {repairPrompt && (
@@ -3527,6 +3666,24 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
           <div className="review-card-header">
             <span>Card {session.currentIndex + 1} of {session.queue.length}</span>
             <span>{Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, '0')} elapsed</span>
+            <div style={{ position: 'relative' }}>
+              <button
+                className="button compact"
+                aria-haspopup="menu"
+                aria-expanded={queueMenuPromptId === session.current.prompt.id}
+                onClick={() => setQueueMenuPromptId((prev) => (prev === session.current!.prompt.id ? null : session.current!.prompt.id))}
+              >
+                Queue options
+              </button>
+              {queueMenuPromptId === session.current.prompt.id && (
+                <div role="menu" aria-label="Queue controls" className="queue-controls-menu">
+                  <button role="menuitem" onClick={() => void applyControl(session.current!.prompt, { type: 'pause' })}>Pause this prompt</button>
+                  <button role="menuitem" onClick={() => void applyControl(session.current!.prompt, { type: 'set_priority', priority: session.current!.prompt.priority + 1 })}>Raise priority</button>
+                  <button role="menuitem" onClick={() => void applyControl(session.current!.prompt, { type: 'reschedule', dueAt: new Date(Date.now() + 7 * 86400000).toISOString() })}>Reschedule +7 days</button>
+                  <button role="menuitem" onClick={() => void applyControl(session.current!.prompt, { type: 'retire' })}>Retire prompt</button>
+                </div>
+              )}
+            </div>
           </div>
           <h2>{session.current.prompt.question}</h2>
           {session.current.prompt.cue && <p className="dimmed">Cue: {session.current.prompt.cue}</p>}
@@ -3583,15 +3740,11 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
 }
 
 function SettingsView({
-  aiOn,
-  setAiOn,
   appearance,
   onUpdateAppearance,
   palette,
   onSavePalette,
 }: {
-  aiOn: boolean;
-  setAiOn: (value: boolean) => void;
   appearance: AppearancePreferences;
   onUpdateAppearance: <K extends keyof AppearancePreferences>(
     key: K,
@@ -3605,15 +3758,52 @@ function SettingsView({
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [backupJson, setBackupJson] = useState('');
   const [exportStatus, setExportStatus] = useState<string | null>(null);
+  // U21: pending export that hit an existing destination; the modal decides
+  // overwrite vs rename-copy before anything is written.
+  const [exportConflict, setExportConflict] = useState<{
+    format: ExportFormat;
+    destination: string;
+    diffPreview: string;
+  } | null>(null);
+
+  const writeExport = async (format: ExportFormat, destination: string) => {
+    if (format === 'markdown') {
+      await invoke('db_export_markdown_package', { destinationDir: destination });
+    } else if (format === 'json_backup') {
+      await invoke('db_create_json_backup', { destinationFile: destination });
+    } else if (format === 'review_csv') {
+      await invoke('db_export_review_csv', { destinationFile: destination, delimiter: ',' });
+    } else if (format === 'review_tsv') {
+      await invoke('db_export_review_csv', { destinationFile: destination, delimiter: '\t' });
+    } else {
+      throw new Error('Annotated PDF copy export is not connected to a native writer in this build.');
+    }
+    setExportStatus(`Export completed: ${destination}`);
+  };
 
   const runExport = async (format: ExportFormat, destination: string) => {
     if (!destination) throw new Error('Choose an explicit destination first.');
-    if (format === 'markdown') {
-      await invoke('db_export_markdown_package', { destinationDir: destination });
-    } else {
-      await invoke('db_create_json_backup', { destinationFile: destination });
+    let snapshot: DestinationSnapshot | null = null;
+    try {
+      snapshot = await checkDestination(destination);
+    } catch {
+      snapshot = null; // Backend unavailable (dev preview): proceed as before.
     }
-    setExportStatus(`Export completed: ${destination}`);
+    if (snapshot) {
+      const decision = resolveDestinationSafety({
+        path: snapshot.path,
+        exists: snapshot.exists,
+        currentSha256: (snapshot as { current_sha256?: string | null }).current_sha256 ?? snapshot.currentSha256 ?? null,
+      });
+      if (decision.action === 'confirm_overwrite') {
+        setExportConflict({ format, destination, diffPreview: decision.diffPreview });
+        return;
+      }
+      if (decision.action === 'rename_copy') {
+        destination = decision.suggestedPath;
+      }
+    }
+    await writeExport(format, destination);
   };
 
   return (
@@ -3628,7 +3818,7 @@ function SettingsView({
           className={`settings-tab-btn${settingTab === 'privacy' ? ' selected-setting' : ''}`}
           onClick={() => setSettingTab('privacy')}
         >
-          AI & privacy
+          Privacy
         </button>
         <button
           type="button"
@@ -3702,7 +3892,7 @@ function SettingsView({
             <p>Create readable packages or a complete backup containing evidence and area-capture files.</p>
             <div className="destination-rule" />
             <div className="setting-state">
-              <div><b>Export</b><p>Write a Markdown package or versioned JSON backup to an explicit destination.</p></div>
+              <div><b>Export</b><p>Write Markdown, a JSON backup, or review CSV/TSV through the native destination picker. Annotated PDF copy is shown but awaits its native writer.</p></div>
               <button className="wide-action primary" onClick={() => setExportOpen(true)}>Export...</button>
             </div>
             <label className="field-label" htmlFor="restore-json">Backup JSON
@@ -3710,42 +3900,40 @@ function SettingsView({
             </label>
             <button className="wide-action" disabled={!backupJson.trim()} onClick={() => setRestoreOpen(true)}>Preview restore</button>
             {exportStatus && <p role="status">{exportStatus}</p>}
-            <ExportModal isOpen={exportOpen} onClose={() => setExportOpen(false)} onExport={runExport} />
+            <ExportModal isOpen={exportOpen} onClose={() => setExportOpen(false)} onExport={runExport} onChooseDestination={chooseNativeExportDestination} />
             <RestoreBackupModal isOpen={restoreOpen} backupJson={backupJson} onClose={() => setRestoreOpen(false)} onRestore={async () => {
               await invoke('db_restore_from_backup', { backupJson });
               setExportStatus('Restore completed. Reopen the destination views to refresh restored records.');
             }} />
+            <DestinationConflictModal
+              isOpen={Boolean(exportConflict)}
+              path={exportConflict?.destination ?? ''}
+              diffPreview={exportConflict?.diffPreview ?? ''}
+              onOverwrite={async () => {
+                const conflict = exportConflict;
+                setExportConflict(null);
+                if (conflict) await writeExport(conflict.format, conflict.destination);
+              }}
+              onRename={async (path) => {
+                const conflict = exportConflict;
+                setExportConflict(null);
+                if (conflict) await writeExport(conflict.format, suggestCopyPath(path));
+              }}
+              onCancel={() => setExportConflict(null)}
+            />
           </div>
         ) : (
           <>
             <span className="eyebrow">Your local boundary</span>
-            <h1>Local AI & privacy</h1>
-            <p>Everything here is off by default. The Reader is complete without it.</p>
+            <h1>Privacy</h1>
+            <p>Mereth's v1 reading, annotation, notes, review, search, and export workflows run locally without an account or model runtime.</p>
             <div className="destination-rule" />
             <div className="setting-state">
               <div>
-                <b>Local AI · {aiOn ? "On" : "Off"}</b>
-                <p>When off, no Reader-managed model process or semantic index is kept in memory. No document text leaves this device.</p>
+                <b>Local-first workspace</b>
+                <p>Mereth does not require a hosted service for the v1 product loop. Future optional AI work is deferred and is not exposed as a nonfunctional control.</p>
               </div>
-              <button className="wide-action primary" onClick={() => setAiOn(!aiOn)}>{aiOn ? "Turn off" : "Turn on"}</button>
             </div>
-            <h3>Runtime</h3>
-            <label className="radio-row">
-              <input type="radio" defaultChecked />
-              <span />
-              <div>
-                <b>Strict local — app-managed runtime</b>
-                <small>The only mode the Reader can verify. No network tools.</small>
-              </div>
-            </label>
-            <label className="radio-row">
-              <input type="radio" />
-              <span />
-              <div>
-                <b>External provider — Ollama or LM Studio</b>
-                <small>Loopback only, but its network behavior is outside Reader’s control.</small>
-              </div>
-            </label>
           </>
         )}
       </article>

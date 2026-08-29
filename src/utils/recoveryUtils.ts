@@ -175,7 +175,8 @@ export type EmptyStateViewType =
   | 'outline'
   | 'annotations'
   | 'collections'
-  | 'jobs';
+  | 'jobs'
+  | 'notes';
 
 export interface EmptyStateDetails {
   viewType: EmptyStateViewType;
@@ -194,7 +195,7 @@ export function getEmptyStateDetails(
     case 'library':
       return {
         viewType: 'library',
-        icon: '📚',
+        icon: 'library',
         title: 'Library is empty',
         description: 'Open a PDF to begin reading. It will be added to your Library automatically.',
         primaryActionLabel: 'Open PDF',
@@ -205,7 +206,7 @@ export function getEmptyStateDetails(
       const q = context?.searchQuery ? `"${context.searchQuery}"` : 'your query';
       return {
         viewType: 'search',
-        icon: '🔍',
+        icon: 'search',
         title: 'No matching search results',
         description: `No documents or passages matched ${q}. Try checking your spelling, using broader terms, or clearing active filters.`,
         primaryActionLabel: 'Clear Search',
@@ -214,7 +215,7 @@ export function getEmptyStateDetails(
     case 'outline':
       return {
         viewType: 'outline',
-        icon: '☰',
+        icon: 'list',
         title: 'No document outline',
         description: 'This PDF does not contain a table of contents or bookmarks structure. You can use page numbers or search to navigate.',
       };
@@ -222,7 +223,7 @@ export function getEmptyStateDetails(
     case 'annotations':
       return {
         viewType: 'annotations',
-        icon: '✎',
+        icon: 'notes',
         title: 'No annotations yet',
         description: 'Select text on any page to highlight or create evidence blocks. Area capture is also available for figures.',
       };
@@ -230,7 +231,7 @@ export function getEmptyStateDetails(
     case 'collections':
       return {
         viewType: 'collections',
-        icon: '📁',
+        icon: 'library',
         title: 'No collections created',
         description: 'Collections allow you to organize documents into projects or subjects.',
         primaryActionLabel: '+ New Collection',
@@ -239,15 +240,25 @@ export function getEmptyStateDetails(
     case 'jobs':
       return {
         viewType: 'jobs',
-        icon: '⚙️',
+        icon: 'settings',
         title: 'No active or background tasks',
         description: 'Background text extraction, page thumbnail generation, and indexing tasks will appear here.',
+      };
+
+    case 'notes':
+      return {
+        viewType: 'notes',
+        icon: 'notes',
+        title: 'No notes yet',
+        description: 'Create a concept claim, source note, or scratchpad to begin writing. Notes stay local to this device.',
+        primaryActionLabel: 'New scratchpad',
+        secondaryActionLabel: 'New concept note',
       };
 
     default:
       return {
         viewType: 'library',
-        icon: '📄',
+        icon: 'reader',
         title: 'No items',
         description: 'No data available.',
       };

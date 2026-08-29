@@ -42,3 +42,12 @@ export async function getReviewQueueStats(): Promise<ReviewQueueStats> {
   return invoke<ReviewQueueStats>('db_get_review_queue_stats');
 }
 
+/** U19: recent review events across all prompts, newest first. */
+export interface RecentReviewEventRecord extends ReviewEventRecord {
+  prompt_question: string;
+}
+
+export async function getRecentReviewEvents(limit = 50): Promise<RecentReviewEventRecord[]> {
+  return invoke<RecentReviewEventRecord[]>('db_get_recent_review_events', { limit });
+}
+

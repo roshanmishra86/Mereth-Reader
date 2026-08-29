@@ -11,6 +11,7 @@ interface RestoreBackupModalProps {
 
 export function RestoreBackupModal({ isOpen, backupJson, onClose, onRestore }: RestoreBackupModalProps) {
   const [busy, setBusy] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
   const trapRef = useFocusTrap<HTMLElement>({ isOpen, onClose });
   const preview = useMemo(() => {
     try {
@@ -23,10 +24,12 @@ export function RestoreBackupModal({ isOpen, backupJson, onClose, onRestore }: R
 
   const restore = async () => {
     if (!preview.valid) return;
-    setBusy(true);
+    setBusy(true); setRestoreError(null);
     try {
       await onRestore();
       onClose();
+    } catch (error) {
+      setRestoreError(error instanceof Error ? error.message : 'Restore failed. Existing profile data was not changed.');
     } finally {
       setBusy(false);
     }
@@ -37,18 +40,19 @@ export function RestoreBackupModal({ isOpen, backupJson, onClose, onRestore }: R
       <section ref={trapRef} className="modal prompt-modal">
         <button className="modal-close" type="button" onClick={onClose} aria-label="Close restore dialog">x</button>
         <span className="eyebrow">Backup restore</span>
-        <h2 id="restore-backup-title">Restore into a clean profile</h2>
+        <h2 id="restore-backup-title">Restore into this profile</h2>
+        <p>Matching record IDs are updated and missing records are added. This restore does not clear the current profile or create a clean one.</p>
         {preview.valid ? (
           <pre>{JSON.stringify(preview.counts, null, 2)}</pre>
         ) : (
           <div className="banner" role="alert">{preview.errors.join(' ')}</div>
         )}
+        {restoreError && <div className="banner" role="alert">{restoreError}</div>}
         <div className="modal-actions">
-          <button className="button" type="button" onClick={onClose}>Cancel</button>
+          <button className="button" type="button" onClick={onClose} disabled={busy}>Cancel</button>
           <button className="button primary" type="button" onClick={() => void restore()} disabled={!preview.valid || busy}>Restore</button>
         </div>
       </section>
     </div>
   );
 }
-
