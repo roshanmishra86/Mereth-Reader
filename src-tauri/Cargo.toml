@@ -1,6 +1,6 @@
 [package]
 name = "mereth-reader"
-version = "0.1.0"
+version = "0.1.1"
 description = "Mereth Reader — a calm, local-first PDF reader"
 authors = ["Reader contributors"]
 edition = "2021"

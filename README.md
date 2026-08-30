@@ -59,7 +59,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 
 The repository defines a Linux quality workflow for the build, frontend tests,
 Rust check, and Rust unit tests. A separate workflow builds an NSIS installer
-and publishes it to a GitHub Release when a version tag such as `v0.1.0` is
+and publishes it to a GitHub Release when a version tag such as `v0.1.1` is
 pushed. The tag must match the version in `src-tauri/tauri.conf.json`.
 Configuration is not proof of a successful run or installer behavior; verify
 the workflow run and downloaded installer for each release.
@@ -78,8 +78,8 @@ an unsigned pre-release build.
 To publish the configured version after its commit is on `master`:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.1
+git push origin v0.1.1
 ```
 
 The tag push starts the Windows release workflow. After it succeeds, download
