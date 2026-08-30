@@ -1061,6 +1061,7 @@ High AI usage is not a success metric. Low usage may mean the manual product is 
 | OQ-17 | **Resolved** | v1 prints through the OS/webview print dialog (`window.print()`) or the system PDF viewer; no custom print driver. | R0 scope gate |
 | OQ-18 | **Resolved** | v1 is a single application instance with document tabs; OS "Open with" routes launch arguments to the existing window via `tauri-plugin-single-instance`. | R0 architecture gate |
 | OQ-19 | **Resolved** | v1 opens password-protected PDFs after an in-app password prompt; decrypted bytes live only in volatile memory and are never persisted without a separate security decision. | R0 corpus gate |
+| OQ-20 | **Resolved** | Mereth Reader v1 is built for personal use first. EV Code Signing / Authenticode certificates are waived for personal-use builds; complete signing architecture and procedures documented in `docs/decisions/R6.6-release-signing-procedure.md` for future commercial release. | R6 |
 
 ---
 

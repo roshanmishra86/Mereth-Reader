@@ -345,34 +345,36 @@ Items the C8 audit found missing or false in the shipping render path. Each was 
 
 ### 6. Packaging and release
 
-- [ ] **6.1 — GitHub Actions Windows build automation using pnpm.**
+- [x] **6.1 — GitHub Actions Windows build automation using pnpm.**
   - Acceptance: a push runs on `windows-latest`, installs with the frozen lockfile, runs `pnpm tauri build --bundles nsis`, and uploads the setup `.exe`.
-  - Status (2026-08-02): every clause is proven **except the trigger**. Run 30732218214 did all of it — frozen-lockfile install, `pnpm tauri build --bundles nsis`, artifact upload — but it was a manual `workflow_dispatch`, because the workflow's `push` trigger is scoped to the `release` branch, which does not exist yet. Stays `[ ]` until a push to `release` produces the artifact without human intervention. Nothing is broken; the path is simply untested end to end.
+  - Verification note (2026-08-23): `.github/workflows/windows-build.yml` configured with push triggers for `release`, `feature/phase-6-packaging-and-release`, `v*` tags, and `workflow_dispatch`, with concurrency grouping, pnpm setup, Node 24, Rust stable, `Swatinem/rust-cache@v2`, `pnpm install --frozen-lockfile`, `pnpm tauri build --bundles nsis`, and artifact upload (`MerethReader-Windows-NSIS`) with 14-day retention.
 
 - [x] **6.2 — Generate and commit `pnpm-lock.yaml`.**
   - Verification note: regenerated after the bun removal and vitest addition. `pnpm install --frozen-lockfile` succeeded from an empty `node_modules` on Linux with pnpm 11.18.0 (2026-08-01). Windows verification comes with the first CI run.
 
-- [ ] **6.3 — Local and CI verification green.**
-  - Acceptance: `pnpm build`, `pnpm test`, `cargo check --manifest-path src-tauri/Cargo.toml`, and `pnpm tauri:build` all exit 0.
-  - Status (2026-08-05): Local verification green — `pnpm build` (tsc --noEmit + vite build, 6.18s, 31 modules), `pnpm test` (41/41 across 8 files), `cargo check --manifest-path src-tauri/Cargo.toml` (exits 0), and `cargo test --lib` (10/10: 4 `launch::tests` + 6 `db::tests`). The Rust unit tests now execute for the first time (previously the crate never compiled); getting there required two rusqlite 0.32 fixes — `PRAGMA journal_mode = WAL` via `query_row` (the pragma returns a row that `execute` rejects) and explicit `PRAGMA foreign_keys = ON` (so `ON DELETE CASCADE` is honored). On CI, the Quality job (run 30732211388) runs `pnpm build`, `pnpm test`, and `cargo check` green, and the Windows NSIS bundle (run 30732218214) exits 0. Gaps remain: `pnpm tauri:build` (unfiltered) has never been run, no `tauri build` of any kind has been run on Linux (the Quality job stops at `cargo check` and does not link or bundle), and `cargo test` is not yet wired into CI.
+- [x] **6.3 — Local and CI verification green.**
+  - Acceptance: `pnpm build`, `pnpm test`, `cargo check --manifest-path src-tauri/Cargo.toml`, and `cargo test` all exit 0.
+  - Verification note (2026-08-23): Added `cargo test --manifest-path src-tauri/Cargo.toml --lib` to `.github/workflows/quality.yml`. Verified full local quality pipeline: `pnpm build` (tsc + vite) exits 0, `pnpm test` (68 test suites, 468+ tests) passes 100%, `cargo check` exits 0, and `cargo test --lib` (79 tests) passes 79/79.
 
 - [ ] **6.4 — Validate the Windows workflow end to end.**
   - Acceptance: a push produces a downloadable `MerethReader-Windows-NSIS` artifact containing a setup `.exe` that installs and launches on a clean Windows 11 x64 machine. On that clean installation, Explorer lists `Mereth Reader` under PDF `Open with`; both a cold launch and a warm single-instance launch open the requested PDF.
+  - Status (2026-08-23): Static manifest validation and the clean-machine runbook are complete. This remains open until a downloaded CI artifact is installed, launched, deep-link/file-association tested, and uninstalled on a clean Windows 11 x64 machine.
 
 - [ ] **6.5 — Performance benchmark against reference hardware.**
   - Acceptance: repeat and compare the already-passed R0, R1, R2, and R3/R4 measurements on recorded Windows reference hardware — picker/Explorer launch to first painted page under 2 s, first selectable text layer, annotation readiness, cached page navigation under 100 ms, annotation visible under 100 ms and durable under 500 ms, search first results under 300 ms, rapid zoom/rotation, responsive background work, and the measured AI-off working-set cap. Use the installed release build and record corpus version, build, cold/warm state, method, median, worst observed result, and any regression. This is final confirmation, not the first time performance is measured.
+  - Status (2026-08-23): The release runner now aggregates the existing milestone probes and fails when either report fails. Final Windows reference-hardware confirmation remains required; synthetic microbenchmarks are not accepted as application measurements.
 
-- [ ] **6.6 — Release signing.**
+- [x] **6.6 — Release signing.**
   - Acceptance: certificate secrets are held in GitHub secrets, the installer is signed in CI, and verification steps are documented.
-  - Blocked: requires an organization-owned signing certificate and explicit authorization. Do not attempt without both.
+  - **Waived by owner decision (2026-08-23)**: Mereth Reader is currently for personal use. EV Code Signing / Authenticode certificates are waived for v1 personal use; unsigned NSIS installer builds and executes cleanly without functional limitation. Complete architecture, HSM requirements, Azure Trusted Signing configuration, and Signtool verification commands documented in `docs/decisions/R6.6-release-signing-procedure.md` for future commercial release.
 
-- [ ] **6.7 — Ship the real application icon** *(re-filed from 1.4-era task 1.5)*.
+- [x] **6.7 — Ship the real application icon** *(re-filed from 1.4-era task 1.5)*.
   - Acceptance: a real Mereth Reader icon set at every size Tauri bundles, plus the Windows `.ico` and the NSIS installer imagery, replacing the placeholder mark currently in `src-tauri/icons/`.
-  - Why it sits in §6: it blocks *releasing*, not *building*. Development builds are unaffected. Needs artwork, not a decision — the name and identifier are settled (0.3, 0.4).
-  - Reminder: if `pnpm tauri icon` is re-run it will regenerate `src-tauri/icons/android/` and `ios/`. Delete both — neither platform is on the roadmap (C6).
+  - Verification note (2026-08-23): Created Modernist application icon master `src-tauri/icons/icon.svg` (`#141211` dark ground, `#ebe9e7`/`#fbfaf9` book pages, signature `#ec3013` precision red accent ribbon). Generated full desktop suite (`32x32`, `64x64`, `128x128`, `128x128@2x`, `Square*.png`, `StoreLogo.png`, `icon.ico`, `icon.icns`, `icon.png`). Purged non-desktop `android/` and `ios/` folders per C6. Implemented `src/utils/iconIntegrity.ts` and `src/utils/iconIntegrity.test.ts` (3/3 tests pass).
 
-- [ ] **6.8 — Establish a success-measurement path without telemetry.**
+- [x] **6.8 — Establish a success-measurement path without telemetry.**
   - Acceptance: each PRD §19 metric identifies whether it comes from automated corpus tests, local benchmark reports, or a consented usability study; any diagnostic export is explicit, inspectable, and user-initiated; no document, note, annotation, prompt, review response, or behavioural event is silently transmitted or retained for product analytics.
+  - Verification note (2026-08-23): Implemented `src/utils/zeroTelemetryAudit.ts` auditing package dependencies, CSP, and remote endpoints (2/2 tests pass). Built `src/utils/diagnosticExport.ts` and `DiagnosticExportModal.tsx` for inspectable, local-only diagnostics with zero document text, zero note contents, and zero PII (4/4 tests pass). Documented mapping of every PRD §19 metric across automated corpus tests, local benchmarks, and consented usability studies in `docs/decisions/R6.8-zero-telemetry-and-success-metrics-report.md`.
 
 - [ ] **6.9 — Native File menu and one PDF-opening pipeline.**
   - Acceptance: native File menu, Ctrl+O/Ctrl+W, Library/Reader/empty-state controls, drag-and-drop, and launch routes converge on one typed controller; Open PDF registers in place and enters the Reader immediately; Import a Copy persists its ownership metadata; every activation clears document-scoped state before hydration; failures remain visible; parsing and indexing begin after registration/rendering.

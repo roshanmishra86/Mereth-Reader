@@ -16,7 +16,9 @@ use db::review::{
     DueReviewPrompt, RecentReviewEvent, ReviewEvent, ReviewQueueStats, ReviewSchedule,
 };
 use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
-use db::{CollectionRecord, Database, Document, Job, Page, ReadingSession, Setting};
+use db::{
+    CollectionRecord, Database, DiagnosticCounts, Document, Job, Page, ReadingSession, Setting,
+};
 use import::{
     compute_file_metadata, copy_to_managed_documents, ensure_external_pdf_source,
     validate_pdf_filepath_basic, validate_pdf_path_for_record, FileMetadata,
@@ -198,6 +200,13 @@ fn db_get_documents(state: State<'_, AppState>) -> Result<Vec<Document>, String>
     let lock = state.db.lock().unwrap();
     let db = lock.as_ref().ok_or("Database not initialized")?;
     db.get_documents()
+}
+
+#[tauri::command]
+fn db_get_diagnostic_counts(state: State<'_, AppState>) -> Result<DiagnosticCounts, String> {
+    let lock = state.db.lock().unwrap();
+    let db = lock.as_ref().ok_or("Database not initialized")?;
+    db.diagnostic_counts()
 }
 
 #[tauri::command]
@@ -1216,6 +1225,7 @@ pub fn run() {
             db_init,
             db_check_destination,
             db_get_documents,
+            db_get_diagnostic_counts,
             db_get_document_by_hash,
             db_add_document,
             db_update_document_metadata,

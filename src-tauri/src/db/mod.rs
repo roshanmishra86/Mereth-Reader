@@ -16,6 +16,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiagnosticCounts {
+    pub document_count: i64,
+    pub annotation_count: i64,
+    pub note_count: i64,
+    pub review_prompt_count: i64,
+    pub review_event_count: i64,
+}
+
 /// A document record persisted in the `documents` table.
 ///
 /// These structs are the typed boundary between the Rust persistence layer
@@ -246,6 +256,21 @@ impl Database {
             .collect();
 
         Ok(docs)
+    }
+
+    pub fn diagnostic_counts(&self) -> Result<DiagnosticCounts, String> {
+        let conn = self.conn.lock().unwrap();
+        let count = |table: &str| -> Result<i64, String> {
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .map_err(|error| error.to_string())
+        };
+        Ok(DiagnosticCounts {
+            document_count: count("documents")?,
+            annotation_count: count("annotations")?,
+            note_count: count("notes")?,
+            review_prompt_count: count("review_prompts")?,
+            review_event_count: count("review_events")?,
+        })
     }
 
     pub fn add_document(&self, doc: Document) -> Result<(), String> {

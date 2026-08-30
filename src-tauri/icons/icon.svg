@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Ground canvas: deep modernist charcoal -->
+  <rect width="1024" height="1024" fill="#141211" rx="128" />
+
+  <!-- Outer subtle structure border -->
+  <rect x="32" y="32" width="960" height="960" fill="none" stroke="#2a2624" stroke-width="4" rx="96" />
+
+  <!-- Left book page / spine backplate -->
+  <rect x="180" y="220" width="300" height="584" fill="#ebe9e7" />
+  <!-- Right book page -->
+  <rect x="544" y="220" width="300" height="584" fill="#fbfaf9" />
+
+  <!-- Spine gutter column -->
+  <rect x="480" y="220" width="64" height="584" fill="#141211" />
+  <line x1="512" y1="220" x2="512" y2="804" stroke="#2a2624" stroke-width="4" />
+
+  <!-- Left page typography / text rhythm blocks -->
+  <rect x="230" y="290" width="200" height="16" fill="#141211" />
+  <rect x="230" y="330" width="180" height="10" fill="#78726e" />
+  <rect x="230" y="356" width="190" height="10" fill="#78726e" />
+  <rect x="230" y="382" width="160" height="10" fill="#78726e" />
+  <rect x="230" y="408" width="185" height="10" fill="#78726e" />
+
+  <rect x="230" y="460" width="190" height="10" fill="#78726e" />
+  <rect x="230" y="486" width="175" height="10" fill="#78726e" />
+  <rect x="230" y="512" width="185" height="10" fill="#78726e" />
+  <rect x="230" y="538" width="140" height="10" fill="#78726e" />
+
+  <rect x="230" y="590" width="185" height="10" fill="#78726e" />
+  <rect x="230" y="616" width="190" height="10" fill="#78726e" />
+  <rect x="230" y="642" width="160" height="10" fill="#78726e" />
+
+  <!-- Right page content lines -->
+  <rect x="594" y="290" width="200" height="16" fill="#141211" />
+  <rect x="594" y="330" width="190" height="10" fill="#78726e" />
+  <rect x="594" y="356" width="185" height="10" fill="#78726e" />
+  <rect x="594" y="382" width="170" height="10" fill="#78726e" />
+
+  <!-- Signature Modernist annotation highlight & note marker on right page -->
+  <rect x="594" y="456" width="195" height="24" fill="#fed7aa" fill-opacity="0.6" />
+  <rect x="594" y="460" width="190" height="12" fill="#141211" />
+  <rect x="594" y="486" width="175" height="10" fill="#78726e" />
+  <rect x="594" y="512" width="185" height="10" fill="#78726e" />
+
+  <!-- Signature Modernist red ribbon bookmark (#ec3013) anchored at top of spine -->
+  <polygon points="488,180 536,180 536,440 512,410 488,440" fill="#ec3013" />
+
+  <!-- Red accent precision registration mark -->
+  <rect x="488" y="180" width="48" height="6" fill="#ba1a00" />
+</svg>
