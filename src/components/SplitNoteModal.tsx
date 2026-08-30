@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 /**
  * Task 4.3 — Split Note Modal with real-time atomicity linting (PRD R3, FR-10.6).
  */
@@ -75,7 +76,7 @@ export const SplitNoteModal: React.FC<SplitNoteModalProps> = ({
           )}
           {guidance.isStrongTitle && newTitle.trim().length > 0 && (
             <p className="atomicity-hint success">
-              ✓ Good atomic claim or question title
+              <Icon name="check" size={12} /> Good atomic claim or question title
             </p>
           )}
         </div>

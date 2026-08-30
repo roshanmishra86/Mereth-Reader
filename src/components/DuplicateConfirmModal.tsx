@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import React from 'react';
 import { DocumentRecord } from '../utils/pdfImport';
 import { DuplicateConfirmationState, DuplicateResolutionAction } from '../utils/duplicateCheck';
@@ -39,7 +40,7 @@ export function DuplicateConfirmModal({
             onClick={() => onResolve('cancel')}
             aria-label="Close dialog"
           >
-            ✕
+            <Icon name="x" />
           </button>
         </header>
 

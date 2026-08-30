@@ -18,7 +18,7 @@ pub enum MigrationError {
 }
 
 /// The highest migration version this engine knows how to apply.
-const LATEST_MIGRATION_VERSION: i32 = 12;
+const LATEST_MIGRATION_VERSION: i32 = 14;
 
 /// Runs forward-only migrations.
 ///
@@ -833,6 +833,71 @@ pub fn run_migrations(conn: &mut Connection, db_dir: &Path, db_existed: bool) ->
 
       tx.commit()?;
       conn.execute("PRAGMA foreign_keys = ON", [])?;
+    }
+
+    if current_version < 13 {
+      let has_ownership: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('documents') WHERE name = 'ownership_mode')",
+        [], |row| row.get(0),
+      )?;
+      let has_original: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('documents') WHERE name = 'original_filepath')",
+        [], |row| row.get(0),
+      )?;
+      let has_removed: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('documents') WHERE name = 'removed_at')",
+        [], |row| row.get(0),
+      )?;
+      let tx = conn.transaction()?;
+      if !has_ownership {
+        tx.execute(
+          "ALTER TABLE documents ADD COLUMN ownership_mode TEXT NOT NULL DEFAULT 'open_in_place' CHECK (ownership_mode IN ('open_in_place', 'managed_library'));",
+          [],
+        )?;
+      }
+      if !has_original { tx.execute("ALTER TABLE documents ADD COLUMN original_filepath TEXT;", [])?; }
+      if !has_removed { tx.execute("ALTER TABLE documents ADD COLUMN removed_at TEXT;", [])?; }
+
+      // Legacy records under app-data/documents are Mereth-owned copies. The
+      // original source was never persisted, so original_filepath stays NULL.
+      let managed_dir = db_dir.parent().unwrap_or(db_dir).join("documents");
+      let managed_prefix = format!("{}%", managed_dir.to_string_lossy());
+      tx.execute(
+        "UPDATE documents SET ownership_mode = 'managed_library' WHERE filepath LIKE ?1;",
+        rusqlite::params![managed_prefix],
+      )?;
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+         VALUES (13, datetime('now'), 'migration_13_document_ownership_removal');",
+        [],
+      )?;
+      tx.commit()?;
+    }
+
+    if current_version < 14 {
+      let has_version_hash: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('pages') WHERE name = 'version_hash')",
+        [], |row| row.get(0),
+      )?;
+      let tx = conn.transaction()?;
+      if !has_version_hash {
+        tx.execute("ALTER TABLE pages ADD COLUMN version_hash TEXT NOT NULL DEFAULT '';", [])?;
+      }
+      // Pre-v14 rows cannot be attributed to a particular source version.
+      // Dropping them is safer than serving stale text after a PDF changes;
+      // the background extractor recreates the cache on next open.
+      tx.execute("DELETE FROM fts_document_text;", [])?;
+      tx.execute("DELETE FROM pages;", [])?;
+      tx.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pages_document_version_page ON pages(document_id, version_hash, page_number);",
+        [],
+      )?;
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+         VALUES (14, datetime('now'), 'migration_14_versioned_page_text_cache');",
+        [],
+      )?;
+      tx.commit()?;
     }
   }
 

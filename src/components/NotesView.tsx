@@ -25,6 +25,7 @@ import type { SplitNoteResult } from '../utils/noteSplit';
 import { getDefaultTemplate, renderTemplate } from '../utils/noteTemplates';
 import { PromptEditorModal } from './PromptEditorModal';
 import { NoteEditor } from './NoteEditor';
+import { EmptyState } from './EmptyState';
 
 export interface NotesViewProps {
   initialSelectedNoteId?: string | null;
@@ -482,9 +483,13 @@ export const NotesView: React.FC<NotesViewProps> = ({
             onRememberEvidence={handleRememberEvidence}
           />
         ) : (
-          <div style={{ display: 'grid', placeItems: 'center', padding: '32px', color: '#605d5d', fontSize: '12px' }}>
-            Select or create a note to begin editing.
-          </div>
+          <EmptyState
+            viewType="notes"
+            customTitle="No note selected"
+            customDescription="Select a note from the list, or create one with the template buttons above."
+            onPrimaryAction={() => handleCreateNote('scratch')}
+            onSecondaryAction={() => handleCreateNote('concept')}
+          />
         )}
       </div>
 

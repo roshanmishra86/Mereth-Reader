@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { DocumentRecord } from '../utils/pdfImport';
@@ -116,7 +117,7 @@ export function MetadataEditorModal({
       >
         <header className="sheet-header">
           <h3 id="metadata-editor-title">Edit Document Metadata (FR-7.4)</h3>
-          <button className="icon-button" onClick={onClose} aria-label="Close editor">✕</button>
+          <button className="icon-button" onClick={onClose} aria-label="Close editor"><Icon name="x" /></button>
         </header>
 
         <form onSubmit={handleSave} className="sheet-body form-grid">

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ParsedOutlineNode } from '../utils/navigationUtils';
 import { EmptyState } from './EmptyState';
+import { Icon } from './icons';
 
 interface OutlineTreeProps {
   nodes: ParsedOutlineNode[];
@@ -99,7 +100,7 @@ export function OutlineTree({ nodes, currentPage, onSelectPage }: OutlineTreePro
   return (
     <div className="outline-tree-container">
       <div className="outline-search-box">
-        <span className="outline-search-icon">⌕</span>
+        <span className="outline-search-icon"><Icon name="search" size={12} /></span>
         <input
           type="text"
           placeholder="Filter outline…"

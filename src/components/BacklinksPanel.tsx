@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 /**
  * Task 4.3 — Backlinks panel for NoteEditor (PRD R3, FR-10.5).
  *
@@ -51,7 +52,7 @@ export const BacklinksPanel: React.FC<BacklinksPanelProps> = ({
               {link.source_note_type}
             </span>
             <span className="backlink-name">{link.source_note_title}</span>
-            <span className="backlink-arrow">→</span>
+            <span className="backlink-arrow"><Icon name="arrowRight" size={12} /></span>
           </button>
         ))}
       </div>

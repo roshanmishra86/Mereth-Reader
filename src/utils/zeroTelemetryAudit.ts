@@ -57,7 +57,7 @@ export function auditZeroTelemetry(repoRoot: string): TelemetryAuditResult {
   if (fs.existsSync(tauriConfPath)) {
     const conf = JSON.parse(fs.readFileSync(tauriConfPath, "utf-8"));
     const csp: string = conf.app?.security?.csp || "";
-    
+
     // Connect-src should either be absent (inherits default-src 'self') or restricted to 'self'
     if (csp.includes("connect-src") && (csp.includes("http:") || csp.includes("https:") || csp.includes("*"))) {
       cspAllowsOutboundFetch = true;

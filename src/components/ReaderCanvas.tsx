@@ -37,6 +37,7 @@ interface ReaderCanvasProps {
   /** Natural size (scale 1, user-rotation removed) of each rendered page. */
   onPageSizeMeasured: (pageNumber: number, baseSize: PageSize) => void;
   onScrollPositionChange: (scrollTop: number) => void;
+  onFirstPagePaint?: () => void;
   onCopySelection?: () => void;
   // Task 3.4 durable annotation overlays (FR-9.4)
   annotationsByPage?: Map<number, AnnotationRecord[]>;
@@ -87,6 +88,7 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
     onViewportChange,
     onPageSizeMeasured,
     onScrollPositionChange,
+    onFirstPagePaint,
     onCopySelection,
     annotationsByPage,
     annotationAssets,
@@ -101,6 +103,7 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
   const rafRef = useRef(0);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [scrollTop, setScrollTop] = useState(0);
+  const firstPaintReportedRef = useRef(false);
 
   // Natural page sizes measured from actual renders; estimates fill the rest.
   const baseSizesRef = useRef<Map<number, PageSize>>(new Map());
@@ -286,8 +289,12 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
         setSizesVersion((v) => v + 1);
       }
       onPageSizeMeasured(pageNumber, base);
+      if (!firstPaintReportedRef.current) {
+        firstPaintReportedRef.current = true;
+        onFirstPagePaint?.();
+      }
     },
-    [scale, rotation, onPageSizeMeasured]
+    [scale, rotation, onPageSizeMeasured, onFirstPagePaint]
   );
 
   return (

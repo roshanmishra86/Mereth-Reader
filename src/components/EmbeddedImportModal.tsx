@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import { useMemo, useState } from 'react';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import {
@@ -76,7 +77,7 @@ export function EmbeddedImportModal({
       }}
     >
       <div ref={trapRef} className="modal embedded-import-modal">
-        <button className="modal-close" onClick={onCancel} disabled={busy} aria-label="Close">✕</button>
+        <button className="modal-close" onClick={onCancel} disabled={busy} aria-label="Close"><Icon name="x" /></button>
         <h2 id="embedded-import-title">Import embedded annotations</h2>
         <p>
           This PDF carries {counts.newCount + counts.duplicateCount} annotati{counts.newCount + counts.duplicateCount === 1 ? 'on' : 'ons'} it

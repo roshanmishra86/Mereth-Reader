@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <!-- Ground canvas: deep modernist charcoal -->
   <rect width="1024" height="1024" fill="#141211" rx="128" />
-  
+
   <!-- Outer subtle structure border -->
   <rect x="32" y="32" width="960" height="960" fill="none" stroke="#2a2624" stroke-width="4" rx="96" />
 
@@ -44,7 +44,7 @@
 
   <!-- Signature Modernist red ribbon bookmark (#ec3013) anchored at top of spine -->
   <polygon points="488,180 536,180 536,440 512,410 488,440" fill="#ec3013" />
-  
+
   <!-- Red accent precision registration mark -->
   <rect x="488" y="180" width="48" height="6" fill="#ba1a00" />
 </svg>

@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { NoteRecord, NoteRevisionRecord, validateConceptTitleGuidance } from '../utils/notesTypes';
 import { AutosaveCoordinator, diffNoteRevisions } from '../utils/noteRevisions';
@@ -253,7 +254,7 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
             <strong style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
               Local Revision History (Max 20 Bounded)
             </strong>
-            <button className="icon-button" style={{ fontSize: '12px' }} onClick={() => setShowRevisions(false)}>✕</button>
+            <button className="icon-button" style={{ fontSize: '12px' }} onClick={() => setShowRevisions(false)}><Icon name="x" /></button>
           </div>
           {revisions.length === 0 ? (
             <div style={{ fontSize: '11px', color: '#605d5d' }}>No prior revisions recorded.</div>

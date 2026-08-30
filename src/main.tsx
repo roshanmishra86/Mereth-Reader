@@ -2,6 +2,7 @@ import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "r
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { perfMark } from "./perf/perfMark";
 import "./styles.css";
 import {
@@ -12,15 +13,17 @@ import {
   extractOrderedText,
   PageTextContent,
 } from "./utils/pdfUtils";
-import { DocumentRecord } from "./utils/pdfImport";
+import { createDocumentRecord, DocumentRecord, OwnershipMode } from "./utils/pdfImport";
 import {
   loadPdfDocument,
+  evictPdfDocument,
   extractPdfPageTexts,
   getPdfPageTextItems,
   getPdfPageBaseSize,
   LoadedPdfInfo,
 } from "./utils/pdfViewer";
 import { ImportModal } from "./components/ImportModal";
+import { Icon, IconName } from "./components/icons";
 import { MissingFileBanner } from "./components/MissingFileBanner";
 import { DeepLinkRoute } from "./utils/launchRouting";
 import {
@@ -41,6 +44,7 @@ import {
 } from "./utils/viewModeUtils";
 import { ReaderCanvas } from "./components/ReaderCanvas";
 import { SearchOptions, performAdvancedSearch, getNextMatchIndex, DEFAULT_SEARCH_OPTIONS } from "./utils/searchUtils";
+import { loadVersionedPageTexts, persistVersionedPageTexts } from "./utils/pageTextIo";
 import { parseOutlineTree } from "./utils/navigationUtils";
 import { resolveShortcutAction } from "./utils/shortcutUtils";
 import { getPdfPageEmbeddedAnnotations } from "./utils/pdfViewer";
@@ -156,11 +160,13 @@ import {
   updateUserResponse,
 } from "./utils/reviewSession";
 import type { DueReviewPromptRecord, ReviewQueueStats } from "./utils/reviewIo";
-import { getDueReviewPrompts, getReviewHistory, getReviewQueueStats, recordReviewEvent } from "./utils/reviewIo";
+import { getDueReviewPrompts, getReviewHistory, getReviewQueueStats, getRecentReviewEvents, recordReviewEvent } from "./utils/reviewIo";
+import type { RecentReviewEventRecord } from "./utils/reviewIo";
 import { PromptRepairModal } from "./components/PromptRepairModal";
 import { SettingsReview } from "./components/SettingsReview";
 import type { PromptRepairResult } from "./utils/promptRepair";
 import { hasRepeatedFailures } from "./utils/promptRepair";
+import { applyQueueControl } from "./utils/queueControls";
 import { createNote, listNotes } from "./utils/notesIo";
 import { createDefaultNoteRecord } from "./utils/notesTypes";
 import { SessionSynthesisModal } from "./components/SessionSynthesisModal";
@@ -169,6 +175,14 @@ import { ExportModal, type ExportFormat } from "./components/ExportModal";
 import { RestoreBackupModal } from "./components/RestoreBackupModal";
 import { DiagnosticExportModal } from "./components/DiagnosticExportModal";
 import { buildDiagnosticReport } from "./utils/diagnosticExport";
+import { DestinationConflictModal } from "./components/DestinationConflictModal";
+import { chooseNativeExportDestination } from "./utils/nativeExportDestination";
+import {
+  checkDestination,
+  resolveDestinationSafety,
+  suggestCopyPath,
+  type DestinationSnapshot,
+} from "./utils/destinationSafety";
 
 type Destination = "library" | "reader" | "notes" | "review" | "settings";
 
@@ -190,10 +204,10 @@ interface LaunchRoutePayload {
 }
 
 const nav = [
-  ["library", "Library", "▤"],
-  ["reader", "Reader", "▯"],
-  ["notes", "Notes", "✎"],
-  ["review", "Review", "↻"],
+  ["library", "Library", "library"],
+  ["reader", "Reader", "reader"],
+  ["notes", "Notes", "notes"],
+  ["review", "Review", "review"],
 ] as const;
 
 /** Loads a document's annotations in one pass: active rows + trashed rows. */
@@ -211,8 +225,8 @@ async function loadAnnotationSets(documentId: string): Promise<{
   };
 }
 
-function Glyph({ children }: { children: string }) {
-  return <span className="glyph" aria-hidden="true">{children}</span>;
+function Glyph({ name }: { name: IconName }) {
+  return <Icon name={name} />;
 }
 
 function App() {
@@ -221,8 +235,7 @@ function App() {
   const [destination, setDestination] = useState<Destination>("library");
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
-  const [rightTab, setRightTab] = useState<"annotations" | "note" | "ai">("annotations");
-  const [aiOn, setAiOn] = useState(false);
+  const [rightTab, setRightTab] = useState<"annotations" | "note">("annotations");
   const [selected, setSelected] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [initialImportPath, setInitialImportPath] = useState<string | null>(null);
@@ -230,7 +243,13 @@ function App() {
   const [readingOnly, setReadingOnly] = useState(false);
 
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const [removedDocuments, setRemovedDocuments] = useState<DocumentRecord[]>([]);
+  const [operationError, setOperationError] = useState<string | null>(null);
   const [activeDocument, setActiveDocument] = useState<DocumentRecord | null>(null);
+  const documentsRef = useRef<DocumentRecord[]>([]);
+  const dbReadyRef = useRef(false);
+  const pendingLaunchRoutesRef = useRef<LaunchRoutePayload[]>([]);
+  useEffect(() => { documentsRef.current = documents; }, [documents]);
   const [activeSession, setActiveSession] = useState<ReadingSessionState | null>(null);
   const [collections, setCollections] = useState<CollectionItem[]>([]);
 
@@ -329,6 +348,7 @@ function App() {
   // `reanchorDecision` records the user's choice; `reanchorSummary` is the
   // result of the re-anchoring pass.
   const [versionStatus, setVersionStatus] = useState<VersionCheckResult["status"] | null>(null);
+  const [activeFileHash, setActiveFileHash] = useState<string | null>(null);
   const [versionOffer, setVersionOffer] = useState<{
     documentId: string;
     previousVersionId: string | null;
@@ -367,17 +387,19 @@ function App() {
   const [targetPage, setTargetPage] = useState<number | undefined>(undefined);
 
   const handleLaunchRoutePayload = (payload: LaunchRoutePayload) => {
+    if (!dbReadyRef.current) {
+      pendingLaunchRoutesRef.current.push(payload);
+      return;
+    }
     // Task 2.9 gate mark (dev-only) so boot failures are attributable.
     perfMark(`route.payload:${JSON.stringify(payload).slice(0, 160)}`);
     const docPath = payload.target_document_path ?? payload.targetDocumentPath;
     if (docPath) {
-      const existing = documents.find((d) => d.filepath === docPath || d.original_filepath === docPath);
+      const existing = documentsRef.current.find((d) => d.filepath === docPath || d.original_filepath === docPath);
       if (existing) {
         openDocument(existing);
       } else {
-        setInitialImportPath(docPath);
-        setPdfEntryMode('open');
-        setImportOpen(true);
+        void openPdfFromPath(docPath, 'open_in_place', 'explorer');
       }
       return;
     }
@@ -387,7 +409,7 @@ function App() {
       const action = resolveDeepLinkUiAction(dl);
       if (action.destination === "reader") {
         setDestination("reader");
-        const found = documents.find((d) => d.id === action.documentId);
+        const found = documentsRef.current.find((d) => d.id === action.documentId);
         if (found) {
           openDocument(found);
         }
@@ -557,13 +579,18 @@ function App() {
           // Fallback if settings table unpopulated
         }
 
-        const docs = await invoke<DocumentRecord[]>("db_get_documents");
+        const [docs, removed] = await Promise.all([
+          invoke<DocumentRecord[]>("db_get_documents"),
+          invoke<DocumentRecord[]>("db_get_removed_documents"),
+        ]);
         // Load the library list only — no document is auto-opened. The app
         // opens to the Library; a document's session is restored by
         // openDocument when the user explicitly opens it.
         if (docs && docs.length > 0) {
+          documentsRef.current = docs;
           setDocuments(docs);
         }
+        setRemovedDocuments(removed ?? []);
 
         const cols = await invoke<CollectionItem[]>("db_get_collections");
         if (cols && cols.length > 0) {
@@ -574,6 +601,9 @@ function App() {
         if (dbJobs && dbJobs.length > 0) {
           setJobs(dbJobs);
         }
+        dbReadyRef.current = true;
+        const pendingRoutes = pendingLaunchRoutesRef.current.splice(0);
+        for (const route of pendingRoutes) handleLaunchRoutePayload(route);
       } catch {
         // Dev preview environment fallback
       }
@@ -591,21 +621,16 @@ function App() {
     let unlisten: (() => void) | undefined;
     async function setupLaunchListener() {
       try {
-        const initialRoute = await invoke<LaunchRoutePayload>("cmd_get_initial_launch_route");
-        if (initialRoute && !initialRouteConsumedRef.current) {
-          initialRouteConsumedRef.current = true;
-          handleLaunchRoutePayload(initialRoute);
-        }
-      } catch {
-        // Dev environment fallback
-      }
-
-      try {
         unlisten = await listen<LaunchRoutePayload>("launch-route", (event) => {
           if (event.payload) {
             handleLaunchRoutePayload(event.payload);
           }
         });
+        const initialRoute = await invoke<LaunchRoutePayload>("cmd_get_initial_launch_route");
+        if (initialRoute && !initialRouteConsumedRef.current) {
+          initialRouteConsumedRef.current = true;
+          handleLaunchRoutePayload(initialRoute);
+        }
       } catch {
         // Dev environment fallback
       }
@@ -635,9 +660,11 @@ function App() {
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "o") {
         event.preventDefault();
-        setInitialImportPath(null);
-        setPdfEntryMode('open');
-        setImportOpen(true);
+        void requestOpenPdf();
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "w") {
+        event.preventDefault();
+        closeActiveDocument();
       }
       const target = event.target as HTMLElement;
       if (target.tagName !== 'INPUT' && target.tagName !== 'TEXTAREA' && !target.isContentEditable) {
@@ -691,6 +718,19 @@ function App() {
     // newer document's session and the debounced save effect cannot persist one
     // document's page/zoom into another's session row.
     const openRequestId = ++openDocumentRequestId.current;
+    // Clear document-scoped state synchronously. No annotation action can see
+    // a version or selection inherited from the previous PDF while hydration
+    // for this document is in flight.
+    setCurrentVersionId(null);
+    setAnnotationsList([]);
+    setTrashedAnnotations([]);
+    setSelected("");
+    setVersionOffer(null);
+    setVersionStatus(null);
+    setActiveFileHash(null);
+    setReanchorDecision(null);
+    setReanchorSummary(null);
+    setOperationError(null);
     // Whether this open switches documents — only then is the previous
     // document's selection cleared (a deep link re-opening the SAME document
     // keeps its annotation selection).
@@ -773,6 +813,7 @@ function App() {
       });
       if (openRequestId !== openDocumentRequestId.current) return;
       setVersionStatus(check.status);
+      setActiveFileHash(check.file_sha256_hash ?? check.document_sha256_hash);
       if (check.status === "changed") {
         setVersionOffer({ documentId: doc.id, previousVersionId: check.current_version_id ?? null });
         setReanchorDecision(null);
@@ -785,6 +826,7 @@ function App() {
       // Dev preview without the backend: nothing to report.
       if (openRequestId !== openDocumentRequestId.current) return;
       setVersionStatus(null);
+      setActiveFileHash(doc.sha256_hash);
       setVersionOffer(null);
       setVersionMismatchBannerVisible(false);
     }
@@ -827,6 +869,78 @@ function App() {
     // launch route, import-complete, deep link) keeps the jobs drawer honest
     // (FR-7.6) without duplicating the queue logic here.
   }
+
+  function closeActiveDocument() {
+    openDocumentRequestId.current += 1;
+    if (activeDocumentRef.current) evictPdfDocument(activeDocumentRef.current.id);
+    setActiveDocument(null);
+    setActiveSession(null);
+    setCurrentVersionId(null);
+    setAnnotationsList([]);
+    setTrashedAnnotations([]);
+    setSelected("");
+    setDestination("library");
+  }
+
+  async function openPdfFromPath(path: string, mode: OwnershipMode, source: 'picker' | 'explorer' | 'drop' | 'menu') {
+    setOperationError(null);
+    try {
+      const metadata = await invoke<{ filepath: string; filename: string; sha256_hash: string; file_size_bytes: number; page_count: number; exists: boolean }>(
+        'import_compute_file_metadata', { filepath: path }
+      );
+      if (!metadata.exists) throw new Error(`The PDF no longer exists at ${path}`);
+      const existing = documentsRef.current.find((doc) => doc.sha256_hash === metadata.sha256_hash);
+      if (existing) { await openDocument(existing); return; }
+      let filepath = metadata.filepath;
+      let originalFilepath: string | undefined;
+      if (mode === 'managed_library') {
+        filepath = await invoke<string>('import_copy_to_managed_library', { sourcePath: metadata.filepath });
+        originalFilepath = metadata.filepath;
+      }
+      const record = createDocumentRecord({
+        title: metadata.filename.replace(/\.pdf$/i, ''), filepath,
+        original_filepath: originalFilepath, sha256_hash: metadata.sha256_hash,
+        page_count: Math.max(1, metadata.page_count), ownership_mode: mode,
+      });
+      await invoke('db_add_document', { doc: record });
+      setDocuments((current) => [record, ...current.filter((doc) => doc.id !== record.id)]);
+      await openDocument(record);
+      perfMark(`open.source:${source}`);
+    } catch (error) {
+      setOperationError(`Could not open PDF: ${error instanceof Error ? error.message : String(error)}`);
+      setDestination('library');
+    }
+  }
+
+  async function requestOpenPdf() {
+    try {
+      const selected = await openFileDialog({ multiple: false, directory: false, filters: [{ name: 'PDF Document', extensions: ['pdf'] }] });
+      if (typeof selected === 'string') await openPdfFromPath(selected, 'open_in_place', 'picker');
+    } catch (error) {
+      setOperationError(`The file picker could not be opened: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{ command: 'open_pdf' | 'import_pdf_copy' | 'close_document' }>('app-menu-command', ({ payload }) => {
+      if (payload.command === 'open_pdf') void requestOpenPdf();
+      else if (payload.command === 'import_pdf_copy') { setInitialImportPath(null); setPdfEntryMode('import'); setImportOpen(true); }
+      else closeActiveDocument();
+    }).then((stop) => {
+      if (cancelled) stop();
+      else unlisten = stop;
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+    // The listener delegates through refs/state setters and must be registered
+    // once. Re-registering on every render can leak asynchronously-created
+    // listeners when cleanup wins the race with listen().
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Real extraction progress reported by the reader's background pass. The
   // manager marks the job completed at 100%; completion is persisted.
@@ -1143,8 +1257,7 @@ function App() {
       const filtered = prev.filter((d) => d.id !== newDoc.id);
       return [newDoc, ...filtered];
     });
-    setActiveDocument(newDoc);
-    setDestination("reader");
+    void openDocument(newDoc);
     setImportOpen(false);
   }
 
@@ -1173,17 +1286,44 @@ function App() {
 
   async function handleDeleteRecord(docId: string) {
     try {
-      await invoke('db_delete_document', { id: docId });
-    } catch {
-      // Dev preview environment fallback — proceed with UI removal
+      await invoke('db_remove_document', { id: docId });
+    } catch (error) {
+      setOperationError(`Could not remove this document: ${error instanceof Error ? error.message : String(error)}`);
+      return;
     }
+    const removed = documentsRef.current.find((doc) => doc.id === docId);
+    if (removed) setRemovedDocuments((items) => [{ ...removed, removed_at: new Date().toISOString() }, ...items]);
     setDocuments((prev) => prev.filter((d) => d.id !== docId));
     if (activeDocument?.id === docId) {
-      const remaining = documents.filter((d) => d.id !== docId);
-      setActiveDocument(remaining.length > 0 ? remaining[0] : null);
-      if (remaining.length === 0) {
-        setDestination("library");
-      }
+      evictPdfDocument(activeDocument.id);
+      closeActiveDocument();
+    }
+  }
+
+  async function handleRestoreDocument(docId: string) {
+    setOperationError(null);
+    try {
+      await invoke('db_restore_document', { id: docId });
+      const restored = removedDocuments.find((doc) => doc.id === docId);
+      if (restored) setDocuments((items) => [{ ...restored, removed_at: null }, ...items]);
+      setRemovedDocuments((items) => items.filter((doc) => doc.id !== docId));
+    } catch (error) {
+      setOperationError(`Could not restore this document: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function handlePurgeDocument(doc: DocumentRecord) {
+    const warning = doc.ownership_mode === 'managed_library'
+      ? 'Mereth’s private PDF copy and all linked notes, annotations, and review data will be deleted. The original source file will not be touched.'
+      : 'All linked Mereth notes, annotations, and review data will be deleted. The source PDF will not be touched.';
+    if (!window.confirm(`Permanently delete “${doc.title}”?\n\n${warning}\n\nThis cannot be undone.`)) return;
+    setOperationError(null);
+    try {
+      await invoke('db_purge_document', { id: doc.id });
+      setRemovedDocuments((items) => items.filter((item) => item.id !== doc.id));
+      evictPdfDocument(doc.id);
+    } catch (error) {
+      setOperationError(`Could not permanently delete this document: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -1211,7 +1351,7 @@ function App() {
               aria-label={label}
               aria-current={destination === id ? "page" : undefined}
             >
-              <Glyph>{glyph}</Glyph>
+              <Glyph name={glyph} />
               <span>{label}</span>
               {id === "review" && reviewPromptsList.length > 0 && <em>{reviewPromptsList.length}</em>}
             </button>
@@ -1223,13 +1363,14 @@ function App() {
             aria-label="Settings"
             aria-current={destination === "settings" ? "page" : undefined}
           >
-            <Glyph>☷</Glyph>
+            <Glyph name="settings" />
             <span>Settings</span>
           </button>
         </aside>
       )}
 
       <section className="workspace">
+        {operationError && <div className="banner warning app-operation-error" role="alert">{operationError}<button className="icon-button" onClick={() => setOperationError(null)} aria-label="Dismiss error"><Icon name="x" /></button></div>}
         {destination === "reader" && (
           <>
             {!activeDocument ? (
@@ -1237,7 +1378,7 @@ function App() {
                 viewType="library"
                 customTitle="No document open"
                 customDescription="Open a PDF from your library or from disk to start reading. Nothing is bundled or fabricated — your documents are the content."
-                onPrimaryAction={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
+                onPrimaryAction={() => void requestOpenPdf()}
               />
             ) : activeDocument.is_missing ? (
               <MissingFileBanner
@@ -1253,7 +1394,6 @@ function App() {
               />
             ) : (
               <Reader
-                aiOn={aiOn}
                 activeAnnotation={activeAnnotation}
                 activeDocument={activeDocument}
                 activeSession={activeSession}
@@ -1268,6 +1408,7 @@ function App() {
                 onTargetPageConsumed={() => setTargetPage(undefined)}
                 annotationsList={annotationsList}
                 currentVersionId={currentVersionId}
+                versionHash={activeFileHash}
                 trashedAnnotations={trashedAnnotations}
                 palette={palette}
                 onAnnotationCreated={handleAnnotationCreated}
@@ -1295,7 +1436,6 @@ function App() {
                 onReanchorOutcome={handleReanchorOutcome}
                 onDismissReanchorSummary={() => setReanchorSummary(null)}
                 onReturnToLibrary={handleReturnToLibrary}
-                setAiOn={setAiOn}
                 setImportOpen={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
                 setLeftOpen={setLeftOpen}
                 setReadingOnly={setReadingOnly}
@@ -1313,16 +1453,19 @@ function App() {
         {destination === "library" && (
           <LibraryView
             documents={documents}
+            removedDocuments={removedDocuments}
             collections={collections}
             activeJobsCount={activeJobsCount}
             onOpenDocument={openDocument}
-            onOpenPdf={() => { setInitialImportPath(null); setPdfEntryMode('open'); setImportOpen(true); }}
+            onOpenPdf={() => void requestOpenPdf()}
             onOpenImportModal={() => { setInitialImportPath(null); setPdfEntryMode('import'); setImportOpen(true); }}
             onOpenJobQueue={() => setJobDrawerOpen(true)}
             onToggleFavourite={handleToggleFavourite}
             onToggleArchive={handleToggleArchive}
             onUpdateDocument={handleUpdateDocument}
             onUpdateCollections={handleUpdateCollections}
+            onRestoreDocument={(id) => void handleRestoreDocument(id)}
+            onPurgeDocument={(doc) => void handlePurgeDocument(doc)}
           />
         )}
         {destination === "notes" && (
@@ -1334,8 +1477,6 @@ function App() {
         {destination === "review" && <ReviewView initialPromptId={selectedReviewPromptId} />}
         {destination === "settings" && (
           <SettingsView
-            aiOn={aiOn}
-            setAiOn={setAiOn}
             appearance={appearance}
             onUpdateAppearance={handleUpdateAppearance}
             palette={palette}
@@ -1401,7 +1542,6 @@ function App() {
 }
 
 type ReaderProps = {
-  aiOn: boolean;
   activeAnnotation: AnnotationRecord | null;
   activeDocument: DocumentRecord;
   activeSession: ReadingSessionState | null;
@@ -1410,7 +1550,7 @@ type ReaderProps = {
   leftOpen: boolean;
   readingOnly: boolean;
   rightOpen: boolean;
-  rightTab: "annotations" | "note" | "ai";
+  rightTab: "annotations" | "note";
   selected: string;
   targetPage?: number;
   onTargetPageConsumed?: () => void;
@@ -1419,6 +1559,8 @@ type ReaderProps = {
   annotationsList: AnnotationRecord[];
   /** Task 3.4: the version row new annotations bind to (null until registered). */
   currentVersionId: string | null;
+  /** Fingerprint of the bytes currently loaded, including changed-in-place files. */
+  versionHash: string | null;
   /** Task 3.5: recoverable trash rows for the open document (FR-9.8). */
   trashedAnnotations: AnnotationRecord[];
   /** Task 3.5: the user's semantic palette (FR-9.3). */
@@ -1449,12 +1591,11 @@ type ReaderProps = {
   onReanchorOutcome?: (outcome: { reanchored: number; detached: number }) => void;
   onDismissReanchorSummary?: () => void;
   onReturnToLibrary?: () => void;
-  setAiOn: (value: boolean) => void;
   setImportOpen: (value: boolean) => void;
   setLeftOpen: (value: boolean) => void;
   setReadingOnly: (value: boolean) => void;
   setRightOpen: (value: boolean) => void;
-  setRightTab: (value: "annotations" | "note" | "ai") => void;
+  setRightTab: (value: "annotations" | "note") => void;
   setSelected: (value: string) => void;
   /** Task 3.6 (FR-9.9): embedded PDF annotations present for the open doc. */
   embeddedImportCounts?: { newCount: number; duplicateCount: number; unsupportedCount: number } | null;
@@ -1516,6 +1657,32 @@ function Reader(props: ReaderProps) {
   const [pdfLoadFailed, setPdfLoadFailed] = useState(false);
   const [pageTexts, setPageTexts] = useState<PageTextContent[]>([]);
   const [extractionStatus, setExtractionStatus] = useState<'idle' | 'running' | 'done' | 'cancelled'>('idle');
+  const [pageCacheHydrated, setPageCacheHydrated] = useState(false);
+  const [pageCacheWriteFailed, setPageCacheWriteFailed] = useState(false);
+  const [cacheRebuildInFlight, setCacheRebuildInFlight] = useState(false);
+  const [textExtractionFailures, setTextExtractionFailures] = useState<number[]>([]);
+  // U20: corrupt-cache recovery — drop cached rows for this version and let
+  // the normal background-extraction effect repopulate them from scratch.
+  const rebuildPageCache = async () => {
+    if (!props.versionHash || cacheRebuildInFlight) return;
+    setCacheRebuildInFlight(true);
+    try {
+      await invoke('db_clear_page_cache', { documentId: props.activeDocument.id, versionHash: props.versionHash });
+      cachedPageNumbersRef.current = new Set();
+      setPageTexts([]);
+      setPageCacheHydrated(false);
+      setPageCacheWriteFailed(false);
+      setTextExtractionFailures([]);
+      setExtractionStatus('idle');
+    } catch {
+      // Keep the banner visible; the user can retry.
+    } finally {
+      setCacheRebuildInFlight(false);
+    }
+  };
+
+  const cachedPageNumbersRef = useRef<Set<number>>(new Set());
+  const [firstPagePainted, setFirstPagePainted] = useState(false);
   const extractionAbortRef = useRef<AbortController | null>(null);
 
   // Viewport size + the measured natural size of the current page drive
@@ -1533,12 +1700,19 @@ function Reader(props: ReaderProps) {
 
   // ---- Task 3.4: annotation creation state (FR-9.1/FR-9.2/FR-9.4) ----
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
-  const [selectionPopup, setSelectionPopup] = useState<(SelectionPopupAnchor & { pageBox: PageBox }) | null>(null);
+  type CapturedSelection = SelectionPopupAnchor & {
+    pageBox: PageBox;
+    viewportRects: ViewportRect[];
+    quote: string;
+  };
+  const [selectionPopup, setSelectionPopup] = useState<CapturedSelection | null>(null);
   const [popupColor, setPopupColor] = useState(DEFAULT_ANNOTATION_COLOR);
   const [popupComment, setPopupComment] = useState("");
   const [popupLocked, setPopupLocked] = useState(false);
+  const [lockedAnnotationType, setLockedAnnotationType] = useState<"highlight" | "underline" | null>(null);
   const [popupBusy, setPopupBusy] = useState(false);
   const [popupError, setPopupError] = useState<string | null>(null);
+  const selectionActionRef = useRef<((type: "highlight" | "underline" | "comment", colorOverride?: string) => Promise<void>) | null>(null);
   const [captureActive, setCaptureActive] = useState(false);
   const [areaPending, setAreaPending] = useState<AreaCaptureResult | null>(null);
   const [areaCaption, setAreaCaption] = useState("");
@@ -1621,13 +1795,18 @@ function Reader(props: ReaderProps) {
     setLoadedPdf(null);
     setPdfLoadFailed(false);
     setPageTexts([]);
+    cachedPageNumbersRef.current = new Set();
+    setPageCacheHydrated(false);
+    setPageCacheWriteFailed(false);
+    setTextExtractionFailures([]);
     setExtractionStatus('idle');
+    setFirstPagePainted(false);
     setCurrentPageSize(DEFAULT_PAGE_SIZE);
     extractionAbortRef.current?.abort();
 
     // Task 2.9 in-app gate mark: dev-only no-op unless VITE_PERF_MEASURE=1.
     perfMark(`load.start:${props.activeDocument.filepath.split("/").pop() ?? "unknown"}`);
-    loadPdfDocument(props.activeDocument.filepath).then((info) => {
+    loadPdfDocument(props.activeDocument.id).then((info) => {
       if (!isMounted) return;
       if (info) {
         setLoadedPdf(info);
@@ -1643,20 +1822,69 @@ function Reader(props: ReaderProps) {
     };
   }, [props.activeDocument.id, props.activeDocument.filepath]);
 
+  // Hydrate only text extracted from these exact source bytes. Older-version
+  // rows remain isolated and can never make changed PDFs appear searchable.
+  useEffect(() => {
+    if (!loadedPdf || !props.versionHash) return;
+    const versionHash = props.versionHash;
+    let cancelled = false;
+    void loadVersionedPageTexts(props.activeDocument.id, versionHash)
+      .then((cached) => {
+        if (cancelled) return;
+        cachedPageNumbersRef.current = new Set(cached.map((page) => page.pageNumber));
+        setPageTexts(cached);
+        setPageCacheHydrated(true);
+        if (cached.length >= loadedPdf.numPages) {
+          setExtractionStatus('done');
+          if (props.activeDocumentJob?.id) {
+            props.onJobProgress?.(props.activeDocumentJob.id, loadedPdf.numPages);
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setPageCacheHydrated(true);
+      });
+    return () => { cancelled = true; };
+  }, [loadedPdf, props.activeDocument.id, props.versionHash]);
+
   // Background text extraction (FR-7.6): starts after the document renders,
   // prioritizes the reading position, yields regularly, and reports real
   // progress to the job record shown in the indexing banner.
   useEffect(() => {
-    if (!loadedPdf || extractionStatus !== 'idle') return;
+    if (!loadedPdf || !props.versionHash || !firstPagePainted || !pageCacheHydrated || extractionStatus !== 'idle') return;
+    const versionHash = props.versionHash;
 
     const controller = new AbortController();
     extractionAbortRef.current = controller;
     setExtractionStatus('running');
     const jobId = props.activeDocumentJob?.id;
+    const pageWriteBatch: PageTextContent[] = [];
+    const flushPageWriteBatch = async () => {
+      if (pageWriteBatch.length === 0) return;
+      const pending = pageWriteBatch.splice(0, pageWriteBatch.length);
+      try {
+        await persistVersionedPageTexts(props.activeDocument.id, versionHash, pending);
+      } catch {
+        setPageCacheWriteFailed(true);
+      }
+    };
 
     extractPdfPageTexts(loadedPdf.doc, {
       signal: controller.signal,
       prioritizeFromPage: currentPageRef.current,
+      skipPageNumbers: cachedPageNumbersRef.current,
+      onPage: async (page) => {
+        setPageTexts((current) => {
+          const next = new Map(current.map((entry) => [entry.pageNumber, entry]));
+          next.set(page.pageNumber, page);
+          return [...next.values()].sort((a, b) => a.pageNumber - b.pageNumber);
+        });
+        pageWriteBatch.push(page);
+        if (pageWriteBatch.length >= 16) await flushPageWriteBatch();
+      },
+      onPageError: (pageNumber) => {
+        setTextExtractionFailures((current) => current.includes(pageNumber) ? current : [...current, pageNumber]);
+      },
       onProgress: (processed, total) => {
         // Task 2.9 in-app gate mark: dev-only no-op unless VITE_PERF_MEASURE=1.
         perfMark(`extract.progress:${processed}:${total}`);
@@ -1665,21 +1893,23 @@ function Reader(props: ReaderProps) {
         }
       },
     })
-      .then((result) => {
-        setPageTexts(result.pages);
+      .then(async (result) => {
+        await flushPageWriteBatch();
+        // Each page was already published as it completed. Keep partial search
+        // results available even when cancellation stops the remaining work.
         setExtractionStatus(result.completed ? 'done' : 'cancelled');
       })
       .catch(() => {
         setExtractionStatus('cancelled');
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedPdf, extractionStatus]);
+  }, [loadedPdf, firstPagePainted, pageCacheHydrated, extractionStatus, props.activeDocument.id, props.versionHash]);
 
   // Task 3.6 (FR-9.9): background scan for embedded (PDF-born) annotations.
   // Batched and cancelled on document change; pages near the reading start
   // are prioritized first (same window the text extractor uses).
   useEffect(() => {
-    if (!loadedPdf || !props.activeDocument) return;
+    if (!loadedPdf || !firstPagePainted || !props.activeDocument) return;
     if (embeddedScanRef.current) embeddedScanRef.current.cancelled = true;
     setEmbeddedByPage(new Map());
     setEmbeddedImported(new Set());
@@ -1716,7 +1946,7 @@ function Reader(props: ReaderProps) {
     return () => {
       scan.cancelled = true;
     };
-  }, [loadedPdf?.doc, loadedPdf?.numPages, props.activeDocument?.id]);
+  }, [loadedPdf?.doc, loadedPdf?.numPages, firstPagePainted, props.activeDocument?.id]);
 
   // Job drawer cancel/restart drives the extraction abort controller.
   const activeJobStatus = props.activeDocumentJob?.status;
@@ -2085,10 +2315,10 @@ function Reader(props: ReaderProps) {
           props.setRightOpen(!props.rightOpen);
           break;
         case 'annot.highlight.yellow':
-          if (props.annotationsList.length > 0) props.setSelected(props.annotationsList[0].id);
+          void selectionActionRef.current?.('highlight', 'claim');
           break;
         case 'annot.highlight.green':
-          if (props.annotationsList.length > 1) props.setSelected(props.annotationsList[1].id);
+          void selectionActionRef.current?.('highlight', 'evidence');
           break;
         case 'annot.areaCapture':
           setCaptureActive((prev) => !prev);
@@ -2124,92 +2354,105 @@ function Reader(props: ReaderProps) {
   }, [loadedPdf]);
 
   // ---- Task 3.4: selection popover (FR-9.2) ----
-  // The popover tracks `selectionchange`, but a collapse caused by clicking a
-  // popover control must not yank the popover away before the click lands —
-  // clicks inside the popup set suppress, which skips the hide.
-  const popupSuppressRef = useRef(false);
-  useEffect(() => {
-    let raf = 0;
-    const handler = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        if (popupSuppressRef.current) {
-          popupSuppressRef.current = false;
-          return;
-        }
-        const container = canvasContainerRef.current;
-        if (!container || !props.currentVersionId || captureActiveRef.current) {
-          setSelectionPopup(null);
-          return;
-        }
-        const sel = window.getSelection();
-        if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-          setSelectionPopup(null);
-          return;
-        }
-        const anchorNode = sel.anchorNode;
-        if (!anchorNode) {
-          setSelectionPopup(null);
-          return;
-        }
-        const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode.parentElement;
-        const pageEl = anchorEl?.closest(".pdf-page") as HTMLElement | null;
-        if (!pageEl || !pageEl.closest(".reader-canvas-container")) {
-          setSelectionPopup(null);
-          return;
-        }
-        const pageNumber = Number(pageEl.dataset.pageNumber ?? 0);
-        if (!pageNumber) {
-          setSelectionPopup(null);
-          return;
-        }
-        const pageRect = pageEl.getBoundingClientRect();
-        const pageBox: PageBox = {
-          left: pageRect.left,
-          top: pageRect.top,
-          right: pageRect.right,
-          bottom: pageRect.bottom,
-          width: pageRect.width,
-          height: pageRect.height,
-        };
-        let minL = Number.POSITIVE_INFINITY;
-        let minT = Number.POSITIVE_INFINITY;
-        let maxR = Number.NEGATIVE_INFINITY;
-        let maxB = Number.NEGATIVE_INFINITY;
-        for (let i = 0; i < sel.rangeCount; i++) {
-          const range = sel.getRangeAt(i);
-          for (const cr of range.getClientRects()) {
-            if (cr.bottom <= pageBox.top || cr.top >= pageBox.bottom || cr.right <= pageBox.left || cr.left >= pageBox.right) continue;
-            minL = Math.min(minL, Math.max(cr.left, pageBox.left));
-            minT = Math.min(minT, Math.max(cr.top, pageBox.top));
-            maxR = Math.max(maxR, Math.min(cr.right, pageBox.right));
-            maxB = Math.max(maxB, Math.min(cr.bottom, pageBox.bottom));
-          }
-        }
-        if (!Number.isFinite(minL) || minL >= maxR || minT >= maxB) {
-          setSelectionPopup(null);
-          return;
-        }
-        const containerRect = container.getBoundingClientRect();
-        setSelectionPopup({
-          left: maxR - containerRect.left + 10,
-          top: maxB - containerRect.top + 8,
-          pageNumber,
-          pageBox,
-        });
-      });
+  // Capture an immutable snapshot only when selection interaction completes.
+  // Popup, context-menu, and keyboard actions all consume this snapshot; none
+  // re-read the live DOM Selection after a control can collapse it.
+  const captureSelectionSnapshot = useCallback((): CapturedSelection | null => {
+    const container = canvasContainerRef.current;
+    if (!container || !props.currentVersionId || captureActiveRef.current) return null;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return null;
+    const anchorNode = sel.anchorNode;
+    const anchorEl = anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement;
+    const pageEl = anchorEl?.closest(".pdf-page") as HTMLElement | null;
+    if (!pageEl || !pageEl.closest(".reader-canvas-container")) return null;
+    const focusNode = sel.focusNode;
+    const focusEl = focusNode instanceof Element ? focusNode : focusNode?.parentElement;
+    if (focusEl?.closest(".pdf-page") !== pageEl) {
+      setPopupError("Create one annotation per page; this selection crosses a page boundary.");
+      return null;
+    }
+    const pageNumber = Number(pageEl.dataset.pageNumber ?? 0);
+    if (!pageNumber) return null;
+    const pageRect = pageEl.getBoundingClientRect();
+    const pageBox: PageBox = {
+      left: pageRect.left,
+      top: pageRect.top,
+      right: pageRect.right,
+      bottom: pageRect.bottom,
+      width: pageRect.width,
+      height: pageRect.height,
     };
-    document.addEventListener("selectionchange", handler);
-    return () => {
-      cancelAnimationFrame(raf);
-      document.removeEventListener("selectionchange", handler);
+    const viewportRects: ViewportRect[] = [];
+    let maxR = Number.NEGATIVE_INFINITY;
+    let maxB = Number.NEGATIVE_INFINITY;
+    for (let i = 0; i < sel.rangeCount; i++) {
+      for (const cr of sel.getRangeAt(i).getClientRects()) {
+        if (cr.bottom <= pageBox.top || cr.top >= pageBox.bottom || cr.right <= pageBox.left || cr.left >= pageBox.right) continue;
+        const clipped = {
+          left: Math.max(cr.left, pageBox.left),
+          top: Math.max(cr.top, pageBox.top),
+          right: Math.min(cr.right, pageBox.right),
+          bottom: Math.min(cr.bottom, pageBox.bottom),
+        };
+        viewportRects.push(clipped);
+        maxR = Math.max(maxR, clipped.right);
+        maxB = Math.max(maxB, clipped.bottom);
+      }
+    }
+    const quote = sel.toString().replace(/\s+/g, " ").trim();
+    if (viewportRects.length === 0 || !quote) return null;
+    return {
+      left: maxR + 10,
+      top: maxB + 8,
+      pageNumber,
+      pageBox,
+      viewportRects,
+      quote,
     };
   }, [props.currentVersionId]);
 
-  // Task 3.4: create a highlight/underline/comment from the current DOM
-  // selection (FR-9.1/9.2/9.4). Anchors are re-measured at save time so the
-  // stored rects always match what the user last selected.
-  const handleCreateFromSelection = async (type: "highlight" | "underline" | "comment") => {
+  useEffect(() => {
+    const capture = () => {
+      const snapshot = captureSelectionSnapshot();
+      if (snapshot) setSelectionPopup(snapshot);
+    };
+    const handleContextMenu = (event: MouseEvent) => {
+      const snapshot = captureSelectionSnapshot();
+      if (!snapshot) return;
+      event.preventDefault();
+      setSelectionPopup({ ...snapshot, left: event.clientX, top: event.clientY });
+    };
+    const dismissOutside = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('.selection-popup')) return;
+      setSelectionPopup(null);
+      setPopupError(null);
+    };
+    const dismissOnScroll = (event: Event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest('.selection-popup')) return;
+      setSelectionPopup(null);
+    };
+    document.addEventListener("pointerup", capture);
+    document.addEventListener("keyup", capture);
+    document.addEventListener("pointerdown", dismissOutside, true);
+    document.addEventListener("scroll", dismissOnScroll, true);
+    window.addEventListener("resize", dismissOnScroll);
+    canvasContainerRef.current?.addEventListener("contextmenu", handleContextMenu);
+    const container = canvasContainerRef.current;
+    return () => {
+      document.removeEventListener("pointerup", capture);
+      document.removeEventListener("keyup", capture);
+      document.removeEventListener("pointerdown", dismissOutside, true);
+      document.removeEventListener("scroll", dismissOnScroll, true);
+      window.removeEventListener("resize", dismissOnScroll);
+      container?.removeEventListener("contextmenu", handleContextMenu);
+    };
+  }, [captureSelectionSnapshot]);
+
+  // Task 3.4: create from the immutable snapshot captured on release.
+  const handleCreateFromSelection = async (type: "highlight" | "underline" | "comment", colorOverride?: string) => {
     const popup = selectionPopup;
     if (!popup || !loadedPdf || !props.currentVersionId) {
       setSelectionPopup(null);
@@ -2218,31 +2461,12 @@ function Reader(props: ReaderProps) {
     setPopupBusy(true);
     setPopupError(null);
     try {
-      const sel = window.getSelection();
-      if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-        throw new Error("The selection collapsed — select the text again.");
-      }
-      const rects: ViewportRect[] = [];
-      for (let i = 0; i < sel.rangeCount; i++) {
-        const range = sel.getRangeAt(i);
-        for (const cr of range.getClientRects()) {
-          if (cr.bottom <= popup.pageBox.top || cr.top >= popup.pageBox.bottom || cr.right <= popup.pageBox.left || cr.left >= popup.pageBox.right) continue;
-          rects.push({
-            left: Math.max(cr.left, popup.pageBox.left),
-            top: Math.max(cr.top, popup.pageBox.top),
-            right: Math.min(cr.right, popup.pageBox.right),
-            bottom: Math.min(cr.bottom, popup.pageBox.bottom),
-          });
-        }
-      }
-      const normalized = mergeSelectionRects(rects, popup.pageBox, rotation);
+      const normalized = mergeSelectionRects(popup.viewportRects, popup.pageBox, rotation);
       if (normalized.length === 0) {
         throw new Error("The selection is empty on this page.");
       }
-      const quote = sel.toString().replace(/\s+/g, " ").trim();
-      if (!quote) {
-        throw new Error("No readable text selected.");
-      }
+      const quote = popup.quote;
+      const annotationColor = colorOverride ?? popupColor;
 
       // FR-9.4 anchor fields from the real text layer: prefix/suffix context
       // and the text-layer checksum (same ordered text re-anchoring matches).
@@ -2264,7 +2488,7 @@ function Reader(props: ReaderProps) {
           pageLabel,
           rects: normalized,
           comment: popupComment.trim(),
-          color: popupColor,
+          color: annotationColor,
         });
         await props.onAnnotationCreated(record);
       } else {
@@ -2279,26 +2503,36 @@ function Reader(props: ReaderProps) {
           prefix,
           suffix,
           textLayerChecksum,
-          color: popupColor,
+          color: annotationColor,
           comment: popupComment.trim(),
         });
         await props.onAnnotationCreated(record);
       }
 
       if (popupLocked) {
-        // FR-9.2 locked mode: keep the popup armed for the next selection.
-        popupSuppressRef.current = true;
-        window.getSelection()?.removeAllRanges();
+        // FR-9.2 locked mode: keep the chosen tool settings armed, but discard
+        // the consumed snapshot so it cannot be applied twice accidentally.
         setPopupComment("");
-      } else {
-        setSelectionPopup(null);
+        if (type === "highlight" || type === "underline") setLockedAnnotationType(type);
       }
+      // The browser's blue live-selection paint sits above annotation
+      // overlays. Clear it only after the durable write succeeds so the
+      // semantic highlight colour is visible immediately; on failure the
+      // selection remains available for a safe retry.
+      window.getSelection()?.removeAllRanges();
+      setSelectionPopup(null);
     } catch (err) {
       setPopupError(err instanceof Error ? err.message : String(err));
     } finally {
       setPopupBusy(false);
     }
   };
+  selectionActionRef.current = handleCreateFromSelection;
+  useEffect(() => {
+    if (selectionPopup && popupLocked && lockedAnnotationType && !popupBusy) {
+      void selectionActionRef.current?.(lockedAnnotationType);
+    }
+  }, [selectionPopup, popupLocked, lockedAnnotationType, popupBusy]);
 
   // Task 3.4: resolve area-crop assets into object URLs for the overlay.
   useEffect(() => {
@@ -2546,6 +2780,8 @@ function Reader(props: ReaderProps) {
           searchOptions={searchOptions}
           onSearchOptionsChange={setSearchOptions}
           searchMatches={searchMatches}
+          indexedPages={pageTexts.length}
+          extractionStatus={extractionStatus}
           currentMatchIndex={currentMatchIndex}
           onNextMatch={handleNextMatch}
           onPrevMatch={handlePrevMatch}
@@ -2555,8 +2791,6 @@ function Reader(props: ReaderProps) {
           onToggleRightOpen={() => props.setRightOpen(!props.rightOpen)}
           readingOnly={props.readingOnly}
           onToggleReadingOnly={() => props.setReadingOnly(!props.readingOnly)}
-          aiOn={props.aiOn}
-          onToggleAi={() => props.setAiOn(!props.aiOn)}
           onOpenPdf={() => props.setImportOpen(true)}
           areaCaptureActive={captureActive}
           onToggleAreaCapture={() => setCaptureActive((prev) => !prev)}
@@ -2607,7 +2841,7 @@ function Reader(props: ReaderProps) {
               }}
             >
               <div>
-                ⚙️ <strong>Indexing text:</strong> {props.activeDocumentJob.processed_pages} / {props.activeDocumentJob.total_pages} pages ({props.activeDocumentJob.progress_percent}%) · Document reading and navigation remain fully usable in parallel.
+                <Icon name="settings" size={12} /> <strong>Indexing text:</strong> {props.activeDocumentJob.processed_pages} / {props.activeDocumentJob.total_pages} pages ({props.activeDocumentJob.progress_percent}%) · Document reading and navigation remain fully usable in parallel.
               </div>
               {props.onCancelJob && (
                 <button
@@ -2617,6 +2851,23 @@ function Reader(props: ReaderProps) {
                   Cancel Indexing
                 </button>
               )}
+            </div>
+          )}
+          {pageCacheWriteFailed && (
+            <div className="indexing-progress-banner" role="status" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+              <span>Search is available for this session, but some indexed pages could not be cached for reopen. Indexing will retry next time.</span>
+              <button
+                className="button micro"
+                disabled={cacheRebuildInFlight}
+                onClick={() => void rebuildPageCache()}
+              >
+                {cacheRebuildInFlight ? 'Rebuilding…' : 'Rebuild index'}
+              </button>
+            </div>
+          )}
+          {textExtractionFailures.length > 0 && extractionStatus === 'done' && (
+            <div className="indexing-progress-banner" role="status">
+              Indexing finished, but text could not be extracted from {textExtractionFailures.length} page{textExtractionFailures.length === 1 ? '' : 's'}. Those pages remain viewable.
             </div>
           )}
 
@@ -2691,6 +2942,7 @@ function Reader(props: ReaderProps) {
                 onViewportChange={handleViewportChange}
                 onPageSizeMeasured={handlePageSizeMeasured}
                 onScrollPositionChange={handleScrollPositionChange}
+                onFirstPagePaint={() => setFirstPagePainted(true)}
                 onCopySelection={handleCopySelection}
                 annotationsByPage={annotationsByPage}
                 annotationAssets={annotationAssets}
@@ -2713,7 +2965,10 @@ function Reader(props: ReaderProps) {
               comment={popupComment}
               onCommentChange={setPopupComment}
               locked={popupLocked}
-              onToggleLocked={() => setPopupLocked((prev) => !prev)}
+              onToggleLocked={() => setPopupLocked((prev) => {
+                if (prev) setLockedAnnotationType(null);
+                return !prev;
+              })}
               busy={popupBusy}
               error={popupError}
               onCreate={(type) => void handleCreateFromSelection(type)}
@@ -2794,7 +3049,7 @@ function Reader(props: ReaderProps) {
 }
 
 function RightPane(props: ReaderProps) {
-  const tabs: Array<[typeof props.rightTab, string]> = [["annotations", "Annotations"], ["note", "Note"], ["ai", "AI"]];
+  const tabs: Array<[typeof props.rightTab, string]> = [["annotations", "Annotations"], ["note", "Note"]];
   const list = props.annotationsList || [];
   // ---- Task 3.7 (FR-9.6): sidebar search + filters, reset per document ----
   const [annotationFilters, setAnnotationFilters] = useState<AnnotationFilters>(EMPTY_ANNOTATION_FILTERS);
@@ -2821,9 +3076,23 @@ function RightPane(props: ReaderProps) {
   const patchFilters = (patch: Partial<AnnotationFilters>) =>
     setAnnotationFilters((prev) => ({ ...prev, ...patch }));
 
+  // U6: live per-facet counts so chips show real zero/data states.
+  const typeCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const type of ANNOTATION_TYPES) counts[type] = 0;
+    for (const item of list) counts[item.annotation_type] = (counts[item.annotation_type] ?? 0) + 1;
+    return counts;
+  }, [list]);
+  const paletteCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const entry of props.palette) counts[entry.key] = 0;
+    for (const item of list) counts[item.color] = (counts[item.color] ?? 0) + 1;
+    return counts;
+  }, [list, props.palette]);
+
   return (
     <aside className="right-pane" style={props.rightPaneWidth ? { width: `${props.rightPaneWidth}px` } : undefined}>
-      <div className="pane-tabs">{tabs.map(([id, label]) => <button key={id} className={props.rightTab === id ? "pane-tab active" : "pane-tab"} onClick={() => props.setRightTab(id)}>{label}{id === "ai" && <i className={props.aiOn ? "dot on" : "dot"} />}</button>)}</div>
+      <div className="pane-tabs">{tabs.map(([id, label]) => <button key={id} className={props.rightTab === id ? "pane-tab active" : "pane-tab"} onClick={() => props.setRightTab(id)}>{label}</button>)}</div>
       {props.rightTab === "annotations" && (
         <div className="annotation-list">
           <div className="pane-heading">
@@ -2853,6 +3122,7 @@ function RightPane(props: ReaderProps) {
             <div className="filter-chip-row" role="group" aria-label="Filter by annotation type">
               {ANNOTATION_TYPES.map((type) => {
                 const on = annotationFilters.types.includes(type);
+                const count = typeCounts[type] ?? 0;
                 return (
                   <button
                     key={type}
@@ -2867,7 +3137,7 @@ function RightPane(props: ReaderProps) {
                       })
                     }
                   >
-                    {type}
+                    {type} {count}
                   </button>
                 );
               })}
@@ -2875,6 +3145,7 @@ function RightPane(props: ReaderProps) {
             <div className="filter-chip-row" role="group" aria-label="Filter by colour label">
               {props.palette.map((entry) => {
                 const on = annotationFilters.paletteKeys.includes(entry.key);
+                const count = paletteCounts[entry.key] ?? 0;
                 return (
                   <button
                     key={entry.key}
@@ -2891,7 +3162,7 @@ function RightPane(props: ReaderProps) {
                     }
                   >
                     <i className="annotation-swatch" style={{ background: entry.color }} />
-                    {entry.label}
+                    {entry.label} {count}
                   </button>
                 );
               })}
@@ -2956,7 +3227,7 @@ function RightPane(props: ReaderProps) {
                 className="filter-clear"
                 onClick={() => setAnnotationFilters(EMPTY_ANNOTATION_FILTERS)}
               >
-                ✕ Clear filters
+                <Icon name="x" /> Clear filters
               </button>
             )}
           </div>
@@ -2967,22 +3238,56 @@ function RightPane(props: ReaderProps) {
             <p className="dimmed filter-empty">No annotations match these filters.</p>
           ) : (
             filteredList.map((item) => (
-              <button
+              <div
                 key={item.id}
                 className={props.selected === item.id ? "annotation-item active" : "annotation-item"}
-                onClick={() => {
-                  props.setSelected(item.id);
-                  props.onJumpToAnnotation?.(item.page_index);
-                }}
-                title={item.annotation_type === 'comment' ? item.comment : item.quote || paletteLabelFor(item.color, props.palette)}
               >
-                <i className="annotation-swatch" style={{ background: paletteColorFor(item.color, props.palette) }} />
-                <span>
-                  <b>{paletteLabelFor(item.color, props.palette)} · {item.annotation_type}</b>
-                  <small>p. {item.page_label || item.page_index + 1}</small>
-                  <q>{item.annotation_type === 'area' ? 'Area capture' : item.annotation_type === 'bookmark' ? 'Bookmark' : item.comment || item.quote}</q>
+                <button
+                  className="annotation-item-main"
+                  onClick={() => {
+                    props.setSelected(item.id);
+                    props.onJumpToAnnotation?.(item.page_index);
+                  }}
+                  title={item.annotation_type === 'comment' ? item.comment : item.quote || paletteLabelFor(item.color, props.palette)}
+                >
+                  <i className="annotation-swatch" style={{ background: paletteColorFor(item.color, props.palette) }} />
+                  <span>
+                    <b>{paletteLabelFor(item.color, props.palette)} · {item.annotation_type}</b>
+                    <small>p. {item.page_label || item.page_index + 1}</small>
+                    <q>{item.annotation_type === 'area' ? 'Area capture' : item.annotation_type === 'bookmark' ? 'Bookmark' : item.comment || item.quote}</q>
+                  </span>
+                </button>
+                <span className="annotation-item-actions">
+                  {props.onAddEvidenceToNote && (
+                    <button
+                      type="button"
+                      className="button micro"
+                      disabled={props.linkedAnnotationIds?.has(item.id)}
+                      title={props.linkedAnnotationIds?.has(item.id) ? 'Already linked to a note' : 'Add this annotation as evidence to a note (FR-10.1)'}
+                      onClick={() => {
+                        props.setSelected(item.id);
+                        props.onAddEvidenceToNote?.(item);
+                      }}
+                    >
+                      {props.linkedAnnotationIds?.has(item.id) ? 'In note' : 'Add to note'}
+                    </button>
+                  )}
+                  {props.onRememberAnnotation && (
+                    <button
+                      type="button"
+                      className="button micro"
+                      disabled={props.rememberedAnnotationIds?.has(item.id)}
+                      title={props.rememberedAnnotationIds?.has(item.id) ? 'Already remembered' : 'Create or edit a review prompt for this annotation (FR-11.1)'}
+                      onClick={() => {
+                        props.setSelected(item.id);
+                        props.onRememberAnnotation?.(item);
+                      }}
+                    >
+                      {props.rememberedAnnotationIds?.has(item.id) ? 'Remembered' : 'Remember'}
+                    </button>
+                  )}
                 </span>
-              </button>
+              </div>
             ))
           )}
 
@@ -3043,7 +3348,7 @@ function RightPane(props: ReaderProps) {
                       : 'Document is still registering — retry in a moment'
                   }
                 >
-                  <Glyph>≋</Glyph> Import {props.embeddedImportCounts.newCount + props.embeddedImportCounts.duplicateCount} embedded PDF notes
+                  <Glyph name="layers" /> Import {props.embeddedImportCounts.newCount + props.embeddedImportCounts.duplicateCount} embedded PDF notes
                 </button>
                 <small>
                   This PDF carries its own annotations ({props.embeddedImportCounts.newCount} new ·{' '}
@@ -3059,7 +3364,7 @@ function RightPane(props: ReaderProps) {
             disabled={!props.activeAnnotation}
             title={!props.activeAnnotation ? 'Select a passage and annotate it first' : 'Draft a retrieval review prompt (R4 milestone)'}
           >
-            <Glyph>▰</Glyph> Remember selected evidence
+            <Glyph name="bookmark" /> Remember selected evidence
           </button>
         </div>
       )}
@@ -3100,7 +3405,6 @@ function RightPane(props: ReaderProps) {
           )}
         </div>
       )}
-      {props.rightTab === "ai" && <div className="ai-pane">{props.aiOn ? <><span className="eyebrow">Local AI · selected text only</span><h2>Ask this document</h2><p>Drafts stay separate from your notes until you explicitly adopt them. Every answer must cite its source page.</p><div className="ai-answer"><b>Possible reading</b><p>Testing may improve delayed retention because each attempt strengthens later access, while restudy mainly improves familiar-feeling fluency.</p><small>Source: p. 249–250</small></div><button className="wide-action">Adopt into note</button></> : <><Glyph>✦</Glyph><h2>AI is off</h2><p>Reading, annotations, notes, review, search, and export remain fully available. Turning it on never sends document text off this device.</p><button className="wide-action primary" onClick={() => props.setAiOn(true)}>Turn on local AI</button></>}</div>}
     </aside>
   );
 }
@@ -3117,6 +3421,23 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
   const [editingPrompt, setEditingPrompt] = useState<ReviewPromptRecord | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [sourceContext, setSourceContext] = useState<{ label: string; excerpt: string } | null>(null);
+  // U19: browsable review history (recent events across all prompts).
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [recentEvents, setRecentEvents] = useState<RecentReviewEventRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  // U19: per-prompt queue controls (pause / priority / reschedule / retire).
+  const [queueMenuPromptId, setQueueMenuPromptId] = useState<string | null>(null);
+
+  const applyControl = async (prompt: ReviewPromptRecord, action: Parameters<typeof applyQueueControl>[1]) => {
+    setQueueMenuPromptId(null);
+    const updated = applyQueueControl(prompt, action);
+    try {
+      await updateReviewPrompt(updated);
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update prompt.');
+    }
+  };
 
   useEffect(() => {
     if (!session.current) return;
@@ -3161,6 +3482,20 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  const toggleHistory = async () => {
+    const next = !historyOpen;
+    setHistoryOpen(next);
+    if (!next) return;
+    setHistoryLoading(true);
+    try {
+      setRecentEvents(await getRecentReviewEvents(50));
+    } catch {
+      setRecentEvents([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
 
   const currentPrompt = session.current?.prompt ?? null;
 
@@ -3283,6 +3618,35 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
       <h1>Review before you reveal.</h1>
       <p className="review-preamble">You decide the outcome. The source is the feedback authority.</p>
       <div className="destination-rule" />
+      <button className="button compact" onClick={() => void toggleHistory()} aria-expanded={historyOpen}>
+        {historyOpen ? 'Hide review history' : 'Show review history'}
+      </button>
+      {historyOpen && (
+        historyLoading ? (
+          <EmptyState viewType="annotations" customTitle="Loading history" customDescription="Reading recent review events." />
+        ) : recentEvents.length === 0 ? (
+          <EmptyState
+            viewType="annotations"
+            customTitle="No review history yet"
+            customDescription="Rated reviews are recorded here as you work through the queue."
+          />
+        ) : (
+          <ul className="review-history-list" aria-label="Recent review events">
+            {recentEvents.map((event) => (
+              <li key={event.id} className="review-history-item">
+                <span className={`review-history-outcome outcome-${event.outcome}`}>{event.outcome}</span>
+                <div>
+                  <b>{event.prompt_question}</b>
+                  <small>
+                    {new Date(event.reviewed_at).toLocaleString()} · {Math.round(event.duration_ms / 100) / 10}s
+                    {event.user_response ? ' · typed response recorded' : ''}
+                  </small>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )
+      )}
 
       {error && <p className="error-text">{error}</p>}
       {repairPrompt && (
@@ -3315,6 +3679,24 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
           <div className="review-card-header">
             <span>Card {session.currentIndex + 1} of {session.queue.length}</span>
             <span>{Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, '0')} elapsed</span>
+            <div style={{ position: 'relative' }}>
+              <button
+                className="button compact"
+                aria-haspopup="menu"
+                aria-expanded={queueMenuPromptId === session.current.prompt.id}
+                onClick={() => setQueueMenuPromptId((prev) => (prev === session.current!.prompt.id ? null : session.current!.prompt.id))}
+              >
+                Queue options
+              </button>
+              {queueMenuPromptId === session.current.prompt.id && (
+                <div role="menu" aria-label="Queue controls" className="queue-controls-menu">
+                  <button role="menuitem" onClick={() => void applyControl(session.current!.prompt, { type: 'pause' })}>Pause this prompt</button>
+                  <button role="menuitem" onClick={() => void applyControl(session.current!.prompt, { type: 'set_priority', priority: session.current!.prompt.priority + 1 })}>Raise priority</button>
+                  <button role="menuitem" onClick={() => void applyControl(session.current!.prompt, { type: 'reschedule', dueAt: new Date(Date.now() + 7 * 86400000).toISOString() })}>Reschedule +7 days</button>
+                  <button role="menuitem" onClick={() => void applyControl(session.current!.prompt, { type: 'retire' })}>Retire prompt</button>
+                </div>
+              )}
+            </div>
           </div>
           <h2>{session.current.prompt.question}</h2>
           {session.current.prompt.cue && <p className="dimmed">Cue: {session.current.prompt.cue}</p>}
@@ -3371,15 +3753,11 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
 }
 
 function SettingsView({
-  aiOn,
-  setAiOn,
   appearance,
   onUpdateAppearance,
   palette,
   onSavePalette,
 }: {
-  aiOn: boolean;
-  setAiOn: (value: boolean) => void;
   appearance: AppearancePreferences;
   onUpdateAppearance: <K extends keyof AppearancePreferences>(
     key: K,
@@ -3397,6 +3775,13 @@ function SettingsView({
   const [diagnosticCounts, setDiagnosticCounts] = useState({
     documentCount: 0, annotationCount: 0, noteCount: 0, reviewPromptCount: 0, reviewEventCount: 0,
   });
+  // U21: pending export that hit an existing destination; the modal decides
+  // overwrite vs rename-copy before anything is written.
+  const [exportConflict, setExportConflict] = useState<{
+    format: ExportFormat;
+    destination: string;
+    diffPreview: string;
+  } | null>(null);
 
   const diagnosticReport = buildDiagnosticReport(
     {
@@ -3415,14 +3800,44 @@ function SettingsView({
     setDiagnosticsOpen(true);
   };
 
-  const runExport = async (format: ExportFormat, destination: string) => {
-    if (!destination) throw new Error('Choose an explicit destination first.');
+  const writeExport = async (format: ExportFormat, destination: string) => {
     if (format === 'markdown') {
       await invoke('db_export_markdown_package', { destinationDir: destination });
-    } else {
+    } else if (format === 'json_backup') {
       await invoke('db_create_json_backup', { destinationFile: destination });
+    } else if (format === 'review_csv') {
+      await invoke('db_export_review_csv', { destinationFile: destination, delimiter: ',' });
+    } else if (format === 'review_tsv') {
+      await invoke('db_export_review_csv', { destinationFile: destination, delimiter: '\t' });
+    } else {
+      throw new Error('Annotated PDF copy export is not connected to a native writer in this build.');
     }
     setExportStatus(`Export completed: ${destination}`);
+  };
+
+  const runExport = async (format: ExportFormat, destination: string) => {
+    if (!destination) throw new Error('Choose an explicit destination first.');
+    let snapshot: DestinationSnapshot | null = null;
+    try {
+      snapshot = await checkDestination(destination);
+    } catch {
+      snapshot = null; // Backend unavailable (dev preview): proceed as before.
+    }
+    if (snapshot) {
+      const decision = resolveDestinationSafety({
+        path: snapshot.path,
+        exists: snapshot.exists,
+        currentSha256: (snapshot as { current_sha256?: string | null }).current_sha256 ?? snapshot.currentSha256 ?? null,
+      });
+      if (decision.action === 'confirm_overwrite') {
+        setExportConflict({ format, destination, diffPreview: decision.diffPreview });
+        return;
+      }
+      if (decision.action === 'rename_copy') {
+        destination = decision.suggestedPath;
+      }
+    }
+    await writeExport(format, destination);
   };
 
   return (
@@ -3437,7 +3852,7 @@ function SettingsView({
           className={`settings-tab-btn${settingTab === 'privacy' ? ' selected-setting' : ''}`}
           onClick={() => setSettingTab('privacy')}
         >
-          AI & privacy
+          Privacy
         </button>
         <button
           type="button"
@@ -3511,7 +3926,7 @@ function SettingsView({
             <p>Create readable packages or a complete backup containing evidence and area-capture files.</p>
             <div className="destination-rule" />
             <div className="setting-state">
-              <div><b>Export</b><p>Write a Markdown package or versioned JSON backup to an explicit destination.</p></div>
+              <div><b>Export</b><p>Write Markdown, a JSON backup, or review CSV/TSV through the native destination picker. Annotated PDF copy is shown but awaits its native writer.</p></div>
               <button className="wide-action primary" onClick={() => setExportOpen(true)}>Export...</button>
             </div>
             <div className="setting-state">
@@ -3523,7 +3938,7 @@ function SettingsView({
             </label>
             <button className="wide-action" disabled={!backupJson.trim()} onClick={() => setRestoreOpen(true)}>Preview restore</button>
             {exportStatus && <p role="status">{exportStatus}</p>}
-            <ExportModal isOpen={exportOpen} onClose={() => setExportOpen(false)} onExport={runExport} />
+            <ExportModal isOpen={exportOpen} onClose={() => setExportOpen(false)} onExport={runExport} onChooseDestination={chooseNativeExportDestination} />
             <DiagnosticExportModal
               isOpen={diagnosticsOpen}
               onClose={() => setDiagnosticsOpen(false)}
@@ -3542,37 +3957,35 @@ function SettingsView({
               await invoke('db_restore_from_backup', { backupJson });
               setExportStatus('Restore completed. Reopen the destination views to refresh restored records.');
             }} />
+            <DestinationConflictModal
+              isOpen={Boolean(exportConflict)}
+              path={exportConflict?.destination ?? ''}
+              diffPreview={exportConflict?.diffPreview ?? ''}
+              onOverwrite={async () => {
+                const conflict = exportConflict;
+                setExportConflict(null);
+                if (conflict) await writeExport(conflict.format, conflict.destination);
+              }}
+              onRename={async (path) => {
+                const conflict = exportConflict;
+                setExportConflict(null);
+                if (conflict) await writeExport(conflict.format, suggestCopyPath(path));
+              }}
+              onCancel={() => setExportConflict(null)}
+            />
           </div>
         ) : (
           <>
             <span className="eyebrow">Your local boundary</span>
-            <h1>Local AI & privacy</h1>
-            <p>Everything here is off by default. The Reader is complete without it.</p>
+            <h1>Privacy</h1>
+            <p>Mereth's v1 reading, annotation, notes, review, search, and export workflows run locally without an account or model runtime.</p>
             <div className="destination-rule" />
             <div className="setting-state">
               <div>
-                <b>Local AI · {aiOn ? "On" : "Off"}</b>
-                <p>When off, no Reader-managed model process or semantic index is kept in memory. No document text leaves this device.</p>
+                <b>Local-first workspace</b>
+                <p>Mereth does not require a hosted service for the v1 product loop. Future optional AI work is deferred and is not exposed as a nonfunctional control.</p>
               </div>
-              <button className="wide-action primary" onClick={() => setAiOn(!aiOn)}>{aiOn ? "Turn off" : "Turn on"}</button>
             </div>
-            <h3>Runtime</h3>
-            <label className="radio-row">
-              <input type="radio" defaultChecked />
-              <span />
-              <div>
-                <b>Strict local — app-managed runtime</b>
-                <small>The only mode the Reader can verify. No network tools.</small>
-              </div>
-            </label>
-            <label className="radio-row">
-              <input type="radio" />
-              <span />
-              <div>
-                <b>External provider — Ollama or LM Studio</b>
-                <small>Loopback only, but its network behavior is outside Reader’s control.</small>
-              </div>
-            </label>
           </>
         )}
       </article>

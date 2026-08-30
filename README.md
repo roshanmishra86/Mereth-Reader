@@ -1,65 +1,84 @@
 # Mereth Reader
 
-> **Work in progress — not ready for day-to-day use.** This is an early scaffold, not a usable reader. It cannot open a PDF, store an annotation, or persist anything yet. Do not adopt it for real reading or note-taking. See [Status](#status) for what actually works.
+Mereth Reader is a local-first desktop workspace for reading technical PDFs.
+It connects PDF passages and figure captures to source-linked notes, then lets
+you explicitly turn selected ideas into review prompts. Core data is intended
+to remain on the device; Mereth has no account or cloud-service dependency.
 
-A calm, local-first desktop PDF reader where annotations become source-linked notes, selected ideas become user-approved retrieval prompts, and nothing leaves your machine.
+## Current status
 
-The product loop is: open a source → read and annotate → write notes in your own words → choose what is worth remembering → attempt recall before revealing the source → review at a useful interval → export in open formats.
+**Pre-release software. Do not rely on it as the sole copy of important
+research.** The repository contains an implemented reader, SQLite persistence,
+annotations, notes, review, import/recovery flows, and Markdown/JSON export
+paths. Those source-level capabilities are not a release validation result.
 
-- `reader-prd.md` — product requirements (Draft v0.2)
-- `planned-task-list.md` — audited status and the implementation sequence
-- `mock-up/` — Modernist design system and UI mockups (local only, not in version control)
+The current release gate has not been satisfied. In particular, this project
+does not yet have recorded evidence for the complete installed Windows journey,
+clean-profile restore, Windows path/activation matrix, accessibility and display
+scaling checks, performance measurements, or a signed installer. The precise
+evidence boundary and known limitations are in [RELEASE_STATUS.md](RELEASE_STATUS.md).
 
-## Status
+## Scope
 
-**Early scaffolding.** The desktop shell builds and runs. Almost nothing behind it is real yet.
+The v1 target is the offline path from PDF evidence to user-authored notes and
+deliberate review. Optional local AI, OCR, macOS/Linux packaging, EPUB/DjVu,
+sync, collaboration, and citation-management breadth are deferred.
 
-| Area | State |
-| --- | --- |
-| Toolchain, build, tests, Tauri shell | Working |
-| PDF rendering | Not started — `pdfjs-dist` is installed but unused |
-| Persistence (SQLite) | Not started — no schema, no migrations, no Rust commands |
-| Annotations, notes, review, export | Not started |
-| UI | Static prototype — hard-coded sample content, no real state |
-
-The UI currently displays placeholder counts ("41 annotations", "12 due") that are not backed by anything. Treat every number on screen as fictional until the corresponding task is checked off in `planned-task-list.md`.
-
-## Scope decisions
-
-- **pnpm is the only supported package manager.** Do not use npm, yarn, or bun.
-- **Tauri 2 + React + Vite + Rust**, superseding the Electron proposal in the original PRD. Security follows Tauri's capability model (PRD §15.3), not Electron's.
-- **AI is out of v1.** The PRD's own recommended release cut (§18.1) is through R4 — reader, notes, and review — without AI. AI surfaces visible in the UI are placeholders representing the off state, not a feature commitment. Work on them starts only after the completion gate in `planned-task-list.md` is met.
-- **Windows first**, Linux validated locally. macOS and mobile are not on the roadmap; mobile is an explicit PRD non-goal.
-- **Local-first, always.** No cloud service, account, telemetry, or network dependency for any core feature.
+Scanned PDFs can be viewed and area-annotated, but OCR-dependent text search
+and text annotations are outside v1.
 
 ## Prerequisites
 
-- Node.js 22+ and pnpm 11+
-- Rust stable, plus the platform prerequisites in the [Tauri guide](https://v2.tauri.app/start/prerequisites/) — WebView2 on Windows, WebKitGTK on Linux
+- Node.js 24 (the CI configuration uses Node 24)
+- pnpm 11.18.0 (the version pinned in `package.json`)
+- Rust stable
+- Tauri platform prerequisites, including WebView2 on Windows; see the
+  [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/)
 
-## Commands
+`pnpm` is the supported package manager. Use the committed lockfile; do not
+substitute npm, Yarn, or Bun.
+
+## Development
 
 ```bash
-pnpm install       # install dependencies (uses the committed lockfile)
-pnpm tauri:dev     # run the desktop app
-pnpm tauri:build   # produce a native installer
-pnpm build         # typecheck + build the frontend only
-pnpm test          # unit tests (vitest)
+pnpm install --frozen-lockfile
+pnpm tauri:dev
 ```
 
-`pnpm tauri:build` produces an NSIS setup `.exe` on Windows, installed per-user. Linux builds use the same configuration; install the Linux system dependencies from the Tauri prerequisites first.
+## Verification
 
-## CI
+Run the local gates before treating a change as demonstrated:
 
-Every push runs `.github/workflows/windows-build.yml` on `windows-latest`, building the NSIS installer and uploading it as the `MerethReader-Windows-NSIS` artifact.
+```bash
+pnpm build
+pnpm test
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+```
 
-This workflow has **never successfully run** — the repository has no commits yet. A faster typecheck/test/`cargo check` job is planned so type errors fail in minutes rather than after a full installer build.
+The repository defines a Linux quality workflow for the build, frontend tests,
+Rust check, and Rust unit tests. A separate workflow is configured to build an
+NSIS installer when the `release` branch is pushed. Configuration is not proof
+of a current successful run or installer behavior; verify the relevant workflow
+run and the downloaded artifact for a release candidate.
 
-Code signing is deliberately absent. Unsigned installers show Windows trust warnings until a certificate and signing policy are supplied.
+## Packaging
 
-## Working notes
+```bash
+pnpm tauri:build
+```
 
-- The application icon in `src-tauri/icons/` is a placeholder generated to unblock compilation. It is not branding.
-- The bundle identifier is `dev.mereth.reader`. It fixes the application data directory, so treat it as frozen from the first release — changing it later strands user data.
-- `mock-up/` is intentionally excluded from version control. It is the design source of truth and exists only locally, so it is not backed up by the remote. Keep a separate copy.
-- Before marking any task complete in `planned-task-list.md`, demonstrate its acceptance criteria. Code existing is not the same as a task being done.
+Tauri is configured to target an NSIS installer on Windows with per-user
+installation and a PDF file association. The installer is unsigned unless and
+until a signing process is added and verified; expect Windows trust warnings for
+an unsigned pre-release build.
+
+## Project references
+
+- [reader-prd.md](reader-prd.md) — product requirements
+- [PRODUCT.md](PRODUCT.md) — durable product context
+- [DESIGN.md](DESIGN.md) — visual design authority
+- [planned-task-list.md](planned-task-list.md) — implementation tasks and their evidence
+- [PENDING_IMPLEMENTATION_PLAN.md](PENDING_IMPLEMENTATION_PLAN.md) — current recovery and release plan
+- [RELEASE_STATUS.md](RELEASE_STATUS.md) — release evidence and known limitations

@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from 'react';
 import { PaletteEntry } from '../utils/annotationTypes';
 
 export interface SelectionPopupAnchor {
@@ -33,11 +34,30 @@ interface SelectionPopupProps {
 export function SelectionPopup(props: SelectionPopupProps) {
   const { anchor, palette, color, onColorChange, comment, onCommentChange, locked, onToggleLocked, busy, error, onCreate, onClose } = props;
   const needComment = comment.trim().length === 0;
+  const popupRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState(() => ({
+    left: Math.max(8, Math.min(anchor.left, window.innerWidth - 272)),
+    top: Math.max(8, Math.min(anchor.top, window.innerHeight - 280)),
+  }));
+  const selectedColor = palette.find((entry) => entry.key === color);
+
+  useLayoutEffect(() => {
+    const popup = popupRef.current;
+    if (!popup) return;
+    const margin = 8;
+    const width = popup.offsetWidth;
+    const height = popup.offsetHeight;
+    setPosition({
+      left: Math.max(margin, Math.min(anchor.left, window.innerWidth - width - margin)),
+      top: Math.max(margin, Math.min(anchor.top, window.innerHeight - height - margin)),
+    });
+  }, [anchor.left, anchor.top]);
 
   return (
     <div
+      ref={popupRef}
       className="selection-popup"
-      style={{ left: Math.max(0, anchor.left), top: Math.max(0, anchor.top) }}
+      style={position}
       role="dialog"
       aria-label="Annotation tools"
     >
@@ -63,6 +83,9 @@ export function SelectionPopup(props: SelectionPopupProps) {
           />
         ))}
       </div>
+      <p className="popup-color-meaning" aria-live="polite">
+        Selected meaning: <strong>{selectedColor?.label ?? color}</strong>
+      </p>
 
       <label className="popup-field">
         <span>Optional comment</span>

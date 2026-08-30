@@ -1,3 +1,4 @@
+import { Icon } from './icons';
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { CollectionItem, createCollection } from '../utils/libraryUtils';
@@ -92,7 +93,7 @@ export function CollectionManagerModal({
       >
         <header className="sheet-header">
           <h3 id="collection-manager-title">Collection Manager (FR-7.5)</h3>
-          <button className="icon-button" onClick={onClose} aria-label="Close manager">✕</button>
+          <button className="icon-button" onClick={onClose} aria-label="Close manager"><Icon name="x" /></button>
         </header>
 
         <div className="sheet-body">

@@ -30,3 +30,9 @@ export function suggestCopyPath(path: string): string {
   return `${path.slice(0, dot)} copy${path.slice(dot)}`;
 }
 
+/** U21: fetch a destination snapshot from the backend (existence + preview). */
+export async function checkDestination(path: string): Promise<DestinationSnapshot> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  return invoke<DestinationSnapshot>('db_check_destination', { path });
+}
+

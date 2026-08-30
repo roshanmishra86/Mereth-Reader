@@ -1,5 +1,6 @@
 import React from 'react';
 import { EmptyStateViewType, getEmptyStateDetails } from '../utils/recoveryUtils';
+import { Icon, IconName } from './icons';
 
 interface EmptyStateProps {
   viewType: EmptyStateViewType;
@@ -35,7 +36,7 @@ export function EmptyState({
         margin: 'auto',
       }}
     >
-      <div style={{ fontSize: '36px', marginBottom: '10px' }}>{details.icon}</div>
+      <div style={{ marginBottom: '10px' }}><Icon name={details.icon as IconName} size={36} /></div>
       <h3 style={{ margin: '0 0 6px', fontSize: '15px', fontWeight: 700, color: '#201e1d' }}>
         {title}
       </h3>

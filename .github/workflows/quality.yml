@@ -49,5 +49,5 @@ jobs:
       - name: Check Rust crate
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
-      - name: Run Rust unit tests
+      - name: Rust unit tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib

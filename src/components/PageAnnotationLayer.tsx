@@ -100,26 +100,27 @@ export const PageAnnotationLayer = memo(function PageAnnotationLayer({
             <span
               {...common}
               key={annotation.id}
-              role="button"
-              tabIndex={0}
-              aria-label={ariaLabel}
-              onClick={() => onSelectAnnotation(annotation.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  onSelectAnnotation(annotation.id);
-                }
-              }}
-              style={{ cursor: 'pointer', pointerEvents: 'auto' }}
+              style={{ pointerEvents: 'none' }}
             >
               {rects.map((rect, i) => (
                 <span
                   key={i}
                   className={`annotation-rect ${annotation.annotation_type === 'underline' ? 'annotation-underline' : 'annotation-highlight'}`}
+                  role="button"
+                  tabIndex={i === 0 ? 0 : -1}
+                  aria-label={i === 0 ? ariaLabel : undefined}
+                  aria-hidden={i === 0 ? undefined : true}
+                  onClick={() => onSelectAnnotation(annotation.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectAnnotation(annotation.id);
+                    }
+                  }}
                   style={
                     annotation.annotation_type === 'underline'
-                      ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height, borderBottomColor: color }
-                      : { left: rect.left, top: rect.top, width: rect.width, height: rect.height, background: withAlpha(color, 0.45) }
+                      ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height, borderBottomColor: color, pointerEvents: 'auto', cursor: 'pointer' }
+                      : { left: rect.left, top: rect.top, width: rect.width, height: rect.height, background: withAlpha(color, 0.45), pointerEvents: 'auto', cursor: 'pointer' }
                   }
                   title={`${semanticLabel}: ${annotation.quote}`}
                 />

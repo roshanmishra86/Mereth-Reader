@@ -7,6 +7,7 @@ export interface DocumentRecord {
   title: string;
   filepath: string;
   original_filepath?: string;
+  removed_at?: string | null;
   sha256_hash: string;
   page_count: number;
   created_at: string;

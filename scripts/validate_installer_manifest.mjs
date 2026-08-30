@@ -37,7 +37,7 @@ function validate() {
   if (conf.bundle?.windows?.nsis?.installMode !== "currentUser") {
     errors.push(`Expected bundle.windows.nsis.installMode to be "currentUser", got "${conf.bundle?.windows?.nsis?.installMode}"`);
   }
-  
+
   const fileAssoc = conf.bundle?.fileAssociations;
   if (!Array.isArray(fileAssoc) || fileAssoc.length === 0) {
     errors.push("Expected bundle.fileAssociations to be defined");
