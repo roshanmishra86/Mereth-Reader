@@ -590,13 +590,29 @@ impl Database {
         document_id: &str,
         version_hash: &str,
     ) -> Result<usize, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let changed = conn
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let changed = tx
             .execute(
                 "DELETE FROM pages WHERE document_id = ?1 AND version_hash = ?2",
                 params![document_id, version_hash],
             )
             .map_err(|e| e.to_string())?;
+        // The FTS table intentionally contains only the document's current
+        // source version. Clear it with the active cache so a failed or
+        // cancelled rebuild cannot keep serving stale text. Removing an older
+        // cached version must not disturb the current search index.
+        tx.execute(
+            "DELETE FROM fts_document_text
+             WHERE document_id = ?1
+               AND EXISTS (
+                 SELECT 1 FROM documents
+                 WHERE id = ?1 AND sha256_hash = ?2
+               )",
+            params![document_id, version_hash],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(changed)
     }
 
@@ -627,15 +643,27 @@ impl Database {
         params![page.id, page.document_id, page.page_number, page.width, page.height,
           page.text_content, page.created_at, page.provenance, version_hash],
       ).map_err(|e| e.to_string())?;
-            tx.execute(
-                "DELETE FROM fts_document_text WHERE document_id = ?1 AND page_number = ?2",
-                params![page.document_id, page.page_number],
-            )
-            .map_err(|e| e.to_string())?;
-            tx.execute(
-        "INSERT INTO fts_document_text (document_id, page_number, text_content, provenance) VALUES (?1, ?2, ?3, ?4)",
-        params![page.document_id, page.page_number, page.text_content, page.provenance],
-      ).map_err(|e| e.to_string())?;
+            let is_current_version: bool = tx
+                .query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM documents WHERE id = ?1 AND sha256_hash = ?2
+                     )",
+                    params![page.document_id, version_hash],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if is_current_version {
+                tx.execute(
+                    "DELETE FROM fts_document_text WHERE document_id = ?1 AND page_number = ?2",
+                    params![page.document_id, page.page_number],
+                )
+                .map_err(|e| e.to_string())?;
+                tx.execute(
+                    "INSERT INTO fts_document_text (document_id, page_number, text_content, provenance) VALUES (?1, ?2, ?3, ?4)",
+                    params![page.document_id, page.page_number, page.text_content, page.provenance],
+                )
+                .map_err(|e| e.to_string())?;
+            }
         }
         tx.commit().map_err(|e| e.to_string())?;
         Ok(())
@@ -1131,6 +1159,17 @@ mod tests {
         assert_eq!(
             db.get_pages_for_version(&doc_id, "hash-v2").unwrap().len(),
             1
+        );
+        assert_eq!(
+            db.search_fts("refreshed").unwrap().len(),
+            1,
+            "clearing an old version must preserve the current FTS index"
+        );
+
+        assert_eq!(db.delete_pages_for_version(&doc_id, "hash-v2").unwrap(), 1);
+        assert!(
+            db.search_fts("refreshed").unwrap().is_empty(),
+            "clearing the current version must clear stale FTS rows atomically"
         );
     }
 

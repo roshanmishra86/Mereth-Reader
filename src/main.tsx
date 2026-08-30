@@ -920,14 +920,25 @@ function App() {
   }
 
   useEffect(() => {
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     void listen<{ command: 'open_pdf' | 'import_pdf_copy' | 'close_document' }>('app-menu-command', ({ payload }) => {
       if (payload.command === 'open_pdf') void requestOpenPdf();
       else if (payload.command === 'import_pdf_copy') { setInitialImportPath(null); setPdfEntryMode('import'); setImportOpen(true); }
       else closeActiveDocument();
-    }).then((stop) => { unlisten = stop; }).catch(() => undefined);
-    return () => unlisten?.();
-  });
+    }).then((stop) => {
+      if (cancelled) stop();
+      else unlisten = stop;
+    }).catch(() => undefined);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+    // The listener delegates through refs/state setters and must be registered
+    // once. Re-registering on every render can leak asynchronously-created
+    // listeners when cleanup wins the race with listen().
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Real extraction progress reported by the reader's background pass. The
   // manager marks the job completed at 100%; completion is persisted.
