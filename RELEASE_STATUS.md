@@ -11,8 +11,9 @@ evidence, not what an unrun build, workflow, or installed application might do.
 - `package.json` defines frontend build/test and Tauri development/build scripts.
 - `.github/workflows/quality.yml` defines build, frontend test, Rust check, and
   Rust unit-test jobs.
-- `.github/workflows/windows-build.yml` is configured to build an NSIS artifact
-  on pushes to `release`.
+- `.github/workflows/windows-build.yml` is configured to build an NSIS installer
+  and attach it to a GitHub Release when a matching `vMAJOR.MINOR.PATCH` tag is
+  pushed.
 - `src-tauri/tauri.conf.json` configures a per-user NSIS bundle and a PDF file
   association.
 
@@ -33,7 +34,8 @@ installed product behaves correctly on Windows.
 ## Release evidence still required
 
 - All local quality gates pass on the release commit.
-- The `release`-branch workflow produces the downloadable NSIS artifact.
+- The tag-driven release workflow produces a GitHub Release with a downloadable
+  NSIS installer.
 - That artifact installs, launches, opens PDFs through Windows Explorer in cold
   and warm activation paths, and survives uninstall/reinstall testing on clean
   Windows 11 x64.

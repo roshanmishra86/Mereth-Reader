@@ -1,30 +1,35 @@
-name: Build Windows installer
+name: Release Windows installer
 
 on:
   push:
-    branches:
-      - release
-      - feature/phase-6-packaging-and-release
     tags:
-      - 'v*'
-  pull_request:
-    branches:
-      - release
-  workflow_dispatch:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: windows-build-${{ github.ref }}
-  cancel-in-progress: true
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   windows-nsis:
+    name: Build and publish Windows NSIS installer
     runs-on: windows-latest
+
     steps:
-      - name: Check out source
+      - name: Check out tagged source
         uses: actions/checkout@v4
+
+      - name: Verify tag matches the application version
+        shell: pwsh
+        run: |
+          $config = Get-Content "src-tauri/tauri.conf.json" | ConvertFrom-Json
+          $expectedTag = "v$($config.version)"
+          if ("${{ github.ref_name }}" -ne $expectedTag) {
+            Write-Error "Tag ${{ github.ref_name }} does not match Tauri version $($config.version). Expected $expectedTag."
+            exit 1
+          }
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -38,7 +43,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust cache
+      - name: Cache Rust build output
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -46,13 +51,20 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build NSIS setup executable
-        run: pnpm tauri build --bundles nsis
-
-      - name: Upload Windows installer
-        uses: actions/upload-artifact@v4
+      - name: Build installer and create GitHub Release
+        uses: tauri-apps/tauri-action@v0.6.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: MerethReader-Windows-NSIS
-          path: src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: error
-          retention-days: 14
+          tagName: v__VERSION__
+          releaseName: Mereth Reader v__VERSION__
+          releaseBody: |
+            Download the Windows NSIS setup executable below to install Mereth Reader.
+
+            This personal-use build is currently unsigned, so Windows may display a SmartScreen warning.
+          generateReleaseNotes: true
+          releaseDraft: false
+          prerelease: false
+          tauriScript: pnpm tauri
+          args: --bundles nsis
+          releaseAssetNamePattern: Mereth-Reader_[version]_[arch]-setup.[ext]

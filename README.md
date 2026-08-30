@@ -30,7 +30,7 @@ and text annotations are outside v1.
 ## Prerequisites
 
 - Node.js 24 (the CI configuration uses Node 24)
-- pnpm 11.18.0 (the version pinned in `package.json`)
+- pnpm 11.24.0 (the version pinned in `package.json`)
 - Rust stable
 - Tauri platform prerequisites, including WebView2 on Windows; see the
   [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/)
@@ -58,10 +58,11 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib
 ```
 
 The repository defines a Linux quality workflow for the build, frontend tests,
-Rust check, and Rust unit tests. A separate workflow is configured to build an
-NSIS installer when the `release` branch is pushed. Configuration is not proof
-of a current successful run or installer behavior; verify the relevant workflow
-run and the downloaded artifact for a release candidate.
+Rust check, and Rust unit tests. A separate workflow builds an NSIS installer
+and publishes it to a GitHub Release when a version tag such as `v0.1.0` is
+pushed. The tag must match the version in `src-tauri/tauri.conf.json`.
+Configuration is not proof of a successful run or installer behavior; verify
+the workflow run and downloaded installer for each release.
 
 ## Packaging
 
@@ -73,6 +74,17 @@ Tauri is configured to target an NSIS installer on Windows with per-user
 installation and a PDF file association. The installer is unsigned unless and
 until a signing process is added and verified; expect Windows trust warnings for
 an unsigned pre-release build.
+
+To publish the configured version after its commit is on `master`:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The tag push starts the Windows release workflow. After it succeeds, download
+the `.exe` from the repository's GitHub Releases page. Use a new version and tag
+for every later release; do not move or reuse published tags.
 
 ## Project references
 
