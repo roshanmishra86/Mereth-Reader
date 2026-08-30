@@ -511,6 +511,25 @@ impl Database {
         Ok(())
     }
 
+    /// Permanently removes a document and its owned data while optionally
+    /// retaining source notes as detached notes.
+    pub fn delete_document_with_note_policy(&self, id: &str, keep_notes: bool) -> Result<(), String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        if keep_notes {
+            tx.execute(
+                "UPDATE notes SET document_id = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE document_id = ?1",
+                params![id],
+            ).map_err(|e| e.to_string())?;
+        }
+        let rows_affected = tx.execute("DELETE FROM documents WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        if rows_affected == 0 {
+            return Err(format!("Document not found: {id}"));
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
     pub fn remove_document(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         let changed = conn.execute(
@@ -1653,6 +1672,58 @@ mod tests {
         assert_eq!(db.get_documents().unwrap().len(), 1);
         assert!(db.get_removed_documents().unwrap().is_empty());
         assert_eq!(db.get_pages(&doc_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_delete_document_can_keep_source_notes_detached() {
+        use super::notes::Note;
+
+        let db = Database::in_memory().unwrap();
+        let doc_id = Uuid::new_v4().to_string();
+        db.add_document(Document {
+            id: doc_id.clone(),
+            title: "Detach notes".into(),
+            filepath: "/docs/detach-notes.pdf".into(),
+            sha256_hash: "cd".repeat(32),
+            page_count: 1,
+            created_at: "2026-08-30T00:00:00Z".into(),
+            updated_at: "2026-08-30T00:00:00Z".into(),
+            provenance: "source_extracted".into(),
+            author: None,
+            subject: None,
+            keywords: None,
+            creation_date: None,
+            doi: None,
+            isbn: None,
+            is_favourite: false,
+            is_archived: false,
+            last_opened_at: None,
+            tags: vec![],
+            collections: vec![],
+            ownership_mode: "open_in_place".into(),
+            original_filepath: None,
+            removed_at: None,
+        }).unwrap();
+        let note_id = Uuid::new_v4().to_string();
+        db.add_note(&Note {
+            id: note_id.clone(),
+            note_type: "source".into(),
+            title: "Retained thought".into(),
+            body_markdown: "Keep this text.".into(),
+            document_id: Some(doc_id.clone()),
+            deleted_at: None,
+            created_at: "2026-08-30T00:00:00Z".into(),
+            updated_at: "2026-08-30T00:00:00Z".into(),
+            provenance: "user_authored".into(),
+            original_provenance: None,
+        }).unwrap();
+
+        db.delete_document_with_note_policy(&doc_id, true).unwrap();
+
+        assert!(db.get_document_by_id(&doc_id).unwrap().is_none());
+        let retained = db.get_note(&note_id).unwrap().expect("note should remain");
+        assert_eq!(retained.document_id, None);
+        assert_eq!(retained.body_markdown, "Keep this text.");
     }
 
     #[test]

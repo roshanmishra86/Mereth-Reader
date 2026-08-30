@@ -1312,18 +1312,17 @@ function App() {
     }
   }
 
-  async function handlePurgeDocument(doc: DocumentRecord) {
-    const warning = doc.ownership_mode === 'managed_library'
-      ? 'Mereth’s private PDF copy and all linked notes, annotations, and review data will be deleted. The original source file will not be touched.'
-      : 'All linked Mereth notes, annotations, and review data will be deleted. The source PDF will not be touched.';
-    if (!window.confirm(`Permanently delete “${doc.title}”?\n\n${warning}\n\nThis cannot be undone.`)) return;
+  async function handlePurgeDocument(doc: DocumentRecord, keepNotes: boolean) {
     setOperationError(null);
     try {
-      await invoke('db_purge_document', { id: doc.id });
+      await invoke('db_purge_document', { id: doc.id, keepNotes });
+      setDocuments((items) => items.filter((item) => item.id !== doc.id));
       setRemovedDocuments((items) => items.filter((item) => item.id !== doc.id));
       evictPdfDocument(doc.id);
+      if (activeDocument?.id === doc.id) closeActiveDocument();
     } catch (error) {
       setOperationError(`Could not permanently delete this document: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
     }
   }
 
@@ -1465,7 +1464,7 @@ function App() {
             onUpdateDocument={handleUpdateDocument}
             onUpdateCollections={handleUpdateCollections}
             onRestoreDocument={(id) => void handleRestoreDocument(id)}
-            onPurgeDocument={(doc) => void handlePurgeDocument(doc)}
+            onPurgeDocument={handlePurgeDocument}
           />
         )}
         {destination === "notes" && (

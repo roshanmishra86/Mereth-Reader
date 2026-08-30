@@ -13,6 +13,7 @@ import {
 import { MetadataEditorModal } from './MetadataEditorModal';
 import { CollectionManagerModal } from './CollectionManagerModal';
 import { EmptyState } from './EmptyState';
+import { RemoveBookDialog } from './RemoveBookDialog';
 
 interface LibraryViewProps {
   documents: DocumentRecord[];
@@ -28,7 +29,7 @@ interface LibraryViewProps {
   onUpdateDocument: (doc: DocumentRecord) => void;
   onUpdateCollections: (collections: CollectionItem[]) => void;
   onRestoreDocument: (docId: string) => void;
-  onPurgeDocument: (doc: DocumentRecord) => void;
+  onPurgeDocument: (doc: DocumentRecord, keepNotes: boolean) => Promise<void>;
 }
 
 export function LibraryView({
@@ -57,6 +58,7 @@ export function LibraryView({
 
   const [editingDoc, setEditingDoc] = useState<DocumentRecord | null>(null);
   const [collectionManagerOpen, setCollectionManagerOpen] = useState(false);
+  const [removingDoc, setRemovingDoc] = useState<DocumentRecord | null>(null);
 
   const allRecords = useMemo(() => [...documents, ...removedDocuments], [documents, removedDocuments]);
   const availableTags = useMemo(() => extractAllUniqueTags(documents), [documents]);
@@ -347,7 +349,7 @@ export function LibraryView({
                   <div className="card-action-buttons">
                     {doc.removed_at ? <>
                       <button className="button secondary micro" onClick={() => onRestoreDocument(doc.id)}>Restore</button>
-                      <button className="button primary micro" onClick={() => onPurgeDocument(doc)}>Permanently Delete</button>
+                      <button className="button primary micro" onClick={() => setRemovingDoc(doc)}>Permanently Delete</button>
                     </> : <>
                     <button
                       className="button secondary micro"
@@ -370,6 +372,9 @@ export function LibraryView({
                       onClick={() => onOpenDocument(doc)}
                     >
                       Read
+                    </button>
+                    <button className="button secondary micro" onClick={() => setRemovingDoc(doc)}>
+                      Remove
                     </button>
                     </>}
                   </div>
@@ -403,6 +408,15 @@ export function LibraryView({
           onUpdateCollections={onUpdateCollections}
         />
       )}
+      <RemoveBookDialog
+        key={removingDoc?.id ?? 'closed'}
+        book={removingDoc}
+        onCancel={() => setRemovingDoc(null)}
+        onConfirm={async (book, keepNotes) => {
+          await onPurgeDocument(book, keepNotes);
+          setRemovingDoc(null);
+        }}
+      />
     </div>
   );
 }

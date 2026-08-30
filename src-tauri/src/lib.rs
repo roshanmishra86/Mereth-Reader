@@ -357,6 +357,7 @@ fn db_get_removed_documents(state: State<'_, AppState>) -> Result<Vec<Document>,
 fn db_purge_document(
     app_handle: tauri::AppHandle,
     id: String,
+    keep_notes: bool,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let app_dir = app_handle
@@ -369,7 +370,7 @@ fn db_purge_document(
 
     let staged = stage_managed_pdf_for_purge(&app_dir, &doc)?;
 
-    if let Err(error) = db.delete_document(&id) {
+    if let Err(error) = db.delete_document_with_note_policy(&id, keep_notes) {
         if let Some(stage) = &staged {
             let _ = fs::rename(&stage.staged, &stage.original);
         }
