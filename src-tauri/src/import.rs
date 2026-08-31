@@ -90,6 +90,28 @@ fn count_pdf_pages(bytes: &[u8]) -> u32 {
     }
 }
 
+/// Computes SHA-256 hash and metadata (including page count) from in-memory file bytes.
+pub fn compute_metadata_from_bytes(filepath: &str, bytes: &[u8]) -> FileMetadata {
+    let path = Path::new(filepath);
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let sha256_hash = hex::encode(hasher.finalize());
+    let page_count = count_pdf_pages(bytes);
+
+    FileMetadata {
+        filepath: filepath.to_string(),
+        filename: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string(),
+        sha256_hash,
+        file_size_bytes: bytes.len() as u64,
+        page_count,
+        exists: true,
+    }
+}
+
 /// Computes SHA-256 hash and metadata (including page count) for a file at `filepath`.
 pub fn compute_file_metadata(filepath: &str) -> Result<FileMetadata, String> {
     let path = Path::new(filepath);
@@ -108,30 +130,8 @@ pub fn compute_file_metadata(filepath: &str) -> Result<FileMetadata, String> {
         });
     }
 
-    // Read the file once and reuse the bytes for both hashing and page counting.
-    // Import is a user-initiated, one-time action on born-digital PDFs (the v1
-    // reference corpus tops out at a 400-page book), so holding the bytes in
-    // memory for the duration of the call is acceptable.
     let bytes = fs::read(path).map_err(|e| format!("Failed to read file: {e}"))?;
-
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let sha256_hash = hex::encode(hasher.finalize());
-
-    let page_count = count_pdf_pages(&bytes);
-
-    Ok(FileMetadata {
-        filepath: filepath.to_string(),
-        filename: path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string(),
-        sha256_hash,
-        file_size_bytes: bytes.len() as u64,
-        page_count,
-        exists: true,
-    })
+    Ok(compute_metadata_from_bytes(filepath, &bytes))
 }
 
 /// True for POSIX-absolute paths and supported Windows absolute path forms.

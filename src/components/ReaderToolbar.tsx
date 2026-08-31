@@ -1,10 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { LayoutMode, RotationAngle, ZoomModeType } from '../utils/viewModeUtils';
-import { SearchOptions, DetailedSearchMatch } from '../utils/searchUtils';
-import { formatControlTooltip } from '../utils/shortcutUtils';
-import { NavigationHistoryState } from '../utils/pdfUtils';
-import { formatExtendedPageLabel, PageLabelMapping } from '../utils/navigationUtils';
-import { Icon } from './icons';
+import React, { useState, useRef, useEffect } from "react";
+import { LayoutMode, RotationAngle, ZoomModeType } from "../utils/viewModeUtils";
+import { SearchOptions, DetailedSearchMatch } from "../utils/searchUtils";
+import { IndexingStatus } from "../utils/durableIndexing";
+import { formatControlTooltip } from "../utils/shortcutUtils";
+import { NavigationHistoryState } from "../utils/pdfUtils";
+import { formatExtendedPageLabel, PageLabelMapping } from "../utils/navigationUtils";
+import { Icon } from "./icons";
 
 interface ReaderToolbarProps {
   // Navigation & Page State
@@ -21,9 +22,9 @@ interface ReaderToolbarProps {
   onLayoutModeChange: (mode: LayoutMode) => void;
   zoomScale: number;
   zoomMode: ZoomModeType;
-  onZoomChange: (action: 'in' | 'out' | 'reset' | 'fit-width' | 'fit-page' | 'set', value?: number) => void;
+  onZoomChange: (action: "in" | "out" | "reset" | "fit-width" | "fit-page" | "set", value?: number) => void;
   rotation: RotationAngle;
-  onRotateChange: (direction: 'cw' | 'ccw') => void;
+  onRotateChange: (direction: "cw" | "ccw") => void;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
 
@@ -34,7 +35,7 @@ interface ReaderToolbarProps {
   onSearchOptionsChange: (options: SearchOptions) => void;
   searchMatches: DetailedSearchMatch[];
   indexedPages: number;
-  extractionStatus: 'idle' | 'running' | 'done' | 'cancelled';
+  extractionStatus: IndexingStatus;
   currentMatchIndex: number;
   onNextMatch: () => void;
   onPrevMatch: () => void;
@@ -59,7 +60,7 @@ export function ReaderToolbar(props: ReaderToolbarProps) {
   const [showSearchSnippetBox, setShowSearchSnippetBox] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const canGoBack = props.historyState.currentIndex > 0;
+const canGoBack = props.historyState.currentIndex > 0;
   const canGoForward = props.historyState.currentIndex < props.historyState.stack.length - 1;
 
   const backTooltip = formatControlTooltip(

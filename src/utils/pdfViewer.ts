@@ -106,11 +106,11 @@ export function buildPdfJsLoadConfig(
   };
 }
 
-async function fetchPdfBytes(documentId: string): Promise<Uint8Array> {
+async function fetchPdfBytes(documentId: string, openGeneration: number): Promise<Uint8Array> {
   // The Rust command returns tauri::ipc::Response (raw bytes), which the
   // webview receives as an ArrayBuffer. The number[] branch is a defensive
   // fallback for IPC paths that JSON-serialize (and for tests).
-  const raw = await invoke<ArrayBuffer | number[]>('db_get_pdf_bytes', { documentId });
+  const raw = await invoke<ArrayBuffer | number[]>('db_get_pdf_bytes', { documentId, openGeneration });
   if (raw instanceof ArrayBuffer) {
     return new Uint8Array(raw);
   }
@@ -125,8 +125,9 @@ async function fetchPdfBytes(documentId: string): Promise<Uint8Array> {
  * to render its first page — page text extraction is deliberately NOT part of
  * this path (see extractPdfPageTexts).
  */
-export async function loadPdfDocument(documentId: string): Promise<LoadedPdfInfo | null> {
-  const cached = pdfDocCache.get(documentId);
+export async function loadPdfDocument(documentId: string, openGeneration = 0): Promise<LoadedPdfInfo | null> {
+  const cacheKey = `${documentId}:${openGeneration}`;
+  const cached = pdfDocCache.get(cacheKey);
   if (cached) {
     cached.lastUsed = Date.now();
     return { doc: cached.doc, numPages: cached.doc.numPages, outline: cached.outline };
@@ -135,7 +136,7 @@ export async function loadPdfDocument(documentId: string): Promise<LoadedPdfInfo
   try {
     let uint8: Uint8Array;
     try {
-      uint8 = await fetchPdfBytes(documentId);
+      uint8 = await fetchPdfBytes(documentId, openGeneration);
     } catch {
       // Backend IPC unavailable (tests, browser dev preview) or file rejected.
       return null;
@@ -145,7 +146,7 @@ export async function loadPdfDocument(documentId: string): Promise<LoadedPdfInfo
     const doc = await loadingTask.promise;
     const outline = await extractOutline(doc);
 
-    pdfDocCache.set(documentId, {
+    pdfDocCache.set(cacheKey, {
       doc,
       loadingTask,
       outline,
@@ -165,10 +166,11 @@ export async function loadPdfDocument(documentId: string): Promise<LoadedPdfInfo
 
 /** Drops a cached document and its derived caches (e.g. after re-import). */
 export function evictPdfDocument(filepath: string): void {
-  const entry = pdfDocCache.get(filepath);
-  if (entry) {
-    pdfDocCache.delete(filepath);
-    entry.loadingTask.destroy().catch(() => {});
+  for (const [key, entry] of pdfDocCache) {
+    if (key === filepath || key.startsWith(`${filepath}:`)) {
+      pdfDocCache.delete(key);
+      entry.loadingTask.destroy().catch(() => {});
+    }
   }
 }
 
@@ -263,10 +265,11 @@ export async function getPdfPageTextItems(
   doc: pdfjsLib.PDFDocumentProxy,
   pageNumber: number,
   throwOnError = false,
+  cacheResult = true,
 ): Promise<PDFTextItem[]> {
   if (pageNumber < 1 || pageNumber > doc.numPages) return [];
   const entry = findCacheEntry(doc);
-  const cached = entry?.pageItemsCache.get(pageNumber);
+  const cached = cacheResult ? entry?.pageItemsCache.get(pageNumber) : undefined;
   if (cached) return cached;
   try {
     const page = await doc.getPage(pageNumber);
@@ -287,8 +290,10 @@ export async function getPdfPageTextItems(
         });
       }
     }
-    entry?.pageItemsCache.set(pageNumber, items);
-    entry?.pageTextCache.set(pageNumber, items.map((it) => it.str).join(' '));
+    if (cacheResult) {
+      entry?.pageItemsCache.set(pageNumber, items);
+      entry?.pageTextCache.set(pageNumber, items.map((it) => it.str).join(' '));
+    }
     return items;
   } catch (error) {
     if (throwOnError) throw error;
@@ -301,11 +306,12 @@ export async function getPdfPageText(
   doc: pdfjsLib.PDFDocumentProxy,
   pageNumber: number,
   throwOnError = false,
+  cacheResult = true,
 ): Promise<string> {
   const entry = findCacheEntry(doc);
-  const cached = entry?.pageTextCache.get(pageNumber);
+  const cached = cacheResult ? entry?.pageTextCache.get(pageNumber) : undefined;
   if (cached !== undefined) return cached;
-  const items = await getPdfPageTextItems(doc, pageNumber, throwOnError);
+  const items = await getPdfPageTextItems(doc, pageNumber, throwOnError, cacheResult);
   return items.map((it) => it.str).join(' ');
 }
 
@@ -322,8 +328,26 @@ export interface ExtractPagesOptions {
   skipPageNumbers?: ReadonlySet<number>;
   /** Publishes one completed page immediately; may await durable storage. */
   onPage?: (page: PageTextContent) => void | Promise<void>;
+  /**
+   * Retain extracted page text in the returned result. Disable this for
+   * streaming consumers that persist `onPage` values as they arrive, so a
+   * large document does not also keep a second full-document text array.
+   * Defaults to true for callers that consume `result.pages`.
+   */
+  retainPages?: boolean;
+  /**
+   * Populate the viewer's per-page text caches during extraction. Disable for
+   * full-document durable indexing; visible-page viewer calls still cache by
+   * default. This avoids retaining both text items and joined text for every
+   * page of a large PDF after the batch has been persisted.
+   */
+  cacheExtractedPages?: boolean;
   /** Reports page-local extraction failures without aborting the document job. */
   onPageError?: (pageNumber: number, error: unknown) => void;
+  /** Optional callback to check if extraction should pause temporarily (e.g. during active user scroll). */
+  shouldPause?: () => boolean;
+  /** Optional dynamic page provider allowing run-time reprioritization during reading/navigation. */
+  getNextPageNumber?: () => number | null;
 }
 
 export interface ExtractPagesResult {
@@ -343,20 +367,49 @@ export async function extractPdfPageTexts(
   options: ExtractPagesOptions = {}
 ): Promise<ExtractPagesResult> {
   const totalPages = doc.numPages;
-  const order = prioritizePageWindow(totalPages, options.prioritizeFromPage ?? 1, 3);
   const yieldEvery = Math.max(1, options.yieldEveryPages ?? 4);
+  const retainPages = options.retainPages ?? true;
   const pages: PageTextContent[] = [];
   const failedPageNumbers: number[] = [];
   let processed = options.skipPageNumbers?.size ?? 0;
 
-  for (const pageNumber of order) {
-    if (options.skipPageNumbers?.has(pageNumber)) continue;
+  const defaultOrder = prioritizePageWindow(totalPages, options.prioritizeFromPage ?? 1, 3);
+  let defaultIndex = 0;
+
+  const fetchNextPage = (): number | null => {
+    if (options.getNextPageNumber) {
+      return options.getNextPageNumber();
+    }
+    while (defaultIndex < defaultOrder.length) {
+      const p = defaultOrder[defaultIndex++];
+      if (!options.skipPageNumbers?.has(p)) {
+        return p;
+      }
+    }
+    return null;
+  };
+
+  while (true) {
     if (options.signal?.aborted) {
       return { pages: sortByPage(pages), completed: false, failedPageNumbers };
     }
+    if (options.shouldPause?.()) {
+      while (options.shouldPause?.() && !options.signal?.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    if (options.signal?.aborted) {
+      return { pages: sortByPage(pages), completed: false, failedPageNumbers };
+    }
+
+    const pageNumber = fetchNextPage();
+    if (pageNumber === null) break;
+
+    if (options.skipPageNumbers?.has(pageNumber)) continue;
+
     let text = '';
     try {
-      text = await getPdfPageText(doc, pageNumber, true);
+      text = await getPdfPageText(doc, pageNumber, true, options.cacheExtractedPages ?? true);
     } catch (error) {
       failedPageNumbers.push(pageNumber);
       options.onPageError?.(pageNumber, error);
@@ -368,7 +421,7 @@ export async function extractPdfPageTexts(
       continue;
     }
     const page = { pageNumber, text };
-    pages.push(page);
+    if (retainPages) pages.push(page);
     await options.onPage?.(page);
     processed++;
     options.onProgress?.(processed, totalPages);

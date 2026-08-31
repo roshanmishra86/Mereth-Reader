@@ -178,8 +178,28 @@ fn stage_managed_pdf_for_purge(
     }))
 }
 
+/// In-memory cache entry for single-read open pipeline.
+/// `bytes` is wrapped in `Option` so `db_get_pdf_bytes` can consume the bytes
+/// via `.take()` without destroying the metadata needed by
+/// `db_register_document_version`.
+#[allow(dead_code)]
+pub struct PdfCacheEntry {
+    bytes: Option<Vec<u8>>,
+    metadata: import::FileMetadata,
+    status: String,
+    generation: u64,
+}
+
+// The cache only bridges the version check and the immediately-following PDF
+// load/registration calls. Keeping a small hard cap prevents abandoned opens
+// (for example, rapidly switching documents) from retaining arbitrarily many
+// complete PDFs in memory.
+const MAX_PDF_CACHE_ENTRIES: usize = 2;
+
 pub struct AppState {
     pub db: Mutex<Option<Database>>,
+    pub pdf_cache: Mutex<std::collections::HashMap<String, PdfCacheEntry>>,
+    pub pdf_cache_generation: Mutex<u64>,
 }
 
 #[tauri::command]
@@ -719,24 +739,189 @@ fn db_read_annotation_asset_file(
 // re-anchoring → register_document_version + update_version_geometry once the
 // user decides → reanchor_annotation_to_version for quote-matched annotations.
 // Fingerprints and page counts are always recomputed server-side from the file.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SearchPageResult {
+    pub page_number: i32,
+    pub text_content: String,
+}
+
+#[tauri::command]
+fn db_search_document_text(
+    document_id: String,
+    version_hash: String,
+    query: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<SearchPageResult>, String> {
+    let lock = state.db.lock().unwrap();
+    let db = lock.as_ref().ok_or("Database not initialized")?;
+    let raw = db.search_document_text(&document_id, &version_hash, &query)?;
+    Ok(raw
+        .into_iter()
+        .map(|(page_number, text_content)| SearchPageResult {
+            page_number,
+            text_content,
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn db_get_cached_page_numbers_for_version(
+    document_id: String,
+    version_hash: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<i32>, String> {
+    let lock = state.db.lock().unwrap();
+    let db = lock.as_ref().ok_or("Database not initialized")?;
+    db.get_cached_page_numbers_for_version(&document_id, &version_hash)
+}
+
+// Task 3.3 document fingerprinting and version handling (FR-7.3, RK-2). The
+// open-time flow is: check_document_version_state → (on "changed") offer
+// re-anchoring → register_document_version + update_version_geometry once the
+// user decides → reanchor_annotation_to_version for quote-matched annotations.
+// Fingerprints and page counts are always recomputed server-side from the file.
+//
+// Single-Read Open Pipeline: reads bytes once into memory cache, re-used by db_get_pdf_bytes.
 #[tauri::command]
 fn db_check_document_version_state(
     document_id: String,
+    open_generation: u64,
     state: State<'_, AppState>,
 ) -> Result<VersionCheckResult, String> {
-    let lock = state.db.lock().unwrap();
-    let db = lock.as_ref().ok_or("Database not initialized")?;
-    db.check_document_version_state(&document_id)
+    {
+        let mut latest = state.pdf_cache_generation.lock().unwrap();
+        if open_generation > *latest {
+            *latest = open_generation;
+            state.pdf_cache.lock().unwrap().clear();
+        }
+    }
+    let (doc, current) = {
+        let lock = state.db.lock().unwrap();
+        let db = lock.as_ref().ok_or("Database not initialized")?;
+        let doc = db
+            .get_document_by_id(&document_id)?
+            .ok_or_else(|| format!("Document not found: {document_id}"))?;
+        let current = db.get_current_version(&document_id)?;
+        (doc, current)
+    };
+
+    let p = Path::new(&doc.filepath);
+    if !p.exists() {
+        if *state.pdf_cache_generation.lock().unwrap() == open_generation {
+            state.pdf_cache.lock().unwrap().remove(&document_id);
+        }
+        return Ok(VersionCheckResult {
+            status: "missing".into(),
+            document_sha256_hash: doc.sha256_hash,
+            file_sha256_hash: None,
+            current_version_id: current.as_ref().map(|v| v.id.clone()),
+            current_version_number: current.as_ref().map(|v| v.version_number).unwrap_or(0),
+            file_page_count: 0,
+        });
+    }
+
+    // A retry for the same document must never expose bytes left by an older
+    // version check if the fresh read fails partway through.
+    if *state.pdf_cache_generation.lock().unwrap() == open_generation {
+        state.pdf_cache.lock().unwrap().remove(&document_id);
+    }
+
+    // Read bytes once from disk and cache in state.pdf_cache for db_get_pdf_bytes / db_register_document_version
+    let bytes = std::fs::read(p).map_err(|e| format!("Failed to read file: {e}"))?;
+    let metadata = import::compute_metadata_from_bytes(&doc.filepath, &bytes);
+
+    let check_result = match &current {
+        None => VersionCheckResult {
+            status: "unregistered".into(),
+            document_sha256_hash: doc.sha256_hash,
+            file_sha256_hash: Some(metadata.sha256_hash.clone()),
+            current_version_id: None,
+            current_version_number: 0,
+            file_page_count: metadata.page_count as i64,
+        },
+        Some(curr) => {
+            let status = if curr.sha256_hash == metadata.sha256_hash {
+                "unchanged".to_string()
+            } else {
+                "changed".to_string()
+            };
+            VersionCheckResult {
+                status,
+                document_sha256_hash: doc.sha256_hash,
+                file_sha256_hash: Some(metadata.sha256_hash.clone()),
+                current_version_id: Some(curr.id.clone()),
+                current_version_number: curr.version_number,
+                file_page_count: metadata.page_count as i64,
+            }
+        }
+    };
+
+    {
+        let latest = *state.pdf_cache_generation.lock().unwrap();
+        if open_generation != latest {
+            return Ok(check_result);
+        }
+        let mut cache = state.pdf_cache.lock().unwrap();
+        cache.clear();
+        cache.insert(
+            document_id.clone(),
+            PdfCacheEntry {
+                bytes: Some(bytes),
+                metadata,
+                status: check_result.status.clone(),
+                generation: open_generation,
+            },
+        );
+        debug_assert!(cache.len() <= MAX_PDF_CACHE_ENTRIES);
+    }
+
+    Ok(check_result)
 }
 
 #[tauri::command]
 fn db_register_document_version(
     document_id: String,
+    open_generation: u64,
     state: State<'_, AppState>,
 ) -> Result<DocumentVersion, String> {
-    let lock = state.db.lock().unwrap();
-    let db = lock.as_ref().ok_or("Database not initialized")?;
-    db.register_document_version(&document_id)
+    let (cached_metadata, filepath, current) = {
+        let cache = state.pdf_cache.lock().unwrap();
+        let cached = cache
+            .get(&document_id)
+            .filter(|entry| entry.generation == open_generation)
+            .map(|entry| entry.metadata.clone());
+        drop(cache);
+
+        let lock = state.db.lock().unwrap();
+        let db = lock.as_ref().ok_or("Database not initialized")?;
+        let doc = db
+            .get_document_by_id(&document_id)?
+            .ok_or_else(|| format!("Document not found: {document_id}"))?;
+        let current = db.get_current_version(&document_id)?;
+        (cached, doc.filepath, current)
+    };
+
+    let metadata = match cached_metadata {
+        Some(m) => m,
+        None => compute_file_metadata(&filepath).map_err(|e| e.to_string())?,
+    };
+
+    let result = (|| {
+        let lock = state.db.lock().unwrap();
+        let db = lock.as_ref().ok_or("Database not initialized")?;
+        db.register_document_version_with_metadata(&document_id, &metadata, current)
+    })();
+
+    // Both bytes and metadata have been consumed; free the cache entry.
+    let mut cache = state.pdf_cache.lock().unwrap();
+    if cache
+        .get(&document_id)
+        .is_some_and(|entry| entry.generation == open_generation)
+    {
+        cache.remove(&document_id);
+    }
+
+    result
 }
 
 #[tauri::command]
@@ -791,16 +976,46 @@ fn verify_document_file_exists(
 #[tauri::command]
 fn db_get_pdf_bytes(
     document_id: String,
+    open_generation: u64,
     state: State<'_, AppState>,
 ) -> Result<tauri::ipc::Response, String> {
-    let lock = state.db.lock().unwrap();
-    let db = lock.as_ref().ok_or("Database not initialized")?;
-    let doc = db
-        .get_document_by_id(&document_id)?
-        .ok_or("Document not found")?;
-    let p = Path::new(&doc.filepath);
+    // 1. Check in-memory single-read cache: take bytes but keep metadata for
+    //    db_register_document_version which may run later.
+    {
+        let mut cache = state.pdf_cache.lock().unwrap();
+        let cached = cache.get_mut(&document_id).and_then(|entry| {
+            if entry.generation != open_generation {
+                return None;
+            }
+            entry
+                .bytes
+                .take()
+                .map(|bytes| (bytes, entry.status == "unchanged"))
+        });
+        if let Some((bytes, unchanged)) = cached {
+            // An unchanged version never needs registration metadata, so
+            // discard the complete bridge entry as soon as the PDF loader
+            // consumes its bytes. Changed/unregistered versions retain only
+            // their small metadata until registration resolves the flow.
+            if unchanged {
+                cache.remove(&document_id);
+            }
+            return Ok(tauri::ipc::Response::new(bytes));
+        }
+    }
+
+    // 2. Fallback to disk read if not in cache
+    let filepath = {
+        let lock = state.db.lock().unwrap();
+        let db = lock.as_ref().ok_or("Database not initialized")?;
+        let doc = db
+            .get_document_by_id(&document_id)?
+            .ok_or("Document not found")?;
+        doc.filepath
+    };
+    let p = Path::new(&filepath);
     if !p.exists() {
-        return Err(format!("File not found: {}", doc.filepath));
+        return Err(format!("File not found: {}", filepath));
     }
     // Returned as a raw binary IPC payload (application/octet-stream), which the
     // webview receives as an ArrayBuffer. Returning Vec<u8> directly would take
@@ -1221,6 +1436,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
             db: Mutex::new(None),
+            pdf_cache: Mutex::new(std::collections::HashMap::new()),
+            pdf_cache_generation: Mutex::new(0),
         })
         .invoke_handler(tauri::generate_handler![
             db_init,
@@ -1319,6 +1536,8 @@ pub fn run() {
             import_copy_to_managed_library,
             verify_document_file_exists,
             db_get_pdf_bytes,
+            db_search_document_text,
+            db_get_cached_page_numbers_for_version,
             cmd_open_external_url,
             #[cfg(debug_assertions)]
             perf::perf_rss_snapshot,

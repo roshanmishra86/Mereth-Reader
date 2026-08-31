@@ -889,6 +889,88 @@ impl Database {
         Ok(results)
     }
 
+    pub fn get_cached_page_numbers_for_version(
+        &self,
+        document_id: &str,
+        version_hash: &str,
+    ) -> Result<Vec<i32>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT page_number
+                 FROM pages
+                 WHERE document_id = ?1 AND version_hash = ?2
+                 ORDER BY page_number ASC",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let results = stmt
+            .query_map(params![document_id, version_hash], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(results)
+    }
+
+    pub fn search_document_text(
+        &self,
+        document_id: &str,
+        version_hash: &str,
+        query: &str,
+    ) -> Result<Vec<(i32, String)>, String> {
+        let raw_query = query.trim();
+        if raw_query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let conn = self.conn.lock().unwrap();
+
+        // Use FTS5 as an accelerator, but never as a completeness gate. FTS token
+        // matching can miss valid substring results (for example, `tract` inside
+        // `contract`), so merge it with the substring scan below.
+        let mut matches = std::collections::BTreeMap::<i32, String>::new();
+        let fts_query = format!("\"{}\"", raw_query.replace('"', "\"\""));
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT p.page_number, p.text_content
+             FROM pages p
+             JOIN fts_document_text fts ON fts.document_id = p.document_id AND fts.page_number = p.page_number
+             WHERE p.document_id = ?1 AND p.version_hash = ?2 AND fts_document_text MATCH ?3
+             ORDER BY p.page_number ASC",
+        ) {
+            if let Ok(rows) = stmt.query_map(params![document_id, version_hash, fts_query], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            }) {
+                for (page_number, text_content) in rows.filter_map(Result::ok) {
+                    matches.insert(page_number, text_content);
+                }
+            }
+        }
+
+        // The substring scan is strictly scoped to document_id AND version_hash.
+        // Inserting into the same map deduplicates FTS hits and keeps page order.
+        let mut fallback_stmt = conn
+            .prepare(
+                "SELECT page_number, text_content
+                 FROM pages
+                 WHERE document_id = ?1 AND version_hash = ?2 AND instr(lower(text_content), lower(?3)) > 0
+                 ORDER BY page_number ASC",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let fallback_results = fallback_stmt
+            .query_map(params![document_id, version_hash, raw_query], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+
+        for (page_number, text_content) in fallback_results.filter_map(Result::ok) {
+            matches.insert(page_number, text_content);
+        }
+
+        Ok(matches.into_iter().collect())
+    }
+
     pub fn save_reading_session(&self, session: &ReadingSession) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         let left_open_int = if session.left_pane_open { 1 } else { 0 };
@@ -1121,6 +1203,32 @@ mod tests {
         // Verify search still works after rebuild
         let results_after = db.search_fts("breach").unwrap();
         assert_eq!(results_after.len(), 1);
+
+        // A non-empty FTS result must not suppress other pages that only match
+        // by substring. `tract` is a token on page 2, but is embedded in
+        // `contract` on page 1.
+        db.add_page(Page {
+            id: Uuid::new_v4().to_string(),
+            document_id: doc_id.clone(),
+            page_number: 2,
+            width: 612.0,
+            height: 792.0,
+            text_content: "A tract discussing property law".into(),
+            created_at: "2026-08-04T13:52:57Z".into(),
+            provenance: "source_extracted".into(),
+        })
+        .unwrap();
+
+        let document_results = db
+            .search_document_text(&doc_id, "deadbeef", "tract")
+            .unwrap();
+        assert_eq!(
+            document_results
+                .iter()
+                .map(|(page_number, _)| *page_number)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
     }
 
     #[test]

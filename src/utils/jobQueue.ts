@@ -180,6 +180,10 @@ export class JobQueueManager {
     return active;
   }
 
+  public loadJob(job: BackgroundJob): void {
+    this.jobs.set(job.id, job);
+  }
+
   public cancelJob(id: string, reason?: string): BackgroundJob | undefined {
     const existing = this.jobs.get(id);
     if (!existing) return undefined;
@@ -194,6 +198,19 @@ export class JobQueueManager {
     const restarted = restartBackgroundJob(existing, newActivePage);
     this.jobs.set(id, restarted);
     return restarted;
+  }
+
+  public failJob(id: string, error: string): BackgroundJob | undefined {
+    const existing = this.jobs.get(id);
+    if (!existing) return undefined;
+    const failed: BackgroundJob = {
+      ...existing,
+      status: 'failed',
+      error,
+      updated_at: new Date().toISOString(),
+    };
+    this.jobs.set(id, failed);
+    return failed;
   }
 
   public updateProgress(id: string, processedCount: number): BackgroundJob | undefined {

@@ -123,6 +123,26 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
   // with an OS "Open with" / mereth:// deep link racing session restore.
   const explicitNavRequestRef = useRef(scrollToPageRequest !== null);
 
+  const onPageSizeMeasuredRef = useRef(onPageSizeMeasured);
+  useEffect(() => {
+    onPageSizeMeasuredRef.current = onPageSizeMeasured;
+  });
+
+  const onFirstPagePaintRef = useRef(onFirstPagePaint);
+  useEffect(() => {
+    onFirstPagePaintRef.current = onFirstPagePaint;
+  });
+
+  const onPageVisibleRef = useRef(onPageVisible);
+  useEffect(() => {
+    onPageVisibleRef.current = onPageVisible;
+  });
+
+  const onScrollPositionChangeRef = useRef(onScrollPositionChange);
+  useEffect(() => {
+    onScrollPositionChangeRef.current = onScrollPositionChange;
+  });
+
   // Viewport measurement (fit math + virtualization window).
   useEffect(() => {
     const el = scrollRef.current;
@@ -210,18 +230,18 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
       if (!el) return;
       const top = el.scrollTop;
       setScrollTop(top);
-      onScrollPositionChange(top);
+      onScrollPositionChangeRef.current(top);
 
       if (layoutMode !== 'single' && rowLayouts.length > 0) {
         const win = calculateVirtualWindow(top, el.clientHeight, rowHeights, ROW_GAP_PX, 0);
         const firstVisible = win.visibleIndices[0] ?? 0;
         const page = rowLayouts[firstVisible]?.leftPage ?? 1;
         if (page !== currentPageRef.current) {
-          onPageVisible(page);
+          onPageVisibleRef.current(page);
         }
       }
     });
-  }, [layoutMode, rowLayouts, rowHeights, onPageVisible, onScrollPositionChange]);
+  }, [layoutMode, rowLayouts, rowHeights]);
 
   useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
 
@@ -288,13 +308,13 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
         baseSizesRef.current.set(pageNumber, base);
         setSizesVersion((v) => v + 1);
       }
-      onPageSizeMeasured(pageNumber, base);
+      onPageSizeMeasuredRef.current(pageNumber, base);
       if (!firstPaintReportedRef.current) {
         firstPaintReportedRef.current = true;
-        onFirstPagePaint?.();
+        onFirstPagePaintRef.current?.();
       }
     },
-    [scale, rotation, onPageSizeMeasured, onFirstPagePaint]
+    [scale, rotation]
   );
 
   return (

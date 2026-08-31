@@ -166,3 +166,34 @@ export function getNextMatchIndex(
     return (currentIndex - 1 + totalMatches) % totalMatches;
   }
 }
+
+export interface SearchPageResult {
+  page_number: number;
+  text_content: string;
+}
+
+/**
+ * Searches a document via SQLite FTS5 backend strictly scoped to the version hash.
+ * Computes detailed highlight matches for matching pages.
+ */
+export async function searchDocumentTextFts(
+  documentId: string,
+  versionHash: string,
+  query: string,
+  options: SearchOptions = DEFAULT_SEARCH_OPTIONS
+): Promise<DetailedSearchMatch[]> {
+  const rawQuery = query.trim();
+  if (!rawQuery) return [];
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  const rawPages = await invoke<SearchPageResult[]>('db_search_document_text', {
+    documentId,
+    versionHash,
+    query: rawQuery,
+  });
+  const pageTexts: PageTextContent[] = rawPages.map((r) => ({
+    pageNumber: r.page_number,
+    text: r.text_content,
+  }));
+  return performAdvancedSearch(pageTexts, rawQuery, options);
+}

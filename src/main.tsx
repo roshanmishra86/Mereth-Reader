@@ -43,11 +43,12 @@ import {
   DEFAULT_PAGE_SIZE,
 } from "./utils/viewModeUtils";
 import { ReaderCanvas } from "./components/ReaderCanvas";
-import { SearchOptions, performAdvancedSearch, getNextMatchIndex, DEFAULT_SEARCH_OPTIONS } from "./utils/searchUtils";
+import { SearchOptions, performAdvancedSearch, getNextMatchIndex, DEFAULT_SEARCH_OPTIONS, searchDocumentTextFts, DetailedSearchMatch } from "./utils/searchUtils";
 import { loadVersionedPageTexts, persistVersionedPageTexts } from "./utils/pageTextIo";
 import { parseOutlineTree } from "./utils/navigationUtils";
 import { resolveShortcutAction } from "./utils/shortcutUtils";
 import { getPdfPageEmbeddedAnnotations } from "./utils/pdfViewer";
+import { durableIndexer, IndexingStatus } from "./utils/durableIndexing";
 import {
   ParsedEmbeddedAnnotation,
   EmbeddedImportPreview,
@@ -374,6 +375,7 @@ function App() {
   // The current version row's id — creation-time checksums bind to it and
   // re-anchoring switches it; null until registration/refresh completes.
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
+  const [readerReadyOpen, setReaderReadyOpen] = useState<{ documentId: string; generation: number } | null>(null);
   // Task 3.5: the user's semantic palette (FR-9.3), loaded from settings.
   const [palette, setPalette] = useState<PaletteEntry[]>(DEFAULT_ANNOTATION_PALETTE);
   // In-session undo (FR-9.8): the manager holds the inverse information; the
@@ -602,7 +604,24 @@ function App() {
 
         const dbJobs = await invoke<BackgroundJob[]>("db_get_jobs");
         if (dbJobs && dbJobs.length > 0) {
-          setJobs(dbJobs);
+          for (const job of dbJobs) {
+            if (job.status === 'running' || job.status === 'pending') {
+              const interruptedJob = {
+                ...job,
+                status: 'pending' as const,
+                error: 'Interrupted by app restart — resumes when document is opened',
+              };
+              jobQueueManager.loadJob(interruptedJob);
+              invoke("db_update_job", {
+                id: job.id,
+                status: "pending",
+                error: "Interrupted by app restart",
+              }).catch(() => {});
+            } else {
+              jobQueueManager.loadJob(job);
+            }
+          }
+          setJobs(jobQueueManager.getJobs());
         }
         dbReadyRef.current = true;
         setDbReady(true);
@@ -722,6 +741,7 @@ function App() {
     // newer document's session and the debounced save effect cannot persist one
     // document's page/zoom into another's session row.
     const openRequestId = ++openDocumentRequestId.current;
+    setReaderReadyOpen(null);
     // Clear document-scoped state synchronously. No annotation action can see
     // a version or selection inherited from the previous PDF while hydration
     // for this document is in flight.
@@ -792,8 +812,6 @@ function App() {
 
     if (openRequestId !== openDocumentRequestId.current) return;
 
-    setDestination("reader");
-
     if (doc.is_password_protected || doc.filepath.includes("password") || doc.filepath.includes("protected")) {
       setPasswordPromptDoc(updatedDoc);
     } else {
@@ -814,6 +832,7 @@ function App() {
     try {
       const check = await invoke<VersionCheckResult>("db_check_document_version_state", {
         documentId: doc.id,
+        openGeneration: openRequestId,
       });
       if (openRequestId !== openDocumentRequestId.current) return;
       setVersionStatus(check.status);
@@ -834,6 +853,13 @@ function App() {
       setVersionOffer(null);
       setVersionMismatchBannerVisible(false);
     }
+
+    // Mounting Reader starts loadPdfDocument immediately. Wait until the
+    // version check has populated the Rust single-read cache so that large
+    // PDFs cannot race ahead and trigger a second full disk read.
+    if (openRequestId !== openDocumentRequestId.current) return;
+    setReaderReadyOpen({ documentId: doc.id, generation: openRequestId });
+    setDestination("reader");
 
     // Task 3.4 (FR-9.4): creation-time checksums bind to the current version
     // row, so resolve the latest version and load the document's active
@@ -1029,6 +1055,8 @@ function App() {
         job.document_id !== docId &&
         (job.status === 'running' || job.status === 'pending')
       ) {
+        // Stop the actual extraction for the superseded document
+        durableIndexer.cancel(job.document_id);
         jobQueueManager.cancelJob(job.id, 'Superseded: another document became active');
       }
     }
@@ -1059,17 +1087,34 @@ function App() {
   }, [activeDocument?.id]);
 
   const handleCancelJob = (jobId: string) => {
+    const job = jobQueueManager.getJob(jobId);
     jobQueueManager.cancelJob(jobId, "Cancelled by user from background jobs drawer");
     setJobs(jobQueueManager.getJobs());
+    // Stop the actual extraction worker, not just the job record
+    if (job?.document_id) {
+      durableIndexer.cancel(job.document_id);
+    }
     // invoke() returns a Promise — a sync try/catch can't catch a rejection.
     invoke("db_update_job", { id: jobId, status: "cancelled", error: "Cancelled by user" }).catch(() => {});
   };
 
   const handleRestartJob = (jobId: string) => {
+    const job = jobQueueManager.getJob(jobId);
     jobQueueManager.restartJob(jobId);
     setJobs(jobQueueManager.getJobs());
+    // Cancel the current extraction run so the durable indexer startup effect
+    // detects idle/cancelled state and re-triggers fresh extraction.
+    if (job?.document_id) {
+      durableIndexer.cancel(job.document_id);
+    }
     // invoke() returns a Promise — a sync try/catch can't catch a rejection.
     invoke("db_update_job", { id: jobId, status: "pending", error: null }).catch(() => {});
+  };
+
+  const handleJobFailed = (jobId: string, error: string) => {
+    jobQueueManager.failJob(jobId, error);
+    setJobs(jobQueueManager.getJobs());
+    invoke("db_update_job", { id: jobId, status: "failed", error }).catch(() => {});
   };
 
   // Task 3.3: the re-anchoring offer actions. "Re-anchor" runs the quote-based
@@ -1405,7 +1450,7 @@ function App() {
                 onReturnToLibrary={handleReturnToLibrary}
                 onDeleteRecord={handleDeleteRecord}
               />
-            ) : (
+            ) : readerReadyOpen?.documentId === activeDocument.id ? (
               <Reader
                 activeAnnotation={activeAnnotation}
                 activeDocument={activeDocument}
@@ -1422,6 +1467,7 @@ function App() {
                 annotationsList={annotationsList}
                 currentVersionId={currentVersionId}
                 versionHash={activeFileHash}
+                openGeneration={readerReadyOpen.generation}
                 trashedAnnotations={trashedAnnotations}
                 palette={palette}
                 onAnnotationCreated={handleAnnotationCreated}
@@ -1442,6 +1488,7 @@ function App() {
                 activeDocumentJob={jobs.find((j) => j.id === activeExtractionJobId)}
                 onCancelJob={handleCancelJob}
                 onJobProgress={handleJobProgress}
+                onJobFailed={handleJobFailed}
                 onDismissScannedBanner={() => setScannedPdfBannerVisible(false)}
                 onDismissVersionMismatchBanner={handleDismissVersionMismatchBanner}
                 onReanchorAnnotations={handleReanchorAnnotations}
@@ -1460,7 +1507,7 @@ function App() {
                 onAddEvidenceToNote={handleAddAnnotationToNote}
                 onRememberAnnotation={handleRememberAnnotation}
               />
-            )}
+            ) : null}
           </>
         )}
         {destination === "library" && (
@@ -1500,7 +1547,7 @@ function App() {
       </section>
 
       {!readingOnly && <footer>{annotationsList.length} annotations · {notesList.length} notes <span /> All data stays on this device</footer>}
-      
+
       <ImportModal
         isOpen={importOpen}
         onClose={() => { setImportOpen(false); setInitialImportPath(null); }}
@@ -1577,6 +1624,7 @@ type ReaderProps = {
   currentVersionId: string | null;
   /** Fingerprint of the bytes currently loaded, including changed-in-place files. */
   versionHash: string | null;
+  openGeneration: number;
   /** Task 3.5: recoverable trash rows for the open document (FR-9.8). */
   trashedAnnotations: AnnotationRecord[];
   /** Task 3.5: the user's semantic palette (FR-9.3). */
@@ -1600,6 +1648,7 @@ type ReaderProps = {
   activeDocumentJob?: BackgroundJob;
   onCancelJob?: (jobId: string) => void;
   onJobProgress?: (jobId: string, processedPages: number) => void;
+  onJobFailed?: (jobId: string, error: string) => void;
   onDismissScannedBanner?: () => void;
   onDismissVersionMismatchBanner?: () => void;
   onReanchorAnnotations?: () => void;
@@ -1692,10 +1741,13 @@ function Reader(props: ReaderProps) {
   const [loadedPdf, setLoadedPdf] = useState<LoadedPdfInfo | null>(null);
   const [pdfLoadFailed, setPdfLoadFailed] = useState(false);
   const [pageTexts, setPageTexts] = useState<PageTextContent[]>([]);
-  const [extractionStatus, setExtractionStatus] = useState<'idle' | 'running' | 'done' | 'cancelled'>('idle');
+  const [indexedPageCount, setIndexedPageCount] = useState(0);
+  const [durableBatchVersion, setDurableBatchVersion] = useState(0);
+  const [extractionStatus, setExtractionStatus] = useState<IndexingStatus>('idle');
   const [pageCacheHydrated, setPageCacheHydrated] = useState(false);
   const [pageCacheWriteFailed, setPageCacheWriteFailed] = useState(false);
   const [cacheRebuildInFlight, setCacheRebuildInFlight] = useState(false);
+  const [cacheRebuildGeneration, setCacheRebuildGeneration] = useState(0);
   const [textExtractionFailures, setTextExtractionFailures] = useState<number[]>([]);
   // U20: corrupt-cache recovery — drop cached rows for this version and let
   // the normal background-extraction effect repopulate them from scratch.
@@ -1705,11 +1757,18 @@ function Reader(props: ReaderProps) {
     try {
       await invoke('db_clear_page_cache', { documentId: props.activeDocument.id, versionHash: props.versionHash });
       cachedPageNumbersRef.current = new Set();
+      durableIndexer.reset(props.activeDocument.id);
       setPageTexts([]);
-      setPageCacheHydrated(false);
+      // The cache was just cleared successfully, so an empty hydrated set is
+      // authoritative. Trigger the indexing effect directly rather than wait
+      // for the document/hash hydration effect, whose dependencies did not
+      // change during an in-place rebuild.
+      setPageCacheHydrated(true);
       setPageCacheWriteFailed(false);
       setTextExtractionFailures([]);
       setExtractionStatus('idle');
+      setIndexedPageCount(0);
+      setCacheRebuildGeneration((generation) => generation + 1);
     } catch {
       // Keep the banner visible; the user can retry.
     } finally {
@@ -1842,7 +1901,7 @@ function Reader(props: ReaderProps) {
 
     // Task 2.9 in-app gate mark: dev-only no-op unless VITE_PERF_MEASURE=1.
     perfMark(`load.start:${props.activeDocument.filepath.split("/").pop() ?? "unknown"}`);
-    loadPdfDocument(props.activeDocument.id).then((info) => {
+    loadPdfDocument(props.activeDocument.id, props.openGeneration).then((info) => {
       if (!isMounted) return;
       if (info) {
         setLoadedPdf(info);
@@ -1856,22 +1915,25 @@ function Reader(props: ReaderProps) {
       isMounted = false;
       extractionAbortRef.current?.abort();
     };
-  }, [props.activeDocument.id, props.activeDocument.filepath]);
+  }, [props.activeDocument.id, props.activeDocument.filepath, props.openGeneration]);
 
-  // Hydrate only text extracted from these exact source bytes. Older-version
-  // rows remain isolated and can never make changed PDFs appear searchable.
+  // Hydrate cached page numbers without copying 1,000+ page text strings into React state.
   useEffect(() => {
     if (!loadedPdf || !props.versionHash) return;
     const versionHash = props.versionHash;
     let cancelled = false;
-    void loadVersionedPageTexts(props.activeDocument.id, versionHash)
-      .then((cached) => {
+    invoke<number[]>("db_get_cached_page_numbers_for_version", {
+      documentId: props.activeDocument.id,
+      versionHash,
+    })
+      .then((cachedNums) => {
         if (cancelled) return;
-        cachedPageNumbersRef.current = new Set(cached.map((page) => page.pageNumber));
-        setPageTexts(cached);
+        const cachedSet = new Set(cachedNums);
+        cachedPageNumbersRef.current = cachedSet;
+        setIndexedPageCount(cachedNums.length);
         setPageCacheHydrated(true);
-        if (cached.length >= loadedPdf.numPages) {
-          setExtractionStatus('done');
+        if (cachedNums.length >= loadedPdf.numPages && loadedPdf.numPages > 0) {
+          setExtractionStatus("done");
           if (props.activeDocumentJob?.id) {
             props.onJobProgress?.(props.activeDocumentJob.id, loadedPdf.numPages);
           }
@@ -1880,70 +1942,54 @@ function Reader(props: ReaderProps) {
       .catch(() => {
         if (!cancelled) setPageCacheHydrated(true);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [loadedPdf, props.activeDocument.id, props.versionHash]);
 
-  // Background text extraction (FR-7.6): starts after the document renders,
-  // prioritizes the reading position, yields regularly, and reports real
-  // progress to the job record shown in the indexing banner.
+  // Durable application-level background text extraction (FR-7.6)
   useEffect(() => {
-    if (!loadedPdf || !props.versionHash || !firstPagePainted || !pageCacheHydrated || extractionStatus !== 'idle') return;
+    if (!loadedPdf || !props.versionHash || !firstPagePainted || !pageCacheHydrated) return;
+    const docId = props.activeDocument.id;
     const versionHash = props.versionHash;
+    const jobId = props.activeDocumentJob?.id ?? `indexing-${docId}`;
 
-    const controller = new AbortController();
-    extractionAbortRef.current = controller;
-    setExtractionStatus('running');
-    const jobId = props.activeDocumentJob?.id;
-    const pageWriteBatch: PageTextContent[] = [];
-    const flushPageWriteBatch = async () => {
-      if (pageWriteBatch.length === 0) return;
-      const pending = pageWriteBatch.splice(0, pageWriteBatch.length);
-      try {
-        await persistVersionedPageTexts(props.activeDocument.id, versionHash, pending);
-      } catch {
-        setPageCacheWriteFailed(true);
+    const unsubscribe = durableIndexer.subscribe(docId, (state) => {
+      setExtractionStatus(state.status);
+      setIndexedPageCount(state.processedPages);
+      setDurableBatchVersion(state.batchVersion);
+      if (props.onJobProgress) {
+        props.onJobProgress(jobId, state.processedPages);
       }
-    };
+      if (state.status === "failed") {
+        props.onJobFailed?.(jobId, state.error ?? "Text indexing failed");
+      }
+    });
 
-    extractPdfPageTexts(loadedPdf.doc, {
-      signal: controller.signal,
-      prioritizeFromPage: currentPageRef.current,
-      skipPageNumbers: cachedPageNumbersRef.current,
-      onPage: async (page) => {
-        setPageTexts((current) => {
-          const next = new Map(current.map((entry) => [entry.pageNumber, entry]));
-          next.set(page.pageNumber, page);
-          return [...next.values()].sort((a, b) => a.pageNumber - b.pageNumber);
-        });
-        pageWriteBatch.push(page);
-        if (pageWriteBatch.length >= 16) await flushPageWriteBatch();
-      },
-      onPageError: (pageNumber) => {
-        setTextExtractionFailures((current) => current.includes(pageNumber) ? current : [...current, pageNumber]);
-      },
-      onProgress: (processed, total) => {
-        // Task 2.9 in-app gate mark: dev-only no-op unless VITE_PERF_MEASURE=1.
-        perfMark(`extract.progress:${processed}:${total}`);
-        if (jobId && (processed % 5 === 0 || processed === total)) {
-          props.onJobProgress?.(jobId, processed);
-        }
-      },
-    })
-      .then(async (result) => {
-        await flushPageWriteBatch();
-        // Each page was already published as it completed. Keep partial search
-        // results available even when cancellation stops the remaining work.
-        setExtractionStatus(result.completed ? 'done' : 'cancelled');
-      })
-      .catch(() => {
-        setExtractionStatus('cancelled');
+    const currentState = durableIndexer.getState(docId);
+    const versionStale = durableIndexer.isStaleVersion(docId, versionHash);
+    const retryRequested = props.activeDocumentJob?.status === "pending" && currentState?.status === "failed";
+    if (versionStale || !currentState || currentState.status === "idle" || currentState.status === "cancelled" || retryRequested) {
+      void durableIndexer.startIndexing({
+        doc: loadedPdf.doc,
+        documentId: docId,
+        versionHash,
+        jobId,
+        totalPages: loadedPdf.numPages,
+        activePage: currentPageRef.current,
+        cachedPageNumbers: cachedPageNumbersRef.current,
+        batchSize: 16,
+        onJobProgress: props.onJobProgress,
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadedPdf, firstPagePainted, pageCacheHydrated, extractionStatus, props.activeDocument.id, props.versionHash]);
+    }
 
-  // Task 3.6 (FR-9.9): background scan for embedded (PDF-born) annotations.
-  // Batched and cancelled on document change; pages near the reading start
-  // are prioritized first (same window the text extractor uses).
+    return () => {
+      unsubscribe();
+    };
+  }, [loadedPdf, firstPagePainted, pageCacheHydrated, props.activeDocument.id, props.versionHash, props.activeDocumentJob?.status, cacheRebuildGeneration]);
+
+  // Task 3.6 (FR-9.9): cooperative background scan for embedded (PDF-born) annotations.
+  // Active reading window is scanned first; non-visible pages yield cooperatively.
   useEffect(() => {
     if (!loadedPdf || !firstPagePainted || !props.activeDocument) return;
     if (embeddedScanRef.current) embeddedScanRef.current.cancelled = true;
@@ -1954,11 +2000,41 @@ function Reader(props: ReaderProps) {
     const scan = { documentId: props.activeDocument.id, cancelled: false };
     embeddedScanRef.current = scan;
     const total = loadedPdf.numPages;
-    const order = prioritizePageWindow(total, 1, 3);
-    const BATCH = 6;
+    const order = prioritizePageWindow(total, currentPageRef.current, 3);
+    const initialCount = Math.min(order.length, 8);
+    const BATCH = 4;
+
     void (async () => {
-      for (let i = 0; i < order.length; i += BATCH) {
+      // 1. High-priority active reading window
+      for (let i = 0; i < initialCount; i += BATCH) {
         if (scan.cancelled) return;
+        const batch = order.slice(i, Math.min(i + BATCH, initialCount));
+        const results = await Promise.all(
+          batch.map(async (pageNumber): Promise<[number, ParsedEmbeddedAnnotation[]] | null> => {
+            if (scan.cancelled) return null;
+            return [pageNumber, await getPdfPageEmbeddedAnnotations(doc, pageNumber)];
+          })
+        );
+        if (scan.cancelled) return;
+        setEmbeddedByPage((prev) => {
+          const next = new Map(prev);
+          for (const entry of results) {
+            if (entry) next.set(entry[0], entry[1]);
+          }
+          return next;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+
+      // 2. Remaining pages scanned with cooperative idle delay.
+      // Yield to active text extraction to avoid competing for the pdf.js worker.
+      for (let i = initialCount; i < order.length; i += BATCH) {
+        if (scan.cancelled) return;
+        // Cooperatively wait while text extraction is actively running
+        while (durableIndexer.getState(scan.documentId)?.status === 'running') {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+          if (scan.cancelled) return;
+        }
         const batch = order.slice(i, i + BATCH);
         const results = await Promise.all(
           batch.map(async (pageNumber): Promise<[number, ParsedEmbeddedAnnotation[]] | null> => {
@@ -1974,25 +2050,24 @@ function Reader(props: ReaderProps) {
           }
           return next;
         });
-        if (i + BATCH < order.length) {
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
+        await new Promise((resolve) => setTimeout(resolve, 60));
       }
     })();
+
     return () => {
       scan.cancelled = true;
     };
-  }, [loadedPdf?.doc, loadedPdf?.numPages, firstPagePainted, props.activeDocument?.id]);
+  }, [loadedPdf?.doc, loadedPdf?.numPages, firstPagePainted, props.activeDocument?.id, embeddedImportOpen]);
 
-  // Job drawer cancel/restart drives the extraction abort controller.
+  // Job drawer cancel/restart drives the durable indexer singleton.
   const activeJobStatus = props.activeDocumentJob?.status;
   useEffect(() => {
     if (activeJobStatus === 'cancelled' || activeJobStatus === 'failed') {
-      extractionAbortRef.current?.abort();
+      durableIndexer.cancel(props.activeDocument.id);
     } else if (activeJobStatus === 'pending') {
       setExtractionStatus((s) => (s === 'cancelled' || s === 'done' ? 'idle' : s));
     }
-  }, [activeJobStatus]);
+  }, [activeJobStatus, props.activeDocument.id]);
 
   // Task 3.3 (FR-7.3): version registration follow-through, run once per open.
   // - "unregistered" documents (records created before 3.3, or first import
@@ -2008,8 +2083,9 @@ function Reader(props: ReaderProps) {
   const versionRegistrationInFlightRef = useRef<string | null>(null);
   useEffect(() => {
     const docId = props.activeDocument.id;
-    if (!loadedPdf) return;
-    if (versionRegistrationInFlightRef.current === docId) return;
+    const registrationKey = `${docId}:${props.openGeneration}`;
+    if (!loadedPdf || !firstPagePainted || !pageCacheHydrated) return;
+    if (versionRegistrationInFlightRef.current === registrationKey) return;
 
     const status = props.versionStatus;
     if (status === "missing") return;
@@ -2020,20 +2096,28 @@ function Reader(props: ReaderProps) {
       props.versionOffer.documentId === docId;
     const decision = props.reanchorDecision;
 
-    const shouldRegister =
+    const durableStatus = durableIndexer.getState(docId)?.status;
+    const extractionSettled =
+      extractionStatus !== "running" &&
+      extractionStatus !== "paused" &&
+      durableStatus !== "running" &&
+      durableStatus !== "paused";
+    const shouldRegister = extractionSettled && (
       status === "unregistered" ||
       (offerForThisDoc && status === "changed" && decision === "continue") ||
-      (offerForThisDoc && status === "changed" && decision === "reanchor" && extractionStatus !== "running");
+      (offerForThisDoc && status === "changed" && decision === "reanchor")
+    );
     if (!shouldRegister) return;
 
     let cancelled = false;
-    versionRegistrationInFlightRef.current = docId;
+    versionRegistrationInFlightRef.current = registrationKey;
     (async () => {
       try {
         const version = await invoke<DocumentVersionRecord>("db_register_document_version", {
           documentId: docId,
+          openGeneration: props.openGeneration,
         });
-        if (cancelled || versionRegistrationInFlightRef.current !== docId) return;
+        if (cancelled || versionRegistrationInFlightRef.current !== registrationKey) return;
 
         if (decision === "reanchor") {
           const annotations = await invoke<StoredAnnotation[]>(
@@ -2041,7 +2125,8 @@ function Reader(props: ReaderProps) {
             { documentId: docId, includeTrashed: false }
           );
           if (cancelled) return;
-          const pageTextByNumber = new Map(pageTexts.map((p) => [p.pageNumber, p.text]));
+          const versionTexts = await loadVersionedPageTexts(docId, version.sha256_hash);
+          const pageTextByNumber = new Map(versionTexts.map((p) => [p.pageNumber, p.text]));
           const plan = selectReanchorActions({
             annotations,
             newVersionId: version.id,
@@ -2066,13 +2151,15 @@ function Reader(props: ReaderProps) {
           loadedPdf.doc.numPages,
           (page) => getPdfPageBaseSize(loadedPdf.doc, page)
         );
-        if (cancelled || versionRegistrationInFlightRef.current !== docId) return;
+        if (cancelled || versionRegistrationInFlightRef.current !== registrationKey) return;
         await invoke("db_update_version_geometry", { versionId: version.id, geometry });
         if (cancelled) return;
         props.onVersionRegistered?.(docId);
       } catch (err) {
         console.error("Failed to register document version:", err);
-        versionRegistrationInFlightRef.current = null;
+        if (versionRegistrationInFlightRef.current === registrationKey) {
+          versionRegistrationInFlightRef.current = null;
+        }
       }
     })();
 
@@ -2081,7 +2168,10 @@ function Reader(props: ReaderProps) {
     };
   }, [
     loadedPdf,
+    firstPagePainted,
+    pageCacheHydrated,
     props.activeDocument.id,
+    props.openGeneration,
     props.versionStatus,
     props.versionOffer,
     props.reanchorDecision,
@@ -2145,13 +2235,48 @@ function Reader(props: ReaderProps) {
     totalPages,
   ]);
 
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(searchQuery);
+  const [ftsSearchMatches, setFtsSearchMatches] = useState<DetailedSearchMatch[] | null>(null);
+
+  useEffect(() => {
+    // Clear stale results immediately so previous matches don't show during debounce
+    setFtsSearchMatches(null);
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 150);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    const query = debouncedSearchQuery.trim();
+    if (!query) {
+      setFtsSearchMatches(null);
+      return;
+    }
+    let cancelled = false;
+    perfMark("search.start");
+    searchDocumentTextFts(props.activeDocument.id, props.versionHash ?? "", query, searchOptions)
+      .then((matches) => {
+        if (cancelled) return;
+        perfMark("search.end");
+        setFtsSearchMatches(matches);
+      })
+      .catch(() => {
+        if (!cancelled) setFtsSearchMatches(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedSearchQuery, searchOptions, props.activeDocument.id, props.versionHash, durableBatchVersion]);
+
   const searchMatches = useMemo(() => {
-    // Task 2.9 in-app gate marks: dev-only no-ops unless VITE_PERF_MEASURE=1.
+    if (ftsSearchMatches !== null) return ftsSearchMatches;
+    if (!searchQuery.trim()) return [];
     perfMark("search.start");
     const matches = performAdvancedSearch(pageTexts, searchQuery, searchOptions);
     perfMark("search.end");
     return matches;
-  }, [searchQuery, searchOptions, pageTexts]);
+  }, [ftsSearchMatches, searchQuery, searchOptions, pageTexts]);
 
   // A new query starts match traversal over, but never jumps the page on its
   // own — page movement happens only on explicit next/previous.
@@ -2180,6 +2305,7 @@ function Reader(props: ReaderProps) {
   const handlePageChange = (newPage: number, recordHistory = true) => {
     const validPage = Math.max(1, Math.min(newPage, totalPages));
     setCurrentPage(validPage);
+    durableIndexer.reprioritize(props.activeDocument.id, validPage);
     if (recordHistory) {
       setHistoryState((prev) => pushNavigationHistory(prev, validPage));
     }
@@ -2260,9 +2386,13 @@ function Reader(props: ReaderProps) {
     }
   }, []);
 
+  const handleFirstPagePaint = useCallback(() => setFirstPagePainted(true), []);
+  const handleOpenEmbeddedImport = useCallback(() => setEmbeddedImportOpen(true), []);
+
   // Scroll position persists via a trailing-edge timeout, so scrolling never
   // re-renders the reader per frame and the session write happens once.
   const handleScrollPositionChange = useCallback((top: number) => {
+    durableIndexer.notifyScrollActive();
     if (scrollSaveTimeoutRef.current) {
       window.clearTimeout(scrollSaveTimeoutRef.current);
     }
@@ -2816,7 +2946,7 @@ function Reader(props: ReaderProps) {
           searchOptions={searchOptions}
           onSearchOptionsChange={setSearchOptions}
           searchMatches={searchMatches}
-          indexedPages={pageTexts.length}
+          indexedPages={indexedPageCount}
           extractionStatus={extractionStatus}
           currentMatchIndex={currentMatchIndex}
           onNextMatch={handleNextMatch}
@@ -2978,7 +3108,7 @@ function Reader(props: ReaderProps) {
                 onViewportChange={handleViewportChange}
                 onPageSizeMeasured={handlePageSizeMeasured}
                 onScrollPositionChange={handleScrollPositionChange}
-                onFirstPagePaint={() => setFirstPagePainted(true)}
+                onFirstPagePaint={handleFirstPagePaint}
                 onCopySelection={handleCopySelection}
                 annotationsByPage={annotationsByPage}
                 annotationAssets={annotationAssets}
@@ -2986,7 +3116,7 @@ function Reader(props: ReaderProps) {
                 palette={props.palette}
                 onSelectAnnotation={props.setSelected}
                 embeddedByPage={embeddedOverlayByPage}
-                onOpenEmbeddedImport={() => setEmbeddedImportOpen(true)}
+                onOpenEmbeddedImport={handleOpenEmbeddedImport}
               />
             )}
           </RendererErrorBoundary>

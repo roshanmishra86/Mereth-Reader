@@ -146,6 +146,37 @@ describe('extractPdfPageTexts (background extraction pipeline)', () => {
     expect(published).toEqual([3, 4]);
   });
 
+  it('streams pages without retaining extracted text when requested', async () => {
+    const doc = createFakeDoc(6);
+    const published: number[] = [];
+    const result = await extractPdfPageTexts(doc, {
+      retainPages: false,
+      onPage: (page) => { published.push(page.pageNumber); },
+    });
+
+    expect(result.completed).toBe(true);
+    expect(result.pages).toEqual([]);
+    expect(published).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it('can bypass page caches for durable full-document extraction', async () => {
+    let textContentReads = 0;
+    const doc = {
+      numPages: 1,
+      getPage: async () => ({
+        getTextContent: async () => {
+          textContentReads++;
+          return { items: [{ str: 'uncached durable text' }] };
+        },
+      }),
+    } as unknown as Parameters<typeof extractPdfPageTexts>[0];
+
+    await extractPdfPageTexts(doc, { retainPages: false, cacheExtractedPages: false });
+    await extractPdfPageTexts(doc, { retainPages: false, cacheExtractedPages: false });
+
+    expect(textContentReads).toBe(2);
+  });
+
   it('continues after a page-local extraction failure and reports the page', async () => {
     const failures: number[] = [];
     const doc = {

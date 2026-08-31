@@ -221,14 +221,24 @@ impl Database {
       .ok_or_else(|| format!("Document not found: {document_id}"))?;
 
     let metadata = compute_file_metadata(&doc.filepath).map_err(|e| e.to_string())?;
+    let current = self.get_current_version(document_id)?;
+    self.register_document_version_with_metadata(document_id, &metadata, current)
+  }
+
+  /// Registers the next version of a document with precomputed file metadata and current version.
+  pub fn register_document_version_with_metadata(
+    &self,
+    document_id: &str,
+    metadata: &crate::import::FileMetadata,
+    current: Option<DocumentVersion>,
+  ) -> Result<DocumentVersion, String> {
     if !metadata.exists || metadata.sha256_hash.is_empty() {
       return Err(format!(
         "Cannot register a version for a missing file: {}",
-        doc.filepath
+        metadata.filepath
       ));
     }
 
-    let current = self.get_current_version(document_id)?;
     if let Some(current) = &current {
       if current.sha256_hash == metadata.sha256_hash {
         // The bytes on disk already match the referenced version — nothing to

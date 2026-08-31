@@ -57,6 +57,11 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
   const [textLayerFailed, setTextLayerFailed] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
 
+  const onRenderedRef = useRef(onRendered);
+  useEffect(() => {
+    onRenderedRef.current = onRendered;
+  });
+
   useEffect(() => {
     const canvas = canvasRef.current;
     const textLayer = textLayerRef.current;
@@ -77,7 +82,7 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
       if (result.bitmap === 'rendered') {
         setRenderedSize(result.dimensions);
         setTextLayerFailed(result.textLayer === 'failed');
-        onRendered?.(pageNumber, result.dimensions);
+        onRenderedRef.current?.(pageNumber, result.dimensions);
       } else if (result.bitmap === 'failed') {
         setFailed(true);
       }
@@ -87,7 +92,7 @@ export const PdfPageCanvas = memo(function PdfPageCanvas({
       isMounted = false;
       cancelCanvasRender(canvas);
     };
-  }, [doc, pageNumber, scale, rotation, onRendered, retryKey]);
+  }, [doc, pageNumber, scale, rotation, retryKey]);
 
   // --scale-factor feeds --total-scale-factor, which the text layer's span
   // sizing and the layer's own dimensions resolve against (pdf.js v6
