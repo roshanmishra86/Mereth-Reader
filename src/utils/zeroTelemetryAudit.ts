@@ -24,6 +24,9 @@ export const PROHIBITED_TELEMETRY_PACKAGES: readonly string[] = [
   "datadog",
 ] as const;
 
+export const ALLOWED_UPDATE_ENDPOINT =
+  'https://github.com/roshanmishra86/Mereth-Reader/releases/latest/download/latest.json';
+
 /**
  * Audits package dependencies, Tauri CSP, and IPC boundaries for zero silent tracking.
  */
@@ -57,6 +60,11 @@ export function auditZeroTelemetry(repoRoot: string): TelemetryAuditResult {
   if (fs.existsSync(tauriConfPath)) {
     const conf = JSON.parse(fs.readFileSync(tauriConfPath, "utf-8"));
     const csp: string = conf.app?.security?.csp || "";
+    const updaterEndpoints: unknown[] = conf.plugins?.updater?.endpoints || [];
+    for (const endpoint of updaterEndpoints) {
+      if (endpoint === ALLOWED_UPDATE_ENDPOINT) remoteEndpointsFound.push(String(endpoint));
+      else errors.push(`Unapproved updater endpoint: ${String(endpoint)}`);
+    }
 
     // Connect-src should either be absent (inherits default-src 'self') or restricted to 'self'
     if (csp.includes("connect-src") && (csp.includes("http:") || csp.includes("https:") || csp.includes("*"))) {

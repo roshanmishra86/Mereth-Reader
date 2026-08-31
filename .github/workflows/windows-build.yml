@@ -30,6 +30,27 @@ jobs:
             Write-Error "Tag ${{ github.ref_name }} does not match Tauri version $($config.version). Expected $expectedTag."
             exit 1
           }
+          $package = Get-Content "package.json" | ConvertFrom-Json
+          $cargoVersion = (Select-String -Path "src-tauri/Cargo.toml" -Pattern '^version = "([^"]+)"$' | Select-Object -First 1).Matches.Groups[1].Value
+          if ($package.version -ne $config.version -or $cargoVersion -ne $config.version) {
+            Write-Error "package.json, Cargo.toml, and tauri.conf.json versions must match."
+            exit 1
+          }
+          if ($config.plugins.updater.pubkey -like 'REPLACE_WITH_*') {
+            Write-Error "Replace the updater public-key sentinel in tauri.conf.json before releasing."
+            exit 1
+          }
+
+      - name: Require updater signing secrets
+        shell: pwsh
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNING_KEY) -or [string]::IsNullOrWhiteSpace($env:SIGNING_PASSWORD)) {
+            Write-Error "TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD are required."
+            exit 1
+          }
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -52,9 +73,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build installer and create GitHub Release
-        uses: tauri-apps/tauri-action@v0.6.2
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: Mereth Reader v__VERSION__
@@ -63,8 +86,39 @@ jobs:
 
             This personal-use build is currently unsigned, so Windows may display a SmartScreen warning.
           generateReleaseNotes: true
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           tauriScript: pnpm tauri
           args: --bundles nsis
+          updaterJsonPreferNsis: true
+          uploadUpdaterJson: true
+          uploadUpdaterSignatures: true
           releaseAssetNamePattern: Mereth-Reader_[version]_[arch]-setup.[ext]
+
+      - name: Validate draft updater assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $release = gh release view "${{ github.ref_name }}" --json isDraft,assets | ConvertFrom-Json
+          if (-not $release.isDraft) { Write-Error "Updater release must remain a draft for manual publication."; exit 1 }
+          $names = @($release.assets | ForEach-Object { $_.name })
+          if (-not ($names -contains 'latest.json')) { Write-Error "latest.json is missing."; exit 1 }
+          if (-not ($names | Where-Object { $_ -like '*.exe' })) { Write-Error "NSIS installer is missing."; exit 1 }
+          if (-not ($names | Where-Object { $_ -like '*.exe.sig' })) { Write-Error "Updater signature is missing."; exit 1 }
+
+          $assetDir = Join-Path $env:RUNNER_TEMP 'mereth-updater-assets'
+          New-Item -ItemType Directory -Force -Path $assetDir | Out-Null
+          gh release download "${{ github.ref_name }}" --pattern latest.json --dir $assetDir
+          $manifest = Get-Content (Join-Path $assetDir 'latest.json') | ConvertFrom-Json
+          if ($manifest.version -ne '${{ github.ref_name }}'.TrimStart('v')) { Write-Error "latest.json version does not match the tag."; exit 1 }
+          $platform = $manifest.platforms.'windows-x86_64-nsis'
+          if ($null -eq $platform) { $platform = $manifest.platforms.'windows-x86_64' }
+          if ($null -eq $platform -or [string]::IsNullOrWhiteSpace($platform.url) -or [string]::IsNullOrWhiteSpace($platform.signature)) {
+            Write-Error "latest.json lacks a signed Windows x64 NSIS platform entry."
+            exit 1
+          }
+          if ($platform.url -notlike 'https://github.com/roshanmishra86/Mereth-Reader/releases/download/*') {
+            Write-Error "latest.json contains an unexpected updater URL."
+            exit 1
+          }

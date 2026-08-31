@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Mereth Reader",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "dev.mereth.reader",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -27,6 +27,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["nsis"],
     "category": "Productivity",
     "shortDescription": "A calm, local-first PDF reader",
@@ -44,6 +45,13 @@
         "installMode": "currentUser",
         "displayLanguageSelector": false
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMyMTRDQzRBQ0U4NjYzNgpSV1EyWnVpc3hFd2hBd2JXd2djRTRPMVdEWDJKNEZhc0RYOWd6ejM0VExicklIeUZMRU1LRmRLeQo=",
+      "endpoints": ["https://github.com/roshanmishra86/Mereth-Reader/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
     }
   }
 }

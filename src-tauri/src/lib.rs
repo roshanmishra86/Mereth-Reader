@@ -1369,6 +1369,7 @@ pub fn run() {
     // that previously existed only as untested Rust logic.
     #[cfg(desktop)]
     {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             let route = route_launch_args(&argv);
             if let Some(window) = app.get_webview_window("main") {

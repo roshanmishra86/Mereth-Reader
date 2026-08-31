@@ -12,6 +12,7 @@ import type { SplitNoteResult } from '../utils/noteSplit';
 import { renderMarkdownToHtml } from '../utils/markdownRenderer';
 import { copyQuickCopy } from '../utils/quickCopy';
 import { listPromptsForSource } from '../utils/promptsIo';
+import { pendingWork } from '../utils/pendingWork';
 
 export interface NoteEditorProps {
   note: NoteRecord;
@@ -86,23 +87,24 @@ export const NoteEditor: React.FC<NoteEditorProps> = ({
       try {
         await onSave(id, newTitle, newBody);
         const parsed = extractWikiLinks(newBody);
-        try {
-          await syncNoteLinks(id, {
-            noteIds: parsed.targetNoteIds,
-            docIds: parsed.targetDocIds,
-            annIds: parsed.targetAnnIds,
-          });
-        } catch {
-          // sync failure non-blocking in dev
-        }
+        await syncNoteLinks(id, {
+          noteIds: parsed.targetNoteIds,
+          docIds: parsed.targetDocIds,
+          annIds: parsed.targetAnnIds,
+        });
         setSaveStatus('saved');
       } catch (err) {
         console.error('Save failed:', err);
         setSaveStatus('dirty');
+        throw err;
       }
     },
     [onSave]
   );
+
+  useEffect(() => pendingWork.register(`note:${note.id}`, async () => {
+    await autosaveRef.current.flush(note.id, persistEdits);
+  }), [note.id, persistEdits]);
 
   const handleTitleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const nextTitle = e.target.value;

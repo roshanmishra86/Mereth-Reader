@@ -36,7 +36,13 @@ export const TAURI_EXPECTED_CSP =
  * The minimal permitted capability list in src-tauri/capabilities/default.json.
  * Any additional capability must be explicitly audited and reviewed.
  */
-export const ALLOWED_TAURI_PERMISSIONS = ['core:default', 'dialog:allow-open'] as const;
+export const ALLOWED_TAURI_PERMISSIONS = [
+  'core:default',
+  'dialog:allow-open',
+  'updater:allow-check',
+  'updater:allow-download',
+  'updater:allow-install',
+] as const;
 
 /**
  * Reads the CSP actually declared in `src-tauri/tauri.conf.json` so the security

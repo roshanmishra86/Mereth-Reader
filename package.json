@@ -1,7 +1,7 @@
 {
   "name": "mereth-reader",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "packageManager": "pnpm@11.24.0",
   "scripts": {
@@ -16,6 +16,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2.9.1",
     "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-updater": "^2.10.0",
     "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^6.2.108",
     "react": "^19.0.0",

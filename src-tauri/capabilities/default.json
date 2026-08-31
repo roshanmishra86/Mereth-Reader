@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Capabilities used by the main Reader window.",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": ["core:default", "dialog:allow-open", "updater:allow-check", "updater:allow-download", "updater:allow-install"]
 }

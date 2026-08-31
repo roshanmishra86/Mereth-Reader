@@ -88,6 +88,17 @@ describe('Task 5.1 PDF & Webview Security Lockdown (PRD §15.3, FR-8.8, FR-12.14
     expect(audit.allowedPermissions).toEqual([...ALLOWED_TAURI_PERMISSIONS]);
   });
 
+  it('restricts updater traffic and commands to the signed GitHub release flow', () => {
+    const config = JSON.parse(fs.readFileSync(tauriConfPath, 'utf8'));
+    expect(config.plugins.updater.endpoints).toEqual([
+      'https://github.com/roshanmishra86/Mereth-Reader/releases/latest/download/latest.json',
+    ]);
+    expect(config.plugins.updater.windows.installMode).toBe('passive');
+    expect(config.bundle.createUpdaterArtifacts).toBe(true);
+    expect(ALLOWED_TAURI_PERMISSIONS).not.toContain('updater:allow-download-and-install');
+    expect(ALLOWED_TAURI_PERMISSIONS.some((permission) => permission.startsWith('process:'))).toBe(false);
+  });
+
   it('verifies document text is treated as data and control injection is sanitized (FR-12.14)', () => {
     const dirtyText = "Normal text\x00with null byte and\x1Bescape sequences\r\nand clean text.";
     const sanitized = sanitizeDocumentTextAsData(dirtyText);

@@ -177,6 +177,8 @@ import { DiagnosticExportModal } from "./components/DiagnosticExportModal";
 import { buildDiagnosticReport } from "./utils/diagnosticExport";
 import { DestinationConflictModal } from "./components/DestinationConflictModal";
 import { chooseNativeExportDestination } from "./utils/nativeExportDestination";
+import { SettingsUpdates, UpdateConsentDialog, UpdateToast, useUpdateCenter, type UpdateCenterModel } from './components/UpdateCenter';
+import { pendingWork } from './utils/pendingWork';
 import {
   checkDestination,
   resolveDestinationSafety,
@@ -248,6 +250,7 @@ function App() {
   const [activeDocument, setActiveDocument] = useState<DocumentRecord | null>(null);
   const documentsRef = useRef<DocumentRecord[]>([]);
   const dbReadyRef = useRef(false);
+  const [dbReady, setDbReady] = useState(false);
   const pendingLaunchRoutesRef = useRef<LaunchRoutePayload[]>([]);
   useEffect(() => { documentsRef.current = documents; }, [documents]);
   const [activeSession, setActiveSession] = useState<ReadingSessionState | null>(null);
@@ -602,6 +605,7 @@ function App() {
           setJobs(dbJobs);
         }
         dbReadyRef.current = true;
+        setDbReady(true);
         const pendingRoutes = pendingLaunchRoutesRef.current.splice(0);
         for (const route of pendingRoutes) handleLaunchRoutePayload(route);
       } catch {
@@ -1327,6 +1331,16 @@ function App() {
   }
 
   const activeJobsCount = jobs.filter((j) => j.status === 'running' || j.status === 'pending').length;
+  const updates = useUpdateCenter(dbReady);
+
+  useEffect(() => pendingWork.register('background-jobs', async () => {
+    const rebuildable = jobs.filter((job) => job.status === 'running' || job.status === 'pending');
+    await Promise.all(rebuildable.map((job) => invoke('db_update_job', {
+      id: job.id,
+      status: 'interrupted',
+      error: 'Interrupted for application update; safe to rebuild.',
+    })));
+  }), [jobs]);
 
   return (
     <main className={readingOnly ? "app reading-only" : "app"}>
@@ -1336,7 +1350,7 @@ function App() {
         <span className="titlebar-document">
           {destination === "reader" && activeDocument ? `${activeDocument.title}.pdf` : "Local-first PDF reader"}
         </span>
-        <span className="offline-status">Offline · no network activity</span>
+        <span className="offline-status">Local-first · zero telemetry</span>
       </header>
 
       {!readingOnly && (
@@ -1480,6 +1494,7 @@ function App() {
             onUpdateAppearance={handleUpdateAppearance}
             palette={palette}
             onSavePalette={handleSavePalette}
+            updates={updates}
           />
         )}
       </section>
@@ -1536,6 +1551,8 @@ function App() {
         url={externalLinkUrl}
         onClose={() => setExternalLinkUrl(null)}
       />
+      {dbReady && <UpdateConsentDialog model={updates} />}
+      <UpdateToast model={updates} />
     </main>
   );
 }
@@ -1637,6 +1654,26 @@ function Reader(props: ReaderProps) {
   const [rightPaneWidth, setRightPaneWidth] = useState<number>(
     props.activeSession?.right_pane_width_px || 284
   );
+
+  const flushReadingSession = useCallback(async () => {
+    const session = validateAndSanitizeReadingSession({
+      document_id: props.activeDocument.id,
+      current_page: currentPage,
+      zoom_mode: zoomMode,
+      zoom_scale: zoomScaleToPercentage(zoomScale),
+      scroll_top_px: scrollTopPx,
+      left_pane_open: props.leftOpen,
+      left_pane_width_px: leftPaneWidth,
+      right_pane_open: props.rightOpen,
+      right_pane_width_px: rightPaneWidth,
+      view_mode: layoutMode,
+      rotation,
+      updated_at: new Date().toISOString(),
+    }, DEFAULT_LAYOUT_BOUNDS, props.totalPages);
+    await invoke('db_save_reading_session', { session });
+  }, [props.activeDocument.id, props.leftOpen, props.rightOpen, props.totalPages, currentPage, zoomMode, zoomScale, scrollTopPx, leftPaneWidth, rightPaneWidth, layoutMode, rotation]);
+
+  useEffect(() => pendingWork.register(`reading-session:${props.activeDocument.id}`, flushReadingSession), [props.activeDocument.id, flushReadingSession]);
 
   const [isResizingLeft, setIsResizingLeft] = useState(false);
   const [isResizingRight, setIsResizingRight] = useState(false);
@@ -3756,6 +3793,7 @@ function SettingsView({
   onUpdateAppearance,
   palette,
   onSavePalette,
+  updates,
 }: {
   appearance: AppearancePreferences;
   onUpdateAppearance: <K extends keyof AppearancePreferences>(
@@ -3764,8 +3802,9 @@ function SettingsView({
   ) => void;
   palette: PaletteEntry[];
   onSavePalette: (palette: PaletteEntry[]) => void;
+  updates: UpdateCenterModel;
 }) {
-  const [settingTab, setSettingTab] = useState<'privacy' | 'shortcuts' | 'appearance' | 'annotations' | 'review' | 'export'>('privacy');
+  const [settingTab, setSettingTab] = useState<'privacy' | 'updates' | 'shortcuts' | 'appearance' | 'annotations' | 'review' | 'export'>('privacy');
   const [exportOpen, setExportOpen] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [backupJson, setBackupJson] = useState('');
@@ -3784,7 +3823,7 @@ function SettingsView({
 
   const diagnosticReport = buildDiagnosticReport(
     {
-      appVersion: "0.1.0",
+      appVersion: updates.version,
       platform: navigator.platform || "unknown",
       arch: "unknown",
       memoryRssMb: null,
@@ -3856,6 +3895,17 @@ function SettingsView({
         <button
           type="button"
           role="tab"
+          id="tab-updates"
+          aria-selected={settingTab === 'updates'}
+          aria-controls="settings-tabpanel"
+          className={`settings-tab-btn${settingTab === 'updates' ? ' selected-setting' : ''}`}
+          onClick={() => setSettingTab('updates')}
+        >
+          Updates
+        </button>
+        <button
+          type="button"
+          role="tab"
           id="tab-shortcuts"
           aria-selected={settingTab === 'shortcuts'}
           aria-controls="settings-tabpanel"
@@ -3910,7 +3960,9 @@ function SettingsView({
         </button>
       </aside>
       <article id="settings-tabpanel" role="tabpanel" aria-labelledby={`tab-${settingTab}`}>
-        {settingTab === 'shortcuts' ? (
+        {settingTab === 'updates' ? (
+          <SettingsUpdates model={updates} />
+        ) : settingTab === 'shortcuts' ? (
           <SettingsShortcuts />
         ) : settingTab === 'appearance' ? (
           <SettingsAppearance preferences={appearance} onUpdatePreference={onUpdateAppearance} />

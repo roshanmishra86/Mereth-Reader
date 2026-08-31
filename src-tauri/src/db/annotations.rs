@@ -1592,42 +1592,46 @@ mod tests {
     // Bulk-seed 10,000 rows through one prepared statement using the exact
     // 19-column shape the typed layer writes.
     {
-      let conn = db.conn.lock().unwrap();
-      let mut stmt = conn
-        .prepare(
-          "INSERT INTO annotations (
-             id, document_id, document_version_id, annotation_type, page_index,
-             page_label, rects_json, quote, prefix_text, suffix_text,
-             text_layer_checksum, comment, color, tags, deleted_at,
-             created_at, updated_at, provenance, checksum
-           ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
-        )
-        .unwrap();
-      for i in 0..10_000 {
-        stmt
-          .execute(params![
-            format!("seed-{i}"),
-            doc_id,
-            version_id,
-            "highlight",
-            0,
-            "1",
-            "[{\"x\":0.1,\"y\":0.2,\"width\":0.6,\"height\":0.04}]",
-            format!("Quoted passage {i} about the fox"),
-            "",
-            "",
-            Option::<String>::None,
-            "",
-            "claim",
-            "[]",
-            Option::<String>::None,
-            "2026-08-18T00:00:00Z",
-            "2026-08-18T00:00:00Z",
-            "user_authored",
-            format!("checksum-{i}"),
-          ])
+      let mut conn = db.conn.lock().unwrap();
+      let tx = conn.transaction().unwrap();
+      {
+        let mut stmt = tx
+          .prepare(
+            "INSERT INTO annotations (
+               id, document_id, document_version_id, annotation_type, page_index,
+               page_label, rects_json, quote, prefix_text, suffix_text,
+               text_layer_checksum, comment, color, tags, deleted_at,
+               created_at, updated_at, provenance, checksum
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+          )
           .unwrap();
+        for i in 0..10_000 {
+          stmt
+            .execute(params![
+              format!("seed-{i}"),
+              doc_id,
+              version_id,
+              "highlight",
+              0,
+              "1",
+              "[{\"x\":0.1,\"y\":0.2,\"width\":0.6,\"height\":0.04}]",
+              format!("Quoted passage {i} about the fox"),
+              "",
+              "",
+              Option::<String>::None,
+              "",
+              "claim",
+              "[]",
+              Option::<String>::None,
+              "2026-08-18T00:00:00Z",
+              "2026-08-18T00:00:00Z",
+              "user_authored",
+              format!("checksum-{i}"),
+            ])
+            .unwrap();
+        }
       }
+      tx.commit().unwrap();
       let count: i64 = conn
         .query_row("SELECT COUNT(*) FROM annotations", [], |r| r.get(0))
         .unwrap();

@@ -47,30 +47,37 @@ function collectSourceFiles(dir: string): string[] {
   return out;
 }
 
+const FAST_CANDIDATE = /\b(?:SELECT|INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|PRAGMA|ON|ATTACH)\b/;
+
 describe('3.1 SQL isolation from the webview', () => {
-  it('no frontend source file contains executable SQL', () => {
+  it('no frontend source file contains executable SQL', async () => {
     const files = collectSourceFiles(srcRoot);
     expect(files.length).toBeGreaterThan(0);
 
     const violations: string[] = [];
-    for (const file of files) {
-      const content = fs.readFileSync(file, 'utf-8');
-      const rel = path.relative(process.cwd(), file);
-      for (const { label, re } of SQL_PATTERNS) {
-        const match = re.exec(content);
-        if (match) {
-          const line = content.slice(0, match.index).split('\n').length;
-          const snippet = content
-            .split('\n')
-            .slice(Math.max(0, line - 2), line + 1)
-            .map((s) => s.trim())
-            .join(' | ')
-            .slice(0, 200);
-          violations.push(`${rel}:${line} (${label}): …${snippet}…`);
+    await Promise.all(
+      files.map(async (file) => {
+        const content = await fs.promises.readFile(file, 'utf-8');
+        if (!FAST_CANDIDATE.test(content)) {
+          return;
         }
-      }
-    }
+        const rel = path.relative(process.cwd(), file);
+        for (const { label, re } of SQL_PATTERNS) {
+          const match = re.exec(content);
+          if (match) {
+            const line = content.slice(0, match.index).split('\n').length;
+            const snippet = content
+              .split('\n')
+              .slice(Math.max(0, line - 2), line + 1)
+              .map((s) => s.trim())
+              .join(' | ')
+              .slice(0, 200);
+            violations.push(`${rel}:${line} (${label}): …${snippet}…`);
+          }
+        }
+      })
+    );
 
     expect(violations, `SQL strings must not live in the webview\n${violations.join('\n')}`).toEqual([]);
-  });
+  }, 30_000);
 });

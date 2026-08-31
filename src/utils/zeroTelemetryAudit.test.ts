@@ -13,6 +13,9 @@ describe("zeroTelemetryAudit", () => {
     expect(audit.clean).toBe(true);
     expect(audit.prohibitedPackagesFound).toEqual([]);
     expect(audit.cspAllowsOutboundFetch).toBe(false);
+    expect(audit.remoteEndpointsFound).toEqual([
+      'https://github.com/roshanmishra86/Mereth-Reader/releases/latest/download/latest.json',
+    ]);
     expect(audit.errors).toEqual([]);
   });
 
