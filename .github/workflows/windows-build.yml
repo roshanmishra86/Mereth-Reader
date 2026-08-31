@@ -118,7 +118,9 @@ jobs:
             Write-Error "latest.json lacks a signed Windows x64 NSIS platform entry."
             exit 1
           }
-          if ($platform.url -notlike 'https://github.com/roshanmishra86/Mereth-Reader/releases/download/*') {
+          $browserPattern = '^https://github\.com/roshanmishra86/Mereth-Reader/releases/download/'
+          $apiPattern = '^https://api\.github\.com/repos/roshanmishra86/Mereth-Reader/releases/assets/[0-9]+$'
+          if ($platform.url -notmatch $browserPattern -and $platform.url -notmatch $apiPattern) {
             Write-Error "latest.json contains an unexpected updater URL."
             exit 1
           }
