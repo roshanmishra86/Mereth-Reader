@@ -80,7 +80,8 @@ impl Database {
            FROM notes
            WHERE deleted_at IS NULL AND title LIKE ?1
            AND (?2 IS NULL OR note_type = ?2)
-           ORDER BY updated_at DESC",
+           ORDER BY updated_at DESC
+           LIMIT 50",
         )
         .map_err(|e| e.to_string())?;
 
@@ -112,7 +113,8 @@ impl Database {
            FROM notes
            WHERE deleted_at IS NULL AND body_markdown LIKE ?1
            AND (?2 IS NULL OR note_type = ?2)
-           ORDER BY updated_at DESC",
+           ORDER BY updated_at DESC
+           LIMIT 50",
         )
         .map_err(|e| e.to_string())?;
 
@@ -145,7 +147,8 @@ impl Database {
            JOIN notes n ON e.note_id = n.id
            WHERE n.deleted_at IS NULL AND e.quote LIKE ?1
            AND (?2 IS NULL OR n.note_type = ?2)
-           ORDER BY e.created_at DESC",
+           ORDER BY e.created_at DESC
+           LIMIT 50",
         )
         .map_err(|e| e.to_string())?;
 
@@ -178,7 +181,8 @@ impl Database {
            JOIN notes n ON e.note_id = n.id
            WHERE n.deleted_at IS NULL AND e.user_comment LIKE ?1 AND e.user_comment != ''
            AND (?2 IS NULL OR n.note_type = ?2)
-           ORDER BY e.created_at DESC",
+           ORDER BY e.created_at DESC
+           LIMIT 50",
         )
         .map_err(|e| e.to_string())?;
 
@@ -211,7 +215,8 @@ impl Database {
            JOIN notes n ON e.note_id = n.id
            WHERE n.deleted_at IS NULL AND e.tags LIKE ?1 AND e.tags != '[]'
            AND (?2 IS NULL OR n.note_type = ?2)
-           ORDER BY e.created_at DESC",
+           ORDER BY e.created_at DESC
+           LIMIT 50",
         )
         .map_err(|e| e.to_string())?;
 
@@ -340,5 +345,30 @@ pub mod tests {
     let tag_res = db.search_notes("retention", None).unwrap();
     assert_eq!(tag_res.len(), 1);
     assert_eq!(tag_res[0].text_role, "tag");
+  }
+
+  #[test]
+  fn test_search_notes_limit_50() {
+    let (db, _tmp) = test_db();
+
+    // Insert 55 notes with matching title
+    for i in 0..55 {
+      let note = Note {
+        id: format!("note-limit-{i}"),
+        note_type: "concept".to_string(),
+        title: format!("Retrieval Benchmark Note {i}"),
+        body_markdown: "Body".to_string(),
+        document_id: None,
+        deleted_at: None,
+        created_at: "2026-08-21T00:00:00Z".to_string(),
+        updated_at: "2026-08-21T00:00:00Z".to_string(),
+        provenance: "user_authored".to_string(),
+        original_provenance: None,
+      };
+      db.add_note(&note).unwrap();
+    }
+
+    let results = db.search_notes("Retrieval Benchmark", None).unwrap();
+    assert_eq!(results.len(), 50);
   }
 }

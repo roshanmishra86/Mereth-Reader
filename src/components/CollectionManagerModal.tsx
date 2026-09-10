@@ -23,6 +23,8 @@ export function CollectionManagerModal({
   const [editName, setEditName] = useState('');
   const [error, setError] = useState<string | null>(null);
 
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
+
   if (!isOpen) return null;
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -78,8 +80,6 @@ export function CollectionManagerModal({
     const filtered = collections.filter((c) => c.id !== id);
     onUpdateCollections(filtered);
   };
-
-  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>

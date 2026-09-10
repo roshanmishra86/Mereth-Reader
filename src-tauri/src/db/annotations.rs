@@ -385,6 +385,24 @@ impl Database {
     Ok(annotations)
   }
 
+  /// Lists annotations across the library for cross-source knowledge links.
+  /// Trashed rows stay excluded from link suggestions by default.
+  pub fn get_all_annotations(&self, include_trashed: bool) -> Result<Vec<Annotation>, String> {
+    let conn = self.conn.lock().unwrap();
+    let query = format!(
+      "SELECT {ANNOTATION_COLS} FROM annotations \
+       {where_clause} ORDER BY updated_at DESC, page_index ASC",
+      where_clause = if include_trashed { "" } else { "WHERE deleted_at IS NULL" }
+    );
+    let mut stmt = conn.prepare(&query).map_err(|e| e.to_string())?;
+    let annotations = stmt
+      .query_map([], map_row_to_annotation)
+      .map_err(|e| e.to_string())?
+      .filter_map(|row| row.ok())
+      .collect();
+    Ok(annotations)
+  }
+
   /// Updates only the user-editable fields. The quote, anchors, and geometry
   /// are immutable by design (FR-9.5): no update path touches them, so a
   /// comment edit can never alter the stored source excerpt.

@@ -4,6 +4,7 @@ import {
   formatWikiLink,
   renderWikiLinks,
 } from './noteLinks';
+import { renderInlineMarkdown } from './markdownRenderer';
 
 describe('noteLinks utility functions', () => {
   it('extracts note, document, and annotation IDs from markdown text', () => {
@@ -28,6 +29,12 @@ Duplicate mention [[mereth:note/note-123]].
     expect(formatWikiLink('doc', 'doc-1', 'Principles of Psychology')).toBe('[[mereth:doc/doc-1|Principles of Psychology]]');
   });
 
+  it('sanitizes delimiter characters and line breaks in generated labels', () => {
+    const link = formatWikiLink('ann', 'ann-1', 'First line ]]\n second line');
+    expect(link).toBe('[[mereth:ann/ann-1|First line second line]]');
+    expect(extractWikiLinks(link).targetAnnIds).toEqual(['ann-1']);
+  });
+
   it('renders wiki-links for display by resolving titles', () => {
     const md = 'Check [[mereth:note/note-1]] and [[mereth:note/note-2|Custom Label]] and [[mereth:note/unknown-id]].';
     const titles = new Map<string, string>([['note-1', 'Active Recall']]);
@@ -38,5 +45,20 @@ Duplicate mention [[mereth:note/note-123]].
     });
 
     expect(rendered).toBe('Check Active Recall and Custom Label and [note:unknown-id].');
+  });
+
+  it('renders canonical Mereth note links without duplicating the scheme', () => {
+    const html = renderInlineMarkdown('See [[mereth:note/note-123|Working Memory]].');
+    expect(html).toContain('href="mereth://note/note-123"');
+    expect(html).toContain('data-link-kind="note"');
+    expect(html).toContain('data-link-id="note-123"');
+    expect(html).not.toContain('mereth%3Anote');
+  });
+
+  it('renders annotation links as internal Mereth targets', () => {
+    const html = renderInlineMarkdown('Evidence [[mereth:ann/ann-7|Replication quote]].');
+    expect(html).toContain('href="mereth://ann/ann-7"');
+    expect(html).toContain('data-link-kind="ann"');
+    expect(html).toContain('data-link-id="ann-7"');
   });
 });

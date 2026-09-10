@@ -5,6 +5,8 @@
  */
 
 import { OutlineItem } from './pdfUtils';
+import type * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { resolvePdfDestination } from './pdfLinks';
 
 export interface ParsedOutlineNode {
   id: string;
@@ -97,6 +99,22 @@ export function parseOutlineTree(
       children,
     };
   });
+}
+
+/** Resolves named destinations and indirect page references through PDF.js. */
+export async function resolveOutlineTree(doc: pdfjsLib.PDFDocumentProxy, items: OutlineItem[], parentPath = 'node'): Promise<ParsedOutlineNode[]> {
+  return Promise.all(items.map(async (item, index) => {
+    const id = `${parentPath}-${index}`;
+    const target = item.pageNumber ? { kind: 'page' as const, pageNumber: item.pageNumber } : await resolvePdfDestination(doc, item.dest);
+    return {
+      id,
+      title: item.title || 'Untitled section',
+      destName: typeof item.dest === 'string' ? item.dest : undefined,
+      pageNumber: target.kind === 'page' ? target.pageNumber : undefined,
+      level: parentPath.split('-').length - 1,
+      children: await resolveOutlineTree(doc, item.items ?? [], id),
+    };
+  }));
 }
 
 /**

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { calculateVirtualWindow } from '../utils/pdfUtils';
+import { calculateVirtualWindow, computeLayoutOffsets } from '../utils/pdfUtils';
 import {
   buildReaderRows,
   findRowIndexForPage,
@@ -49,6 +49,8 @@ interface ReaderCanvasProps {
   // Task 3.6 embedded (PDF-born) annotations (FR-9.9)
   embeddedByPage?: Map<number, ParsedEmbeddedAnnotation[]>;
   onOpenEmbeddedImport?: () => void;
+  onNavigateLink?: (pageNumber: number) => void;
+  onExternalLink?: (url: string) => void;
 }
 
 interface RowLayout {
@@ -97,6 +99,8 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
     onSelectAnnotation,
     embeddedByPage,
     onOpenEmbeddedImport,
+    onNavigateLink,
+    onExternalLink,
   } = props;
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -108,6 +112,7 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
   // Natural page sizes measured from actual renders; estimates fill the rest.
   const baseSizesRef = useRef<Map<number, PageSize>>(new Map());
   const [sizesVersion, setSizesVersion] = useState(0);
+  const anchorRef = useRef<{ page: number; percentDown: number } | null>(null);
 
   const currentPageRef = useRef(currentPage);
   useEffect(() => {
@@ -196,7 +201,7 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
       top += height + ROW_GAP_PX;
       return layout;
     });
-  }, [rows, scale, rotation, representativeSize]);
+  }, [rows, representativeSize, rotation, scale, sizesVersion]);
 
   const totalHeight = useMemo(
     () => (rowLayouts.length > 0 ? rowLayouts[rowLayouts.length - 1].top + rowLayouts[rowLayouts.length - 1].height : 0),
@@ -208,6 +213,7 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
   );
 
   const rowHeights = useMemo(() => rowLayouts.map((row) => row.height), [rowLayouts]);
+  const rowOffsets = useMemo(() => computeLayoutOffsets(rowHeights, ROW_GAP_PX), [rowHeights]);
 
   const window_ = useMemo(
     () =>
@@ -216,9 +222,10 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
         viewportSize.height,
         rowHeights,
         ROW_GAP_PX,
-        layoutMode === 'single' ? 0 : 2
+        layoutMode === 'single' ? 0 : 2,
+        rowOffsets
       ),
-    [scrollTop, viewportSize.height, rowHeights, layoutMode]
+    [scrollTop, viewportSize.height, rowHeights, layoutMode, rowOffsets]
   );
 
   // rAF-throttled scroll handling: window recompute + page sync + persist.
@@ -232,18 +239,42 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
       setScrollTop(top);
       onScrollPositionChangeRef.current(top);
 
-      if (layoutMode !== 'single' && rowLayouts.length > 0) {
-        const win = calculateVirtualWindow(top, el.clientHeight, rowHeights, ROW_GAP_PX, 0);
+      if (rowLayouts.length > 0) {
+        const win = calculateVirtualWindow(top, el.clientHeight, rowHeights, ROW_GAP_PX, 0, rowOffsets);
         const firstVisible = win.visibleIndices[0] ?? 0;
-        const page = rowLayouts[firstVisible]?.leftPage ?? 1;
-        if (page !== currentPageRef.current) {
-          onPageVisibleRef.current(page);
+        const row = rowLayouts[firstVisible];
+        if (row) {
+          const percentDown = Math.max(0, Math.min(1, (top - row.top) / (row.height || 1)));
+          anchorRef.current = { page: row.leftPage, percentDown };
+        }
+        if (layoutMode !== 'single') {
+          const page = row?.leftPage ?? 1;
+          if (page !== currentPageRef.current) {
+            onPageVisibleRef.current(page);
+          }
         }
       }
     });
   }, [layoutMode, rowLayouts, rowHeights]);
 
   useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+
+  // Maintain reading position anchor across zoom and rotation changes
+  useEffect(() => {
+    if (!anchorRef.current || scrollToPageRequest !== null) return;
+    const el = scrollRef.current;
+    if (!el || rowLayouts.length === 0) return;
+    const targetRow =
+      rowLayouts.find(
+        (r) => r.leftPage === anchorRef.current!.page || r.rightPage === anchorRef.current!.page
+      ) ?? rowLayouts[0];
+    if (targetRow) {
+      const nextTop = targetRow.top + anchorRef.current.percentDown * targetRow.height;
+      el.scrollTop = nextTop;
+      setScrollTop(nextTop);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scale, rotation]);
 
   // Explicit navigation (toolbar page input, outline, search match, deep link).
   useEffect(() => {
@@ -351,6 +382,8 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
                 onSelectAnnotation={onSelectAnnotation}
                 embeddedItems={embeddedByPage?.get(row.leftPage)}
                 onOpenEmbeddedImport={onOpenEmbeddedImport}
+                onNavigateLink={onNavigateLink}
+                onExternalLink={onExternalLink}
               />
               {row.rightPage !== undefined && (
                 <PdfPageCanvas
@@ -367,6 +400,8 @@ export function ReaderCanvas(props: ReaderCanvasProps) {
                   onSelectAnnotation={onSelectAnnotation}
                   embeddedItems={embeddedByPage?.get(row.rightPage)}
                   onOpenEmbeddedImport={onOpenEmbeddedImport}
+                  onNavigateLink={onNavigateLink}
+                  onExternalLink={onExternalLink}
                 />
               )}
             </div>

@@ -94,3 +94,8 @@ for every later release; do not move or reuse published tags.
 - [planned-task-list.md](planned-task-list.md) — implementation tasks and their evidence
 - [PENDING_IMPLEMENTATION_PLAN.md](PENDING_IMPLEMENTATION_PLAN.md) — current recovery and release plan
 - [RELEASE_STATUS.md](RELEASE_STATUS.md) — release evidence and known limitations
+
+Node-only restart durability probe: `node scripts/r3r4_durable_recovery_probe.mjs`. It uses two child
+processes running the production autosave coordinator with an atomic rename + fsync file store. It
+verifies restart recovery and measures durable-save latency for that adapter, not Tauri/SQLite or
+browser localStorage durability. The in-process recovery gate reports its separate storage scope.

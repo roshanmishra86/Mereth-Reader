@@ -363,7 +363,13 @@ describe('real corpus evidence (embedded_annotations.pdf)', () => {
     encoding: 'utf-8',
     maxBuffer: 10 * 1024 * 1024,
   });
-  const result = JSON.parse(raw) as {
+  let parsedRaw: unknown;
+  try {
+    parsedRaw = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`Probe failed. Output: ${raw || '<empty>'}. Parse error: ${err}`);
+  }
+  const result = parsedRaw as {
     file: string;
     page: number;
     rotate: number;

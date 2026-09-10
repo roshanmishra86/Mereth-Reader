@@ -119,8 +119,8 @@ export const PageAnnotationLayer = memo(function PageAnnotationLayer({
                   }}
                   style={
                     annotation.annotation_type === 'underline'
-                      ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height, borderBottomColor: color, pointerEvents: 'auto', cursor: 'pointer' }
-                      : { left: rect.left, top: rect.top, width: rect.width, height: rect.height, background: withAlpha(color, 0.45), pointerEvents: 'auto', cursor: 'pointer' }
+                      ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height, borderBottomColor: withAlpha(color, 0.55), ['--annotation-active-color' as string]: withAlpha(color, 0.8), ['--annotation-selected-color' as string]: withAlpha(color, 0.9), pointerEvents: 'auto', cursor: 'pointer' }
+                      : { left: rect.left, top: rect.top, width: rect.width, height: rect.height, background: withAlpha(color, 0.2), ['--annotation-active-color' as string]: withAlpha(color, 0.3), ['--annotation-selected-color' as string]: withAlpha(color, 0.34), pointerEvents: 'auto', cursor: 'pointer' }
                   }
                   title={`${semanticLabel}: ${annotation.quote}`}
                 />

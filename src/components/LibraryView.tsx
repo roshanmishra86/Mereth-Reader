@@ -342,10 +342,6 @@ export function LibraryView({
                 )}
 
                 <div className="card-bottom-bar">
-                  <span className="fingerprint-hash" title={`SHA-256: ${doc.sha256_hash}`}>
-                    SHA: {doc.sha256_hash.substring(0, 10)}...
-                  </span>
-
                   <div className="card-action-buttons">
                     {doc.removed_at ? <>
                       <button className="button secondary micro" onClick={() => onRestoreDocument(doc.id)}>Restore</button>
@@ -362,9 +358,9 @@ export function LibraryView({
                     <button
                       className="button secondary micro"
                       onClick={() => setEditingDoc(doc)}
-                      title="Edit Metadata (FR-7.4)"
+                      title="Edit document metadata"
                     >
-                      ✏️ Edit
+                      <Icon name="edit" size={12} /> Edit
                     </button>
 
                     <button

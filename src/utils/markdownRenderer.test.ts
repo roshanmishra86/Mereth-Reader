@@ -52,12 +52,12 @@ describe('markdownRenderer utility (Task 4.3)', () => {
     it('renders wiki-links to mereth note deep links', () => {
       const html = renderInlineMarkdown('Refer to [[note-123|Core Findings]] for details.');
       expect(html).toContain(
-        '<a href="mereth://note/note-123" class="wiki-link" data-note-id="note-123">Core Findings</a>'
+        '<a href="mereth://note/note-123" class="wiki-link" data-link-kind="note" data-link-id="note-123" data-note-id="note-123">Core Findings</a>'
       );
 
       const htmlSelf = renderInlineMarkdown('See [[concept-note-456]]');
       expect(htmlSelf).toContain(
-        '<a href="mereth://note/concept-note-456" class="wiki-link" data-note-id="concept-note-456">concept-note-456</a>'
+        '<a href="mereth://note/concept-note-456" class="wiki-link" data-link-kind="note" data-link-id="concept-note-456" data-note-id="concept-note-456">concept-note-456</a>'
       );
     });
 

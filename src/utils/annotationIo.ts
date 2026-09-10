@@ -19,6 +19,13 @@ export async function loadDocumentAnnotations(
   return rows ?? [];
 }
 
+export async function loadAllAnnotations(): Promise<AnnotationRecord[]> {
+  const rows = await invoke<AnnotationRecord[]>('db_get_all_annotations', {
+    includeTrashed: false,
+  });
+  return rows ?? [];
+}
+
 export async function createAnnotation(annotation: AnnotationRecord): Promise<void> {
   await invoke('db_add_annotation', { annotation });
 }

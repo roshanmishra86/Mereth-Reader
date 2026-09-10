@@ -29,8 +29,12 @@ function runSpikeProbe(): {
     timeout: 90000,
     stdio: ['ignore', 'pipe', 'pipe']
   });
-  const jsonLine = out.trim().split('\n').pop() as string;
-  return JSON.parse(jsonLine);
+  const jsonLine = out.trim().split('\n').pop() || '';
+  try {
+    return JSON.parse(jsonLine);
+  } catch (err) {
+    throw new Error(`Probe failed. Output: ${out || '<empty>'}. Parse error: ${err}`);
+  }
 }
 
 describe('R0.2 Renderer Spike — pure helpers', () => {

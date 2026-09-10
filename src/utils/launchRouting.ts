@@ -119,15 +119,19 @@ export function parseDeepLinkTS(urlStr: string): DeepLinkParseResult {
     };
   }
 
-  if (pathSegments.length < 2) {
+  let id: string | undefined = pathSegments[1];
+  if (!id && queryPart) {
+    const params = new URLSearchParams(queryPart);
+    id = params.get('prompt') || params.get('id') || undefined;
+  }
+
+  if (!id) {
     return {
       valid: false,
       route: null,
       error: `Missing ID for deep link target '${kind}'`,
     };
   }
-
-  const id = pathSegments[1];
   let page: number | null = null;
   let annotationId: string | null = null;
 

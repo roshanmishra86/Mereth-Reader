@@ -3,6 +3,7 @@
  */
 
 import type { Provenance } from './evidenceTypes';
+import { validateClozeSyntax } from './cloze';
 
 export type PromptType = 'focused_qa' | 'explanation' | 'application' | 'contrast' | 'cloze';
 export type PromptStatus = 'draft' | 'adopted' | 'retired';
@@ -77,7 +78,6 @@ const BINARY_QUESTION_PATTERNS = [
 export function lintPromptQuality(prompt: Partial<ReviewPromptRecord>): PromptQualityLintResult {
   const issues: PromptQualityLintIssue[] = [];
   const question = (prompt.question || '').trim();
-  const answer = (prompt.answer || '').trim();
   const cue = (prompt.cue || '').trim();
   const type = prompt.prompt_type || 'focused_qa';
 
@@ -128,12 +128,14 @@ export function lintPromptQuality(prompt: Partial<ReviewPromptRecord>): PromptQu
 
   // 4. Cloze syntax validation
   if (type === 'cloze') {
-    const clozeRegex = /\{\{c\d+::[^\}]+?\}\}/g;
-    if (!clozeRegex.test(question) && !clozeRegex.test(answer)) {
-      issues.push({
-        level: 'warning',
-        message: 'Cloze deletion prompts require {{c1::hidden text}} syntax in question or passage.',
-      });
+    const clozeValidation = validateClozeSyntax(question);
+    if (!clozeValidation.isValid) {
+      for (const issue of clozeValidation.issues) {
+        issues.push({
+          level: 'warning',
+          message: issue,
+        });
+      }
     }
   }
 
@@ -158,13 +160,24 @@ export function createDefaultPromptRecord(params: {
   status?: PromptStatus;
 }): ReviewPromptRecord {
   const now = new Date().toISOString();
+  const promptType = params.prompt_type ?? 'focused_qa';
+  let answer = params.answer ?? '';
+
+  // Auto-derive answer for cloze deletions if not explicitly provided
+  if (promptType === 'cloze' && !answer.trim() && params.question) {
+    const clozeValidation = validateClozeSyntax(params.question);
+    if (clozeValidation.clozes.length > 0) {
+      answer = clozeValidation.primaryAnswer;
+    }
+  }
+
   return {
     id: params.id || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `prompt-${Date.now()}`),
     annotation_id: params.annotation_id ?? null,
     note_id: params.note_id ?? null,
-    prompt_type: params.prompt_type ?? 'focused_qa', // focused_qa is default; cloze is NOT default (FR-11.2)
+    prompt_type: promptType,
     question: params.question ?? '',
-    answer: params.answer ?? '',
+    answer,
     status: params.status ?? 'draft', // answer stays Draft until explicitly adopted (FR-11.5)
     adopted_at: params.status === 'adopted' ? now : null,
     cue: params.cue ?? '',

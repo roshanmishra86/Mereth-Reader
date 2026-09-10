@@ -6,6 +6,7 @@ export interface ReviewQueuePreferences {
   dailyCardLimit: number;
   dailyTimeLimitMinutes: number;
   queuePaused: boolean;
+  timeLimitSeconds?: number;
 }
 
 export const DEFAULT_REVIEW_QUEUE_PREFERENCES: ReviewQueuePreferences = {

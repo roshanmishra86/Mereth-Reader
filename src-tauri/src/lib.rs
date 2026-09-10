@@ -7,13 +7,14 @@ pub mod perf;
 pub mod security;
 
 use db::annotations::{Annotation, AnnotationAsset};
-use db::evidence::EvidenceBlock;
+use db::evidence::{CaptureToSourceNoteResult, EvidenceBlock};
 use db::note_links::{BacklinkRecord, NoteLink};
 use db::note_search::NoteSearchResult;
+use db::note_source_anchors::{NoteSourceAnchor, QuickNoteTransactionResult};
 use db::notes::{Note, NoteRevision, SplitNoteTransactionResult};
 use db::prompts::ReviewPrompt;
 use db::review::{
-    DueReviewPrompt, RecentReviewEvent, ReviewEvent, ReviewQueueStats, ReviewSchedule,
+    DailyReviewUsage, DueReviewPrompt, RecentReviewEvent, ReviewEvent, ReviewQueueStats, ReviewSchedule,
 };
 use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
 use db::{
@@ -210,6 +211,7 @@ fn db_init(app_handle: tauri::AppHandle, state: State<'_, AppState>) -> Result<(
         .map_err(|e| e.to_string())?;
 
     let database = Database::new(&app_dir)?;
+    export::restore::recover_interrupted_restores(&app_dir, &database)?;
     let mut lock = state.db.lock().unwrap();
     *lock = Some(database);
     Ok(())
@@ -607,6 +609,16 @@ fn db_get_annotations_for_document(
     let lock = state.db.lock().unwrap();
     let db = lock.as_ref().ok_or("Database not initialized")?;
     db.get_annotations_for_document(&document_id, include_trashed)
+}
+
+#[tauri::command]
+fn db_get_all_annotations(
+    include_trashed: bool,
+    state: State<'_, AppState>,
+) -> Result<Vec<Annotation>, String> {
+    let lock = state.db.lock().unwrap();
+    let db = lock.as_ref().ok_or("Database not initialized")?;
+    db.get_all_annotations(include_trashed)
 }
 
 #[tauri::command]
@@ -1033,6 +1045,18 @@ fn db_add_note(note: Note, state: State<'_, AppState>) -> Result<Note, String> {
 }
 
 #[tauri::command]
+fn db_create_quick_note(note: Note, anchor: NoteSourceAnchor, state: State<'_, AppState>) -> Result<QuickNoteTransactionResult, String> {
+    let lock = state.db.lock().unwrap();
+    lock.as_ref().ok_or("Database not initialized")?.create_quick_note(&note, &anchor)
+}
+
+#[tauri::command]
+fn db_list_note_source_anchors(document_id: String, state: State<'_, AppState>) -> Result<Vec<NoteSourceAnchor>, String> {
+    let lock = state.db.lock().unwrap();
+    lock.as_ref().ok_or("Database not initialized")?.list_note_source_anchors(&document_id)
+}
+
+#[tauri::command]
 fn db_get_note(id: String, state: State<'_, AppState>) -> Result<Option<Note>, String> {
     let lock = state.db.lock().unwrap();
     let db = lock.as_ref().ok_or("Database not initialized")?;
@@ -1130,6 +1154,16 @@ fn db_add_evidence_block(
     let lock = state.db.lock().unwrap();
     let db = lock.as_ref().ok_or("Database not initialized")?;
     db.add_evidence_block(&block)
+}
+
+#[tauri::command]
+fn db_capture_annotation_to_source_note(
+    block: EvidenceBlock,
+    state: State<'_, AppState>,
+) -> Result<CaptureToSourceNoteResult, String> {
+    let lock = state.db.lock().unwrap();
+    let db = lock.as_ref().ok_or("Database not initialized")?;
+    db.capture_annotation_to_source_note(&block)
 }
 
 #[tauri::command]
@@ -1343,6 +1377,35 @@ fn db_record_review_event(
 }
 
 #[tauri::command]
+fn db_undo_review_event(
+    event_id: String,
+    prompt_id: String,
+    cloze_index: Option<i64>,
+    previous_schedule: Option<ReviewSchedule>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let lock = state.db.lock().unwrap();
+    let db = lock.as_ref().ok_or("Database not initialized")?;
+    db.undo_review_event(
+        &event_id,
+        &prompt_id,
+        cloze_index.unwrap_or(0),
+        previous_schedule.as_ref(),
+    )
+}
+
+#[tauri::command]
+fn db_get_review_schedule(
+    prompt_id: String,
+    cloze_index: Option<i64>,
+    state: State<'_, AppState>,
+) -> Result<Option<ReviewSchedule>, String> {
+    let lock = state.db.lock().unwrap();
+    let db = lock.as_ref().ok_or("Database not initialized")?;
+    db.get_review_schedule(&prompt_id, cloze_index.unwrap_or(0))
+}
+
+#[tauri::command]
 fn db_get_review_history(
     prompt_id: String,
     state: State<'_, AppState>,
@@ -1350,6 +1413,13 @@ fn db_get_review_history(
     let lock = state.db.lock().unwrap();
     let db = lock.as_ref().ok_or("Database not initialized")?;
     db.get_review_history(&prompt_id)
+}
+
+#[tauri::command]
+fn db_get_daily_review_usage(start: String, end: String, state: State<'_, AppState>) -> Result<DailyReviewUsage, String> {
+    let lock = state.db.lock().unwrap();
+    let db = lock.as_ref().ok_or("Database not initialized")?;
+    db.get_daily_review_usage(&start, &end)
 }
 
 #[tauri::command]
@@ -1477,6 +1547,7 @@ pub fn run() {
             db_add_annotation,
             db_get_annotation,
             db_get_annotations_for_document,
+            db_get_all_annotations,
             db_update_annotation_fields,
             db_trash_annotation,
             db_restore_annotation,
@@ -1492,6 +1563,8 @@ pub fn run() {
             db_get_document_versions,
             db_reanchor_annotation_to_version,
             db_add_note,
+            db_create_quick_note,
+            db_list_note_source_anchors,
             db_get_note,
             db_list_notes,
             db_update_note,
@@ -1502,6 +1575,7 @@ pub fn run() {
             db_restore_note_revision,
             db_promote_scratch_note,
             db_add_evidence_block,
+            db_capture_annotation_to_source_note,
             db_get_note_evidence_blocks,
             db_update_evidence_block_order,
             db_update_evidence_block_comment,
@@ -1523,8 +1597,11 @@ pub fn run() {
             db_delete_review_prompt,
             db_get_due_review_prompts,
             db_record_review_event,
+            db_undo_review_event,
+            db_get_review_schedule,
             db_get_review_history,
             db_get_recent_review_events,
+            db_get_daily_review_usage,
             db_get_review_queue_stats,
             db_export_markdown_package,
             db_create_json_backup,

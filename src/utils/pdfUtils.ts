@@ -182,6 +182,21 @@ export interface VirtualWindow {
 }
 
 /**
+ * Precomputes layout prefix sum offsets: offsets[0] = 0, offsets[i+1] = offsets[i] + rowHeights[i] + gap.
+ */
+export function computeLayoutOffsets(rowHeights: number[], gap: number): number[] {
+  const count = rowHeights.length;
+  if (count === 0) return [];
+  const offsets = new Array<number>(count);
+  let currentOffset = 0;
+  for (let i = 0; i < count; i++) {
+    offsets[i] = currentOffset;
+    currentOffset += rowHeights[i] + gap;
+  }
+  return offsets;
+}
+
+/**
  * Calculates virtualized page window for long-scroll PDF rendering.
  * Keeps working set memory well below 250 MB cap by rendering only
  * visible pages plus a prefetch buffer.
@@ -191,7 +206,8 @@ export function calculateVirtualWindow(
   viewportHeight: number,
   pageHeights: number[],
   pageGap = 16,
-  prefetchBuffer = 2
+  prefetchBuffer = 2,
+  offsets?: number[]
 ): VirtualWindow {
   const totalPages = pageHeights.length;
   if (totalPages === 0) {
@@ -204,24 +220,37 @@ export function calculateVirtualWindow(
     };
   }
 
-  const offsets: number[] = new Array<number>(totalPages);
-  let currentOffset = 0;
-  for (let i = 0; i < totalPages; i++) {
-    offsets[i] = currentOffset;
-    currentOffset += pageHeights[i] + pageGap;
-  }
-  const totalHeight = Math.max(0, currentOffset - pageGap);
+  const resolvedOffsets = offsets ?? computeLayoutOffsets(pageHeights, pageGap);
+  const totalHeight = totalPages > 0
+    ? resolvedOffsets[totalPages - 1] + pageHeights[totalPages - 1]
+    : 0;
 
   const scrollBottom = scrollTop + viewportHeight;
   const visibleIndices: number[] = [];
 
-  for (let i = 0; i < totalPages; i++) {
-    const pageTop = offsets[i];
-    const pageBottom = pageTop + pageHeights[i];
+  // Binary search O(log N) for the first index whose bottom edge reaches or passes scrollTop
+  let low = 0;
+  let high = totalPages - 1;
+  let firstIdx = totalPages;
 
-    if (pageBottom >= scrollTop && pageTop <= scrollBottom) {
-      visibleIndices.push(i);
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const pageBottom = resolvedOffsets[mid] + pageHeights[mid];
+    if (pageBottom >= scrollTop) {
+      firstIdx = mid;
+      high = mid - 1;
+    } else {
+      low = mid + 1;
     }
+  }
+
+  // Scan forward until page top exceeds the visible scroll window
+  for (let i = firstIdx; i < totalPages; i++) {
+    const pageTop = resolvedOffsets[i];
+    if (pageTop > scrollBottom) {
+      break;
+    }
+    visibleIndices.push(i);
   }
 
   if (visibleIndices.length === 0 && totalPages > 0) {
@@ -251,7 +280,7 @@ export function calculateVirtualWindow(
     prefetchIndices,
     renderIndices,
     totalHeight,
-    offsets,
+    offsets: resolvedOffsets,
   };
 }
 
@@ -438,7 +467,10 @@ export function extractOrderedText(items: PDFTextItem[]): ExtractedOrderedText {
 
   confidence = Math.max(0.1, Math.min(1.0, Math.round(confidence * 100) / 100));
 
-  const isLowConfidence = confidence < 0.8 || overlapCount > 0;
+  // A small amount of glyph overlap is normal in many born-digital PDFs.
+  // Warn only when the accumulated evidence actually crosses the confidence
+  // threshold; otherwise ordinary 85–95% layouts become noisy false alarms.
+  const isLowConfidence = confidence < 0.8;
   let warning: string | undefined;
 
   if (isLowConfidence) {

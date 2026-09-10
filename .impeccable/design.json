@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-08-24T00:00:00Z",
+  "generatedAt": "2026-09-01T00:00:00Z",
   "title": "Design System: Mereth Reader",
   "extends": "../DESIGN.md",
   "extensions": {
@@ -114,6 +114,20 @@
       "description": "Calm, source-hidden retrieval ratings with tabular interval previews.",
       "html": "<fieldset class=\"ds-ratings\"><legend>Rate this attempt</legend><button>Again <small>10m</small></button><button>Hard <small>2d</small></button><button>Good <small>4d</small></button><button>Easy <small>8d</small></button></fieldset>",
       "css": ".ds-ratings{display:grid;grid-template-columns:repeat(4,1fr);padding:0;border:1px solid rgba(32,30,29,.4);background:#eae9e9}.ds-ratings legend{grid-column:1/-1;padding:0 0 8px;font:800 11px/1.2 Archivo,Arial,sans-serif;letter-spacing:.08em}.ds-ratings button{min-height:48px;border:0;border-right:1px solid rgba(32,30,29,.4);border-radius:0;background:transparent;color:#201e1d;font:800 11px/1.2 Archivo,Arial,sans-serif}.ds-ratings button:last-child{border-right:0}.ds-ratings button:hover{background:#d7d3d3}.ds-ratings button:focus-visible{outline:2px solid #ec3013;outline-offset:-2px}.ds-ratings small{display:block;color:#605d5d;font-variant-numeric:tabular-nums}"
+    },
+    {
+      "name": "Annotation Workspace",
+      "kind": "workspace",
+      "description": "A full-width evidence list that expands into a ruled list and detail drawer only after selection.",
+      "html": "<aside class=\"ds-workspace\"><section><button class=\"selected\"><small>Evidence · p. 18</small><q>Retrieval precedes source reveal.</q></button></section><article><header>Evidence · p. 18</header><blockquote>Retrieval precedes source reveal.</blockquote><textarea aria-label=\"Your note\"></textarea></article></aside>",
+      "css": ".ds-workspace{display:grid;grid-template-columns:320px 520px;background:#f3f2f2;border-left:2px solid rgba(32,30,29,.4);font:400 14px/1.55 Archivo,Arial,sans-serif}.ds-workspace section{border-right:2px solid rgba(32,30,29,.4)}.ds-workspace section button{width:100%;padding:12px;border:0;border-bottom:1px solid rgba(32,30,29,.4);background:#eae9e9;text-align:left}.ds-workspace article{padding:24px}.ds-workspace textarea{width:100%;min-height:120px;border:1px solid rgba(32,30,29,.4);background:#eae9e9}"
+    },
+    {
+      "name": "Quick Note Composer",
+      "kind": "dialog",
+      "description": "A focus-first, no-scrim capture surface linked to the current page or passage.",
+      "html": "<section class=\"ds-quick-note\" role=\"dialog\"><header><strong>Quick note</strong><span>p. 18</span></header><textarea autofocus placeholder=\"Capture a thought…\"></textarea><footer>Enter to save · Ctrl+Enter for a new line</footer></section>",
+      "css": ".ds-quick-note{width:420px;border:1px solid rgba(32,30,29,.4);border-top:2px solid #ec3013;background:#eae9e9;box-shadow:0 6px 18px rgba(45,43,43,.2);font:400 14px/1.55 Archivo,Arial,sans-serif}.ds-quick-note header,.ds-quick-note footer{display:flex;justify-content:space-between;padding:10px 12px}.ds-quick-note textarea{width:100%;min-height:96px;padding:12px;border:0;background:transparent}.ds-quick-note textarea:focus-visible{outline:2px solid #ec3013;outline-offset:-2px}"
     }
   ],
   "narrative": {
@@ -126,6 +140,8 @@
       { "name": "The Flat-by-Default Rule", "body": "Persistent surfaces use rules and tonal layers; shadows are reserved for paper, transient UI, and dialogs.", "section": "elevation" }
     ],
     "dos": ["Use 2px rules for major structure.", "Pair annotation color with semantic labels.", "Keep core controls reachable at 1024 by 640.", "Honor reduced motion and visible focus."],
-    "donts": ["Do not add gradients or ornamental effects.", "Do not introduce rounded cards or pill filters.", "Do not imitate Zotero's visual language.", "Do not present post-v1 features as disabled v1 promises."]
+    "donts": ["Do not add gradients or ornamental effects.", "Do not introduce rounded cards or pill filters.", "Do not imitate Zotero's visual language.", "Do not present post-v1 features as disabled v1 promises."],
+    "sourceAuthority": "DESIGN.md",
+    "sourceNarrativeVerbatim": "Creative North Star: “Quiet Research Desk”\n\nMereth is a focused work surface, not a decorative productivity dashboard. The document, its provenance, and the reader’s current thought command the hierarchy. Navigation and tools remain precise and discoverable, then visually recede."
   }
 }

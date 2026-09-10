@@ -6,11 +6,19 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { NoteRecord, NoteRevisionRecord, NoteType } from './notesTypes';
+import { NoteRecord, NoteRevisionRecord, NoteSourceAnchorRecord, NoteType } from './notesTypes';
 import type { NoteLinkRecord } from './noteLinks';
 
 export async function createNote(note: NoteRecord): Promise<NoteRecord> {
   return await invoke<NoteRecord>('db_add_note', { note });
+}
+
+export async function createQuickNote(note: NoteRecord, anchor: NoteSourceAnchorRecord): Promise<{ note: NoteRecord; source_anchor: NoteSourceAnchorRecord }> {
+  return invoke('db_create_quick_note', { note, anchor });
+}
+
+export async function listNoteSourceAnchors(documentId: string): Promise<NoteSourceAnchorRecord[]> {
+  return (await invoke<NoteSourceAnchorRecord[]>('db_list_note_source_anchors', { documentId })) ?? [];
 }
 
 export async function getNote(id: string): Promise<NoteRecord | null> {

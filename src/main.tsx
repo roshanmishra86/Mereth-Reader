@@ -1,7 +1,8 @@
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { perfMark } from "./perf/perfMark";
 import "./styles.css";
@@ -25,7 +26,7 @@ import {
 import { ImportModal } from "./components/ImportModal";
 import { Icon, IconName } from "./components/icons";
 import { MissingFileBanner } from "./components/MissingFileBanner";
-import { DeepLinkRoute } from "./utils/launchRouting";
+import { DeepLinkRoute, parseDeepLinkTS } from "./utils/launchRouting";
 import {
   measurePdfPageGeometry,
   selectReanchorActions,
@@ -45,7 +46,7 @@ import {
 import { ReaderCanvas } from "./components/ReaderCanvas";
 import { SearchOptions, performAdvancedSearch, getNextMatchIndex, DEFAULT_SEARCH_OPTIONS, searchDocumentTextFts, DetailedSearchMatch } from "./utils/searchUtils";
 import { loadVersionedPageTexts, persistVersionedPageTexts } from "./utils/pageTextIo";
-import { parseOutlineTree } from "./utils/navigationUtils";
+import { resolveOutlineTree, type ParsedOutlineNode } from "./utils/navigationUtils";
 import { resolveShortcutAction } from "./utils/shortcutUtils";
 import { getPdfPageEmbeddedAnnotations } from "./utils/pdfViewer";
 import { durableIndexer, IndexingStatus } from "./utils/durableIndexing";
@@ -65,6 +66,7 @@ import { LeftSidebar } from "./components/LeftSidebar";
 import { SettingsShortcuts } from "./components/SettingsShortcuts";
 import { LibraryView } from "./components/LibraryView";
 import { NotesView } from "./components/NotesView";
+import { NotesWorkspace } from "./components/NotesWorkspace";
 import { JobQueueDrawer } from "./components/JobQueueDrawer";
 import { DuplicateConfirmModal } from "./components/DuplicateConfirmModal";
 import { CollectionItem } from "./utils/libraryUtils";
@@ -155,22 +157,38 @@ import { createReviewPrompt, getReviewPrompt, listReviewPrompts, updateReviewPro
 import type { ReviewOutcome } from "./utils/fsrsScheduler";
 import { formatIntervalPreview, scheduleReview } from "./utils/fsrsScheduler";
 import {
+  clearActiveReviewSession,
   createReviewSession,
+  getActiveReviewSession,
+  pruneReviewSessionQueue,
+  reconcileReviewSession,
+  requeueCardForRelearning,
   revealCurrentCard,
+  rewindReviewSession,
+  setActiveReviewSession,
   submitCurrentReview,
   updateUserResponse,
+  formatReviewPromptLink,
+  type ReviewSessionCard,
+  type ReviewSessionState,
 } from "./utils/reviewSession";
+import { ReviewUndoStack, undoReviewEvent, defaultReviewDb } from "./utils/reviewUndo";
+import { renderClozeCard, getUniqueClozeIndices } from "./utils/cloze";
 import type { DueReviewPromptRecord, ReviewQueueStats } from "./utils/reviewIo";
-import { getDueReviewPrompts, getReviewHistory, getReviewQueueStats, getRecentReviewEvents, recordReviewEvent } from "./utils/reviewIo";
+import { getDailyReviewUsage, getDueReviewPrompts, getReviewHistory, getReviewQueueStats, getRecentReviewEvents, getReviewSchedule, recordReviewEvent, undoReviewEventIpc } from "./utils/reviewIo";
+import { limitReviewSession } from "./utils/reviewSession";
 import type { RecentReviewEventRecord } from "./utils/reviewIo";
 import { PromptRepairModal } from "./components/PromptRepairModal";
 import { SettingsReview } from "./components/SettingsReview";
-import type { PromptRepairResult } from "./utils/promptRepair";
-import { hasRepeatedFailures } from "./utils/promptRepair";
-import { applyQueueControl } from "./utils/queueControls";
-import { createNote, listNotes } from "./utils/notesIo";
-import { createDefaultNoteRecord } from "./utils/notesTypes";
+import { hasRepeatedFailures, type PromptRepairResult } from "./utils/promptRepair";
+import { applyQueueControl, DEFAULT_REVIEW_QUEUE_PREFERENCES, type ReviewQueuePreferences } from "./utils/queueControls";
+const REVIEW_QUEUE_PREFERENCES_SETTING_KEY = "review_queue_preferences";
+import { createNote, createQuickNote, listNotes, listNoteSourceAnchors, trashNote, updateNote } from "./utils/notesIo";
+import { createDefaultNoteRecord, quickNoteTitle, isAutoDerivedTitle, type NoteRecord, type NoteSourceAnchorRecord, type QuickNoteSourceSnapshot } from "./utils/notesTypes";
+import { AutosaveCoordinator, flushAllPendingSaves, getRecoverableDraft, registerPendingSaveHandler } from "./utils/noteRevisions";
+import { QuickNoteComposer } from "./components/QuickNoteComposer";
 import { SessionSynthesisModal } from "./components/SessionSynthesisModal";
+import { renderMarkdownToHtml } from "./utils/markdownRenderer";
 import { resolveDeepLinkUiAction } from "./utils/deepLinkRouter";
 import { ExportModal, type ExportFormat } from "./components/ExportModal";
 import { RestoreBackupModal } from "./components/RestoreBackupModal";
@@ -187,7 +205,7 @@ import {
   type DestinationSnapshot,
 } from "./utils/destinationSafety";
 
-type Destination = "library" | "reader" | "notes" | "review" | "settings";
+type Destination = "library" | "reader" | "notes" | "knowledge" | "review" | "settings";
 
 interface LaunchRoutePayload {
   is_single_instance?: boolean;
@@ -210,6 +228,7 @@ const nav = [
   ["library", "Library", "library"],
   ["reader", "Reader", "reader"],
   ["notes", "Notes", "notes"],
+  ["knowledge", "Knowledge", "knowledge"],
   ["review", "Review", "review"],
 ] as const;
 
@@ -280,10 +299,22 @@ function App() {
     const handleDocumentClick = (e: MouseEvent) => {
       const target = (e.target as HTMLElement | null)?.closest('a');
       if (!target) return;
+
+      // Let NoteEditor.handlePreviewClick handle wiki-links
+      if (target.closest('a.wiki-link[data-link-id]') || target.classList.contains('wiki-link')) {
+        return;
+      }
+
       const href = target.getAttribute('href');
       if (!href) return;
-      if (href.startsWith('#') || href.startsWith('mereth://')) {
-        return; // Handled internally
+      if (href.startsWith('#')) return;
+      if (href.startsWith('mereth://')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const parsed = parseDeepLinkTS(href);
+        if (parsed.route) handleLaunchRoutePayload({ deep_link: parsed.route });
+        else setOperationError(parsed.error ?? 'Invalid internal link.');
+        return;
       }
       e.preventDefault();
       e.stopPropagation();
@@ -372,6 +403,10 @@ function App() {
   const [trashedAnnotations, setTrashedAnnotations] = useState<AnnotationRecord[]>([]);
   const [notesList, setNotesList] = useState<Array<{ id: string; title: string; type: string }>>([]);
   const [reviewPromptsList] = useState<Array<{ id: string; prompt: string }>>([]);
+  const [activeReviewSessionState, setActiveReviewSessionState] = useState<ReviewSessionState | null>(() => getActiveReviewSession());
+  const handleReviewSessionChange = useCallback((s: ReviewSessionState | null) => {
+    setActiveReviewSessionState(s);
+  }, []);
   // The current version row's id — creation-time checksums bind to it and
   // re-anchoring switches it; null until registration/refresh completes.
   const [currentVersionId, setCurrentVersionId] = useState<string | null>(null);
@@ -385,7 +420,7 @@ function App() {
   const [undoCount, setUndoCount] = useState(0);
 
   const activeAnnotation = useMemo(
-    () => annotationsList.find((annotation) => annotation.id === selected) ?? annotationsList[0] ?? null,
+    () => selected ? annotationsList.find((annotation) => annotation.id === selected) ?? null : null,
     [selected, annotationsList],
   );
 
@@ -427,7 +462,7 @@ function App() {
         }
       } else if (action.destination === "notes") {
         setSelectedNoteId(action.noteId ?? null);
-        setDestination("notes");
+        setDestination("knowledge");
       } else if (action.destination === "review") {
         setSelectedReviewPromptId(action.reviewPromptId ?? null);
         setDestination("review");
@@ -452,37 +487,79 @@ function App() {
 
   const handleAddAnnotationToNote = async (annotation: AnnotationRecord) => {
     if (!activeDocument) return;
+    setOperationError(null);
+    const evidenceBlock = createEvidenceBlockFromAnnotation({
+      noteId: '',
+      annotation,
+      document: activeDocument,
+      pageIndex: annotation.page_index,
+      pageLabel: annotation.page_label,
+      sourceKind: annotation.annotation_type === "area" ? "area_image" : "quote",
+      quote: annotation.quote,
+      color: annotation.color,
+      tags: annotation.tags,
+      userComment: annotation.comment,
+    });
+
     try {
-      const notes = await listNotes({ includeTrash: false });
-      let targetNote = notes.find((n) => n.document_id === activeDocument.id && n.deleted_at === null);
-      if (!targetNote) {
-        const newNote = createDefaultNoteRecord({
-          note_type: "source",
-          title: `${activeDocument.title} — Reading Notes`,
-          document_id: activeDocument.id,
-          body_markdown: `# ${activeDocument.title}\n\n*By ${activeDocument.author || "Unknown"}*\n\n## Excerpts & Notes\n`,
-        });
-        targetNote = await createNote(newNote);
-      }
-
-      const evidenceBlock = createEvidenceBlockFromAnnotation({
-        noteId: targetNote.id,
-        annotation,
-        document: activeDocument,
-        pageIndex: annotation.page_index,
-        pageLabel: annotation.page_label,
-        sourceKind: annotation.annotation_type === "area" ? "area_image" : "quote",
-        quote: annotation.quote,
-        color: annotation.color,
-        tags: annotation.tags,
-        userComment: annotation.comment,
+      type CaptureToSourceNoteResult = {
+        note: NoteRecord;
+        evidence_block: EvidenceBlockRecord;
+      };
+      const result = await invoke<CaptureToSourceNoteResult>('db_capture_annotation_to_source_note', {
+        block: evidenceBlock,
       });
+      if (result?.note?.id) {
+        setSelectedNoteId(result.note.id);
+        return;
+      }
+      throw new Error('Capture returned no source note.');
+    } catch (invokeErr) {
+      if (isTauri()) {
+        console.error("Atomic capture failed; no partial capture was attempted:", invokeErr);
+        setOperationError(`Could not capture annotation: ${invokeErr instanceof Error ? invokeErr.message : String(invokeErr)}`);
+        return;
+      }
+      console.warn("Using non-Tauri capture fallback:", invokeErr);
+      try {
+        const notes = await listNotes({ includeTrash: false });
+        let targetNote = notes.find((n) => n.note_type === 'source' && n.document_id === activeDocument.id && n.deleted_at === null);
+        if (!targetNote) {
+          const newNote = createDefaultNoteRecord({
+            note_type: "source",
+            title: `${activeDocument.title} — Reading Notes`,
+            document_id: activeDocument.id,
+            body_markdown: `# ${activeDocument.title}\n\n*By ${activeDocument.author || "Unknown"}*\n\n## Excerpts & Notes\n`,
+          });
+          targetNote = await createNote(newNote);
+        }
 
-      await addEvidenceBlock(evidenceBlock);
-      setSelectedNoteId(targetNote.id);
-      setDestination("notes");
-    } catch (err) {
-      console.error("Failed to add annotation to note:", err);
+        const fallbackBlock: EvidenceBlockRecord = {
+          ...evidenceBlock,
+          note_id: targetNote.id,
+        };
+
+        await addEvidenceBlock(fallbackBlock);
+        setSelectedNoteId(targetNote.id);
+      } catch (fallbackErr) {
+        console.error("Failed to add annotation to note via fallback:", fallbackErr);
+        setOperationError(`Could not capture annotation: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`);
+      }
+    }
+  };
+
+  // Review preferences state (FR-11.10, FR-11.11)
+  const [reviewPreferences, setReviewPreferences] = useState<ReviewQueuePreferences>(DEFAULT_REVIEW_QUEUE_PREFERENCES);
+
+  const handleUpdateReviewPreferences = async (preferences: ReviewQueuePreferences) => {
+    setReviewPreferences(preferences);
+    try {
+      await invoke("db_save_settings", {
+        key: REVIEW_QUEUE_PREFERENCES_SETTING_KEY,
+        value: JSON.stringify(preferences),
+      });
+    } catch {
+      // Dev environment fallback
     }
   };
 
@@ -539,6 +616,33 @@ function App() {
     };
   }, [appearance]);
 
+  // Intercept window close to ensure pending note drafts are flushed durably
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    try {
+      const win = getCurrentWindow();
+      win
+        .onCloseRequested(async (event) => {
+          event.preventDefault();
+          try {
+            await flushAllPendingSaves();
+            await win.destroy();
+          } catch (err) {
+            console.error('Failed to flush pending note saves during window close:', err);
+          }
+        })
+        .then((u) => {
+          unlisten = u;
+        })
+        .catch(() => {});
+    } catch {
+      // Browser preview fallback
+    }
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+
   // Deterministic 1024x640 pane collapse order resolution on window resize
   useEffect(() => {
     const handleWindowResize = () => {
@@ -579,6 +683,21 @@ function App() {
             // table as one JSON value; corrupt values fall back to defaults.
             const paletteRow = settingRows.find((row) => row.key === ANNOTATION_PALETTE_SETTING_KEY);
             if (paletteRow) setPalette(parsePalette(paletteRow.value));
+            const reviewPrefRow = settingRows.find((row) => row.key === REVIEW_QUEUE_PREFERENCES_SETTING_KEY);
+            if (reviewPrefRow) {
+              try {
+                const parsed = JSON.parse(reviewPrefRow.value) as Partial<ReviewQueuePreferences>;
+                if (parsed && typeof parsed === 'object') {
+                  setReviewPreferences((prev) => ({
+                    dailyCardLimit: typeof parsed.dailyCardLimit === 'number' ? parsed.dailyCardLimit : prev.dailyCardLimit,
+                    dailyTimeLimitMinutes: typeof parsed.dailyTimeLimitMinutes === 'number' ? parsed.dailyTimeLimitMinutes : prev.dailyTimeLimitMinutes,
+                    queuePaused: typeof parsed.queuePaused === 'boolean' ? parsed.queuePaused : prev.queuePaused,
+                  }));
+                }
+              } catch {
+                // Keep default
+              }
+            }
           }
         } catch {
           // Fallback if settings table unpopulated
@@ -1429,6 +1548,14 @@ function App() {
 
       <section className="workspace">
         {operationError && <div className="banner warning app-operation-error" role="alert">{operationError}<button className="icon-button" onClick={() => setOperationError(null)} aria-label="Dismiss error"><Icon name="x" /></button></div>}
+        {destination !== "review" && activeReviewSessionState && (activeReviewSessionState.step === "prompt" || activeReviewSessionState.step === "revealed") && (
+          <div className="banner info active-review-banner" role="status">
+            <span>Review session in progress (Card {activeReviewSessionState.currentIndex + 1} of {activeReviewSessionState.queue.length})</span>
+            <button className="button micro primary" onClick={() => setDestination("review")}>
+              Return to Review
+            </button>
+          </div>
+        )}
         {destination === "reader" && (
           <>
             {!activeDocument ? (
@@ -1506,6 +1633,11 @@ function App() {
                 rememberedAnnotationIds={rememberedPromptAnnotationIds}
                 onAddEvidenceToNote={handleAddAnnotationToNote}
                 onRememberAnnotation={handleRememberAnnotation}
+                onExternalLink={setExternalLinkUrl}
+                onOpenNoteInKnowledge={(noteId) => {
+                  setSelectedNoteId(noteId);
+                  setDestination("knowledge");
+                }}
               />
             ) : null}
           </>
@@ -1529,12 +1661,54 @@ function App() {
           />
         )}
         {destination === "notes" && (
+          <NotesWorkspace
+            document={activeDocument}
+            annotations={annotationsList}
+            rememberedAnnotationIds={rememberedPromptAnnotationIds}
+            onOpenReader={() => setDestination("reader")}
+            onLinkAnnotation={(annotation) => void handleAddAnnotationToNote(annotation)}
+            onRememberAnnotation={handleRememberAnnotation}
+            onOpenAnnotation={(annotation) => {
+              setSelected(annotation.id);
+              setTargetPage(annotation.page_index + 1);
+              setDestination("reader");
+            }}
+          />
+        )}
+        {destination === "knowledge" && (
           <NotesView
             initialSelectedNoteId={selectedNoteId}
             onNavigateToSource={handleNavigateToSource}
+            onNavigateToAnnotation={(annotation) => {
+              const doc = documents.find((item) => item.id === annotation.document_id);
+              if (!doc) return;
+              openDocument(doc);
+              setSelected(annotation.id);
+              setTargetPage(annotation.page_index + 1);
+              setDestination("reader");
+            }}
           />
         )}
-        {destination === "review" && <ReviewView initialPromptId={selectedReviewPromptId} />}
+        {destination === "review" && (
+          <ReviewView
+            initialPromptId={selectedReviewPromptId}
+            reviewPreferences={reviewPreferences}
+            onOpenSettings={() => setDestination("settings")}
+            onNavigateToAnnotation={(annotation) => {
+              const doc = documents.find((item) => item.id === annotation.document_id);
+              if (!doc) return;
+              openDocument(doc);
+              setSelected(annotation.id);
+              setTargetPage(annotation.page_index + 1);
+              setDestination("reader");
+            }}
+            onNavigateToNote={(noteId) => {
+              setSelectedNoteId(noteId);
+              setDestination("knowledge");
+            }}
+            onSessionChange={handleReviewSessionChange}
+          />
+        )}
         {destination === "settings" && (
           <SettingsView
             appearance={appearance}
@@ -1542,6 +1716,8 @@ function App() {
             palette={palette}
             onSavePalette={handleSavePalette}
             updates={updates}
+            reviewPreferences={reviewPreferences}
+            onUpdateReviewPreferences={handleUpdateReviewPreferences}
           />
         )}
       </section>
@@ -1604,7 +1780,7 @@ function App() {
   );
 }
 
-type ReaderProps = {
+export type ReaderProps = {
   activeAnnotation: AnnotationRecord | null;
   activeDocument: DocumentRecord;
   activeSession: ReadingSessionState | null;
@@ -1673,9 +1849,21 @@ type ReaderProps = {
   onAddEvidenceToNote?: (annotation: AnnotationRecord) => void;
   /** Task 4.4 (FR-11.1): Open review prompt editor for annotation */
   onRememberAnnotation?: (annotation: AnnotationRecord) => void;
+  onExternalLink?: (url: string) => void;
+  onOpenNoteInKnowledge?: (noteId: string) => void;
 };
 
 function Reader(props: ReaderProps) {
+  useEffect(() => {
+    const clearDetailOnCanvasClick = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.reader-canvas') && !target.closest('.annotation-overlay, .pdf-link-hit, button, input, textarea, select')) {
+        props.setSelected('');
+      }
+    };
+    window.addEventListener('pointerdown', clearDetailOnCanvasClick);
+    return () => window.removeEventListener('pointerdown', clearDetailOnCanvasClick);
+  }, [props.setSelected]);
   // View Modes & Navigation State initialized from activeSession or sensible defaults
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(
     props.activeSession?.view_mode || 'continuous'
@@ -1694,6 +1882,88 @@ function Reader(props: ReaderProps) {
   const [currentPage, setCurrentPage] = useState<number>(
     props.activeSession?.current_page || 1
   );
+  const [quickNoteSource, setQuickNoteSource] = useState<QuickNoteSourceSnapshot | null>(null);
+  const [quickNoteSaved, setQuickNoteSaved] = useState<{ pageLabel: string } | null>(null);
+  const quickNoteToastTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (quickNoteToastTimeoutRef.current !== null) {
+        window.clearTimeout(quickNoteToastTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const openQuickNote = useCallback(() => {
+    if (!props.currentVersionId) return;
+    const liveSelection = window.getSelection();
+    const selectedText = liveSelection?.toString().trim() || null;
+    const range = selectedText && liveSelection?.rangeCount ? liveSelection.getRangeAt(0) : null;
+    const startContainer = range?.startContainer;
+    const endContainer = range?.endContainer;
+    const startElement = startContainer instanceof Element ? startContainer : startContainer?.parentElement;
+    const endElement = endContainer instanceof Element ? endContainer : endContainer?.parentElement;
+    const selectedPageElement = startElement?.closest<HTMLElement>('.pdf-page') ?? null;
+    const selectionIsOnOnePdfPage = Boolean(
+      selectedPageElement
+      && endElement?.closest('.pdf-page') === selectedPageElement
+      && selectedPageElement.closest('.reader-canvas-container')
+    );
+    const selectedPageNumber = selectionIsOnOnePdfPage
+      ? Number(selectedPageElement?.dataset.pageNumber)
+      : NaN;
+    const sourcePage = Number.isInteger(selectedPageNumber) && selectedPageNumber > 0
+      ? selectedPageNumber
+      : currentPage;
+    const selection = selectionIsOnOnePdfPage ? selectedText : null;
+    const pageElement = selectionIsOnOnePdfPage ? selectedPageElement : null;
+    let rectsJson: string | null = null;
+    if (selection && range && pageElement) {
+      const pageRect = pageElement.getBoundingClientRect();
+      const rects = Array.from(range.getClientRects()).map((rect) => {
+        const left = Math.max(rect.left, pageRect.left);
+        const top = Math.max(rect.top, pageRect.top);
+        const right = Math.min(rect.right, pageRect.right);
+        const bottom = Math.min(rect.bottom, pageRect.bottom);
+        return {
+          x: (left - pageRect.left) / pageRect.width,
+          y: (top - pageRect.top) / pageRect.height,
+          width: (right - left) / pageRect.width,
+          height: (bottom - top) / pageRect.height,
+        };
+      }).filter((rect) => rect.width > 0 && rect.height > 0);
+      if (rects.length) rectsJson = JSON.stringify(rects);
+    }
+    setQuickNoteSource({
+      documentId: props.activeDocument.id,
+      documentVersionId: props.currentVersionId,
+      pageIndex: sourcePage - 1,
+      pageLabel: formatExtendedPageLabel(sourcePage, props.totalPages).displayLabel,
+      selectedQuote: selection,
+      rectsJson,
+    });
+  }, [props.activeDocument.id, props.currentVersionId, props.totalPages, currentPage]);
+
+  const saveQuickNote = useCallback(async (body: string, source: QuickNoteSourceSnapshot) => {
+    const note = createDefaultNoteRecord({ note_type: 'scratch', title: quickNoteTitle(body), body_markdown: body, document_id: source.documentId });
+    const now = note.created_at;
+    await createQuickNote(note, {
+      id: crypto.randomUUID(), note_id: note.id, document_id: source.documentId,
+      document_version_id: source.documentVersionId, page_index: source.pageIndex,
+      page_label: source.pageLabel, selected_quote: source.selectedQuote,
+      rects_json: source.rectsJson, created_at: now, provenance: 'user_authored',
+    });
+    window.dispatchEvent(new CustomEvent('mereth:quick-note-created', { detail: { documentId: source.documentId } }));
+
+    if (quickNoteToastTimeoutRef.current !== null) {
+      window.clearTimeout(quickNoteToastTimeoutRef.current);
+    }
+    setQuickNoteSaved({ pageLabel: source.pageLabel });
+    quickNoteToastTimeoutRef.current = window.setTimeout(() => {
+      setQuickNoteSaved(null);
+      quickNoteToastTimeoutRef.current = null;
+    }, 2200);
+  }, []);
   const [scrollTopPx, setScrollTopPx] = useState<number>(
     props.activeSession?.scroll_top_px || 0.0
   );
@@ -2284,11 +2554,15 @@ function Reader(props: ReaderProps) {
     setCurrentMatchIndex(0);
   }, [searchQuery, searchOptions]);
 
-  const outlineNodes = useMemo(() => {
-    if (loadedPdf?.outline && loadedPdf.outline.length > 0) {
-      return parseOutlineTree(loadedPdf.outline);
-    }
-    return [];
+  const [outlineNodes, setOutlineNodes] = useState<ParsedOutlineNode[]>([]);
+  useEffect(() => {
+    let live = true;
+    setOutlineNodes([]);
+    if (!loadedPdf?.outline?.length) return;
+    void resolveOutlineTree(loadedPdf.doc, loadedPdf.outline)
+      .then((nodes) => { if (live) setOutlineNodes(nodes); })
+      .catch(() => { if (live) setOutlineNodes([]); });
+    return () => { live = false; };
   }, [loadedPdf]);
 
   useEffect(() => {
@@ -2480,6 +2754,9 @@ function Reader(props: ReaderProps) {
         case 'pane.right.toggle':
           props.setRightOpen(!props.rightOpen);
           break;
+        case 'note.quick':
+          openQuickNote();
+          break;
         case 'annot.highlight.yellow':
           void selectionActionRef.current?.('highlight', 'claim');
           break;
@@ -2503,7 +2780,7 @@ function Reader(props: ReaderProps) {
 
     window.addEventListener('keydown', handleShortcutKeyDown);
     return () => window.removeEventListener('keydown', handleShortcutKeyDown);
-  }, [currentPage, totalPages, historyState, searchMatches, props]);
+  }, [currentPage, totalPages, historyState, searchMatches, props, openQuickNote]);
 
   // FR-8.4 copy-confidence check against the real text layer of the page the
   // user is copying from — never placeholder data.
@@ -2992,7 +3269,7 @@ function Reader(props: ReaderProps) {
             />
           )}
 
-          {props.activeDocumentJob && (props.activeDocumentJob.status === 'running' || props.activeDocumentJob.status === 'pending') && (
+          {props.activeDocumentJob && indexedPageCount < totalPages && (props.activeDocumentJob.status === 'running' || props.activeDocumentJob.status === 'pending') && (
             <div
               className="indexing-progress-banner"
               style={{
@@ -3076,6 +3353,7 @@ function Reader(props: ReaderProps) {
               ⚠️ {copyWarning}
             </div>
           )}
+          {quickNoteSaved && <div className="quick-note-toast" role="status">Quick note saved · p. {quickNoteSaved.pageLabel}</div>}
 
           <RendererErrorBoundary onReturnToLibrary={props.onReturnToLibrary}>
             {pdfLoadFailed ? (
@@ -3114,9 +3392,15 @@ function Reader(props: ReaderProps) {
                 annotationAssets={annotationAssets}
                 selectedAnnotationId={props.selected}
                 palette={props.palette}
-                onSelectAnnotation={props.setSelected}
+                onSelectAnnotation={(id) => {
+                  props.setSelected(id);
+                  props.setRightTab('annotations');
+                  props.setRightOpen(true);
+                }}
                 embeddedByPage={embeddedOverlayByPage}
                 onOpenEmbeddedImport={handleOpenEmbeddedImport}
+                onNavigateLink={handlePageChange}
+                onExternalLink={props.onExternalLink}
               />
             )}
           </RendererErrorBoundary>
@@ -3143,6 +3427,9 @@ function Reader(props: ReaderProps) {
                 setPopupError(null);
               }}
             />
+          )}
+          {quickNoteSource && (
+            <QuickNoteComposer source={quickNoteSource} onSave={saveQuickNote} onDismiss={() => setQuickNoteSource(null)} />
           )}
 
           {/* Task 3.4: one-drag area capture (FR-9.2) */}
@@ -3214,9 +3501,182 @@ function Reader(props: ReaderProps) {
   );
 }
 
-function RightPane(props: ReaderProps) {
+export function RightPane(props: ReaderProps) {
   const tabs: Array<[typeof props.rightTab, string]> = [["annotations", "Annotations"], ["note", "Note"]];
   const list = props.annotationsList || [];
+  const [documentNotes, setDocumentNotes] = useState<NoteRecord[]>([]);
+  const [noteAnchors, setNoteAnchors] = useState<Map<string, NoteSourceAnchorRecord>>(new Map());
+  const [selectedNote, setSelectedNote] = useState<NoteRecord | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [noteSaveState, setNoteSaveState] = useState<'saved' | 'saving' | 'error' | 'unsaved'>('saved');
+  const [noteDrawerMode, setNoteDrawerMode] = useState<'edit' | 'preview'>('edit');
+  const selectedNoteRef = useRef<NoteRecord | null>(null);
+  selectedNoteRef.current = selectedNote;
+  const noteDraftRef = useRef(noteDraft);
+  noteDraftRef.current = noteDraft;
+  const activeDocumentIdRef = useRef(props.activeDocument.id);
+  activeDocumentIdRef.current = props.activeDocument.id;
+  const autosaveCoordinatorRef = useRef(new AutosaveCoordinator(400));
+  const draftGenerationRef = useRef(0);
+
+  const persistNote = useCallback(
+    async (noteId: string, titleToPersist: string, bodyToPersist: string): Promise<void> => {
+      const genAtStart = draftGenerationRef.current;
+      setNoteSaveState('saving');
+      try {
+        const saved = await updateNote(noteId, titleToPersist, bodyToPersist);
+        setDocumentNotes((all) => all.map((n) => (n.id === saved.id ? saved : n)));
+        if (selectedNoteRef.current?.id === noteId && genAtStart === draftGenerationRef.current) {
+          setSelectedNote(saved);
+          setNoteDraft(saved.body_markdown);
+          noteDraftRef.current = saved.body_markdown;
+          setNoteSaveState('saved');
+        }
+      } catch (err) {
+        if (selectedNoteRef.current?.id === noteId) {
+          setNoteSaveState('error');
+        }
+        throw err;
+      }
+    },
+    []
+  );
+
+  const handleFlushSave = useCallback(async (): Promise<boolean> => {
+    const currentNote = selectedNoteRef.current;
+    if (!currentNote) {
+      setNoteSaveState('saved');
+      return true;
+    }
+    const currentId = currentNote.id;
+    const currentDraft = noteDraftRef.current;
+
+    const hasPending = autosaveCoordinatorRef.current.hasPending(currentId);
+    const hasInFlight = autosaveCoordinatorRef.current.hasInFlight(currentId);
+    const isDirty = currentDraft !== currentNote.body_markdown;
+
+    if (!hasPending && !hasInFlight && !isDirty) {
+      setNoteSaveState('saved');
+      return true;
+    }
+
+    if (!hasPending && isDirty) {
+      const titleToSave = isAutoDerivedTitle(currentNote.title, currentNote.body_markdown)
+        ? quickNoteTitle(currentDraft)
+        : currentNote.title;
+      autosaveCoordinatorRef.current.enqueue(currentId, titleToSave, currentDraft, persistNote);
+    }
+
+    try {
+      setNoteSaveState('saving');
+      await autosaveCoordinatorRef.current.flush(currentId, persistNote);
+      if (selectedNoteRef.current?.id === currentId) {
+        setNoteSaveState('saved');
+      }
+      return true;
+    } catch {
+      if (selectedNoteRef.current?.id === currentId) {
+        setNoteSaveState('error');
+      }
+      return false;
+    }
+  }, [persistNote]);
+
+  const refreshDocumentNotes = useCallback(async () => {
+    const targetId = props.activeDocument.id;
+    try {
+      const [notes, anchors] = await Promise.all([listNotes({ documentId: targetId }), listNoteSourceAnchors(targetId)]);
+      if (activeDocumentIdRef.current === targetId) {
+        setDocumentNotes(notes);
+        setNoteAnchors(new Map(anchors.map((anchor) => [anchor.note_id, anchor])));
+      }
+    } catch (e) {
+      console.warn('Failed to refresh document notes', e);
+    }
+  }, [props.activeDocument.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const switchDoc = async () => {
+      const ok = await handleFlushSave();
+      if (cancelled) return;
+      if (!ok) return;
+      void refreshDocumentNotes();
+      setSelectedNote(null);
+    };
+    void switchDoc();
+    return () => { cancelled = true; };
+  }, [props.activeDocument.id, refreshDocumentNotes, handleFlushSave]);
+
+  useEffect(() => {
+    const refresh = (event: Event) => {
+      const detail = (event as CustomEvent<{ documentId: string }>).detail;
+      if (detail?.documentId === props.activeDocument.id) void refreshDocumentNotes();
+    };
+    window.addEventListener('mereth:quick-note-created', refresh);
+    return () => window.removeEventListener('mereth:quick-note-created', refresh);
+  }, [props.activeDocument.id, refreshDocumentNotes]);
+
+  const previousSelectedNoteIdRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!selectedNote) {
+      previousSelectedNoteIdRef.current = undefined;
+      setNoteDraft('');
+      noteDraftRef.current = '';
+      draftGenerationRef.current = 0;
+      setNoteSaveState('saved');
+      return;
+    }
+
+    const idChanged = previousSelectedNoteIdRef.current !== selectedNote.id;
+    previousSelectedNoteIdRef.current = selectedNote.id;
+
+    if (idChanged || (!autosaveCoordinatorRef.current.hasPending(selectedNote.id) && !autosaveCoordinatorRef.current.hasInFlight(selectedNote.id))) {
+      const draft = getRecoverableDraft(selectedNote.id);
+      if (draft && draft.bodyMarkdown !== selectedNote.body_markdown) {
+        setNoteDraft(draft.bodyMarkdown);
+        noteDraftRef.current = draft.bodyMarkdown;
+        setNoteSaveState('unsaved');
+        const titleToPersist = isAutoDerivedTitle(selectedNote.title, selectedNote.body_markdown)
+          ? quickNoteTitle(draft.bodyMarkdown)
+          : (draft.title || selectedNote.title);
+        autosaveCoordinatorRef.current.enqueue(selectedNote.id, titleToPersist, draft.bodyMarkdown, persistNote);
+      } else {
+        setNoteDraft(selectedNote.body_markdown);
+        noteDraftRef.current = selectedNote.body_markdown;
+        draftGenerationRef.current = 0;
+        setNoteSaveState('saved');
+      }
+    }
+  }, [selectedNote?.id, selectedNote?.body_markdown, persistNote]);
+
+  useEffect(() => {
+    return registerPendingSaveHandler(handleFlushSave);
+  }, [handleFlushSave]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      void handleFlushSave();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [handleFlushSave]);
+
+  useEffect(() => {
+    const close = async (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (selectedNoteRef.current) {
+          const ok = await handleFlushSave();
+          if (!ok) return; // Keep drawer open and retain draft if save failed
+          setSelectedNote(null);
+        }
+        props.setSelected('');
+      }
+    };
+    window.addEventListener('keydown', close);
+    return () => window.removeEventListener('keydown', close);
+  }, [handleFlushSave, props.setSelected]);
   // ---- Task 3.7 (FR-9.6): sidebar search + filters, reset per document ----
   const [annotationFilters, setAnnotationFilters] = useState<AnnotationFilters>(EMPTY_ANNOTATION_FILTERS);
   useEffect(() => {
@@ -3239,6 +3699,13 @@ function RightPane(props: ReaderProps) {
       }),
     [list, annotationFilters, props.linkedAnnotationIds, props.rememberedAnnotationIds]
   );
+  const activeFilteredIndex = filteredList.findIndex((item) => item.id === props.selected);
+  const selectFilteredAt = (index: number) => {
+    const item = filteredList[index];
+    if (!item) return;
+    props.setSelected(item.id);
+    props.onJumpToAnnotation?.(item.page_index);
+  };
   const patchFilters = (patch: Partial<AnnotationFilters>) =>
     setAnnotationFilters((prev) => ({ ...prev, ...patch }));
 
@@ -3257,10 +3724,27 @@ function RightPane(props: ReaderProps) {
   }, [list, props.palette]);
 
   return (
-    <aside className="right-pane" style={props.rightPaneWidth ? { width: `${props.rightPaneWidth}px` } : undefined}>
-      <div className="pane-tabs">{tabs.map(([id, label]) => <button key={id} className={props.rightTab === id ? "pane-tab active" : "pane-tab"} onClick={() => props.setRightTab(id)}>{label}</button>)}</div>
+    <aside className={`right-pane${(props.rightTab === 'annotations' && props.activeAnnotation) || (props.rightTab === 'note' && selectedNote) ? ' detail-open' : ''}`} style={!(props.rightTab === 'annotations' && props.activeAnnotation) && !(props.rightTab === 'note' && selectedNote) && props.rightPaneWidth ? { width: `${props.rightPaneWidth}px` } : undefined}>
+      <div className="pane-tabs">
+        {tabs.map(([id, label]) => (
+          <button
+            key={id}
+            className={props.rightTab === id ? "pane-tab active" : "pane-tab"}
+            onClick={async () => {
+              if (props.rightTab === id) return;
+              const ok = await handleFlushSave();
+              if (!ok) return;
+              props.setRightTab(id);
+              props.setSelected('');
+              setSelectedNote(null);
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       {props.rightTab === "annotations" && (
-        <div className="annotation-list">
+        <div className="annotation-list" onClick={(event) => { if (event.target === event.currentTarget) props.setSelected(''); }}>
           <div className="pane-heading">
             <span>All {list.length}{filtersActive ? ` · ${filteredList.length} shown` : ''}</span>
             <span className="pane-heading-actions">
@@ -3411,8 +3895,9 @@ function RightPane(props: ReaderProps) {
                 <button
                   className="annotation-item-main"
                   onClick={() => {
-                    props.setSelected(item.id);
-                    props.onJumpToAnnotation?.(item.page_index);
+                    props.setSelected(props.selected === item.id ? '' : item.id);
+                    props.setRightTab('annotations');
+                    if (props.selected !== item.id) props.onJumpToAnnotation?.(item.page_index);
                   }}
                   title={item.annotation_type === 'comment' ? item.comment : item.quote || paletteLabelFor(item.color, props.palette)}
                 >
@@ -3423,48 +3908,20 @@ function RightPane(props: ReaderProps) {
                     <q>{item.annotation_type === 'area' ? 'Area capture' : item.annotation_type === 'bookmark' ? 'Bookmark' : item.comment || item.quote}</q>
                   </span>
                 </button>
-                <span className="annotation-item-actions">
-                  {props.onAddEvidenceToNote && (
-                    <button
-                      type="button"
-                      className="button micro"
-                      disabled={props.linkedAnnotationIds?.has(item.id)}
-                      title={props.linkedAnnotationIds?.has(item.id) ? 'Already linked to a note' : 'Add this annotation as evidence to a note (FR-10.1)'}
-                      onClick={() => {
-                        props.setSelected(item.id);
-                        props.onAddEvidenceToNote?.(item);
-                      }}
-                    >
-                      {props.linkedAnnotationIds?.has(item.id) ? 'In note' : 'Add to note'}
-                    </button>
-                  )}
-                  {props.onRememberAnnotation && (
-                    <button
-                      type="button"
-                      className="button micro"
-                      disabled={props.rememberedAnnotationIds?.has(item.id)}
-                      title={props.rememberedAnnotationIds?.has(item.id) ? 'Already remembered' : 'Create or edit a review prompt for this annotation (FR-11.1)'}
-                      onClick={() => {
-                        props.setSelected(item.id);
-                        props.onRememberAnnotation?.(item);
-                      }}
-                    >
-                      {props.rememberedAnnotationIds?.has(item.id) ? 'Remembered' : 'Remember'}
-                    </button>
-                  )}
-                </span>
               </div>
             ))
           )}
 
           {props.activeAnnotation && (
-            <AnnotationEditor
+            <><div className="annotation-detail-nav"><button disabled={activeFilteredIndex <= 0} onClick={() => selectFilteredAt(activeFilteredIndex - 1)}>← Previous</button><span>{activeFilteredIndex + 1} / {filteredList.length}</span><button disabled={activeFilteredIndex < 0 || activeFilteredIndex >= filteredList.length - 1} onClick={() => selectFilteredAt(activeFilteredIndex + 1)}>Next →</button><button aria-label="Close annotation detail" onClick={() => props.setSelected('')}>×</button></div><AnnotationEditor
               annotation={props.activeAnnotation}
               palette={props.palette}
               onSave={(id, color, comment, tags) => void props.onAnnotationUpdated(id, color, comment, tags)}
               onTrash={(id) => void props.onTrashAnnotation(id)}
               onRemember={(ann) => props.onRememberAnnotation?.(ann)}
+              onAddEvidence={(ann) => props.onAddEvidenceToNote?.(ann)}
             />
+            </>
           )}
 
           {props.trashedAnnotations.length > 0 && (
@@ -3534,65 +3991,196 @@ function RightPane(props: ReaderProps) {
           </button>
         </div>
       )}
-      {props.rightTab === "note" && (
-        <div className="note-editor">
-          <span className="eyebrow">Source note</span>
-          {list.length === 0 ? (
-            <>
-              <h2>No notes yet</h2>
-              <p className="dimmed">
-                Source notes are built from annotations. Note authoring arrives with the R3
-                milestone; this build does not fabricate example notes.
-              </p>
-            </>
-          ) : props.activeAnnotation ? (
-            <>
-              <h2>{paletteLabelFor(props.activeAnnotation.color)} · {props.activeAnnotation.annotation_type}</h2>
-              <p className="evidence-block">
-                {props.activeAnnotation.annotation_type === 'highlight' || props.activeAnnotation.annotation_type === 'underline'
-                  ? `“${props.activeAnnotation.quote}”`
-                  : props.activeAnnotation.annotation_type === 'comment'
-                    ? props.activeAnnotation.comment
-                    : props.activeAnnotation.annotation_type === 'area'
-                      ? 'Area capture'
-                      : 'Bookmark'}
-                <small>— {props.documentName.replace(".pdf", "")}, p. {props.activeAnnotation.page_label || props.activeAnnotation.page_index + 1}</small>
-              </p>
-              <textarea aria-label="Note content" placeholder="Write your own prose here — it stays separate from the quoted evidence." />
-              <button
-                className="wide-action primary"
-                onClick={() => props.activeAnnotation && props.onAddEvidenceToNote?.(props.activeAnnotation)}
-              >
-                + Add to Note (Structured Evidence)
-              </button>
-            </>
-          ) : (
-            <p className="dimmed">Select an annotation to preview it here.</p>
-          )}
+      {props.rightTab === "note" && <div className="document-note-workspace">
+        <div className="document-note-list" onClick={async (event) => { if (event.target === event.currentTarget) { const ok = await handleFlushSave(); if (ok) setSelectedNote(null); } }}><div className="pane-heading"><span>Document notes · {documentNotes.length}</span></div>
+          {documentNotes.length === 0 ? <p className="dimmed filter-empty">No notes are linked to this document yet. Press Alt+N while reading to capture one.</p> : documentNotes.map((note) => <button key={note.id} className={`document-note-row${selectedNote?.id === note.id ? ' active' : ''}`} onClick={async () => { if (selectedNote?.id === note.id) { const ok = await handleFlushSave(); if (ok) setSelectedNote(null); } else { const ok = await handleFlushSave(); if (ok) { setSelectedNote(note); props.setSelected(''); } } }}><b>{note.title || 'Untitled note'}</b><small>{note.note_type} · {new Date(note.updated_at).toLocaleDateString()}{noteAnchors.get(note.id) ? ` · p. ${noteAnchors.get(note.id)!.page_label}` : ''}</small><span>{note.body_markdown}</span></button>)}
         </div>
-      )}
+        {selectedNote && (
+          <section className="note-detail-drawer">
+            <header>
+              <span>{selectedNote.note_type} note</span>
+              <div className="note-drawer-header-actions">
+                <button
+                  type="button"
+                  className="button micro"
+                  onClick={() => setNoteDrawerMode((m) => (m === 'edit' ? 'preview' : 'edit'))}
+                  title={noteDrawerMode === 'edit' ? 'Preview formatted markdown' : 'Edit markdown'}
+                >
+                  {noteDrawerMode === 'edit' ? 'Preview' : 'Edit'}
+                </button>
+                {props.onOpenNoteInKnowledge && (
+                  <button
+                    type="button"
+                    className="button micro"
+                    onClick={async () => {
+                      const ok = await handleFlushSave();
+                      if (ok && selectedNoteRef.current) {
+                        props.onOpenNoteInKnowledge?.(selectedNoteRef.current.id);
+                      }
+                    }}
+                    title="Open in full 3-pane Knowledge view"
+                  >
+                    Open full
+                  </button>
+                )}
+                <button
+                  type="button"
+                  aria-label="Close note detail"
+                  onClick={async () => {
+                    const ok = await handleFlushSave();
+                    if (ok) setSelectedNote(null);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            </header>
+            <h2>{selectedNote.title}</h2>
+            {noteDrawerMode === 'edit' ? (
+              <textarea
+                aria-label="Note body"
+                value={noteDraft}
+                onChange={(e) => {
+                  const nextDraft = e.target.value;
+                  setNoteDraft(nextDraft);
+                  noteDraftRef.current = nextDraft;
+                  draftGenerationRef.current += 1;
+                  setNoteSaveState('saving');
+                  const currentNote = selectedNoteRef.current;
+                  if (currentNote) {
+                    const titleToPersist = isAutoDerivedTitle(currentNote.title, currentNote.body_markdown)
+                      ? quickNoteTitle(nextDraft)
+                      : currentNote.title;
+                    autosaveCoordinatorRef.current.enqueue(currentNote.id, titleToPersist, nextDraft, persistNote);
+                  }
+                }}
+                onBlur={() => void handleFlushSave()}
+                placeholder="Write in Markdown…"
+              />
+            ) : (
+              <div
+                className="note-reading note-sidecar-preview"
+                dangerouslySetInnerHTML={{
+                  __html: renderMarkdownToHtml(noteDraft || '*Empty note*'),
+                }}
+              />
+            )}
+            <footer>
+              <span>
+                {noteSaveState === 'saved'
+                  ? 'Saved'
+                  : noteSaveState === 'saving'
+                  ? 'Saving…'
+                  : noteSaveState === 'unsaved'
+                  ? 'Unsaved changes'
+                  : 'Save failed — retry by typing'}
+                {noteSaveState === 'error' && (
+                  <button
+                    type="button"
+                    className="button micro"
+                    style={{ marginLeft: '8px' }}
+                    onClick={() => void handleFlushSave()}
+                  >
+                    Retry
+                  </button>
+                )}
+              </span>
+              <div className="note-drawer-footer-actions">
+                <button
+                  type="button"
+                  className="button danger-ghost micro"
+                  onClick={async () => {
+                    const currentId = selectedNote.id;
+                    await trashNote(currentId);
+                    setDocumentNotes((all) => all.filter((n) => n.id !== currentId));
+                    if (selectedNoteRef.current?.id === currentId) {
+                      setSelectedNote(null);
+                    }
+                  }}
+                >
+                  Trash
+                </button>
+                {props.onOpenNoteInKnowledge && (
+                  <button
+                    type="button"
+                    className="button primary micro"
+                    onClick={async () => {
+                      const ok = await handleFlushSave();
+                      if (ok && selectedNoteRef.current) {
+                        props.onOpenNoteInKnowledge?.(selectedNoteRef.current.id);
+                      }
+                    }}
+                  >
+                    Open in Knowledge
+                  </button>
+                )}
+              </div>
+            </footer>
+          </section>
+        )}
+      </div>}
     </aside>
   );
 }
 
 
 
-function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
+export function ReviewView({
+  initialPromptId,
+  reviewPreferences,
+  onNavigateToAnnotation,
+  onNavigateToNote,
+  onSessionChange,
+  onOpenSettings,
+}: {
+  initialPromptId?: string | null;
+  reviewPreferences?: ReviewQueuePreferences;
+  onNavigateToAnnotation?: (annotation: AnnotationRecord) => void;
+  onNavigateToNote?: (noteId: string) => void;
+  onSessionChange?: (session: ReviewSessionState | null) => void;
+  onOpenSettings?: () => void;
+}) {
   const [dueRows, setDueRows] = useState<DueReviewPromptRecord[]>([]);
   const [queueStats, setQueueStats] = useState<ReviewQueueStats>({ due_count: 0, adopted_count: 0, paused_count: 0 });
-  const [session, setSession] = useState(() => createReviewSession([]));
+  const [session, setSession] = useState(() => getActiveReviewSession() ?? createReviewSession([]));
   const [loading, setLoading] = useState(true);
+  const loadingRef = useRef(true);
   const [error, setError] = useState<string | null>(null);
   const [repairPrompt, setRepairPrompt] = useState<{ prompt: ReviewPromptRecord; failureCount: number } | null>(null);
   const [editingPrompt, setEditingPrompt] = useState<ReviewPromptRecord | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [sourceContext, setSourceContext] = useState<{ label: string; excerpt: string } | null>(null);
+  const [completedToday, setCompletedToday] = useState(0);
+  const [reviewedTodayMs, setReviewedTodayMs] = useState(0);
+  const [dailyLimitReached, setDailyLimitReached] = useState(false);
+  const [synthesisText, setSynthesisText] = useState('');
+  const [isSavingSynthesis, setIsSavingSynthesis] = useState(false);
+  const [synthesisSaved, setSynthesisSaved] = useState(false);
+  const [sourceContext, setSourceContext] = useState<{
+    label: string;
+    excerpt: string;
+    annotation?: AnnotationRecord;
+    noteId?: string;
+  } | null>(null);
   // U19: browsable review history (recent events across all prompts).
   const [historyOpen, setHistoryOpen] = useState(false);
   const [recentEvents, setRecentEvents] = useState<RecentReviewEventRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   // U19: per-prompt queue controls (pause / priority / reschedule / retire).
   const [queueMenuPromptId, setQueueMenuPromptId] = useState<string | null>(null);
+  const [isRatingInFlight, setIsRatingInFlight] = useState(false);
+  const isRatingInFlightRef = useRef(false);
+  const undoStackRef = useRef<ReviewUndoStack>(new ReviewUndoStack());
+  const [canUndo, setCanUndo] = useState(false);
+
+  useEffect(() => {
+    if (session.step === 'prompt' || session.step === 'revealed') {
+      setActiveReviewSession(session);
+      onSessionChange?.(session);
+    } else {
+      setActiveReviewSession(null);
+      onSessionChange?.(null);
+    }
+  }, [session, onSessionChange]);
 
   const applyControl = async (prompt: ReviewPromptRecord, action: Parameters<typeof applyQueueControl>[1]) => {
     setQueueMenuPromptId(null);
@@ -3623,31 +4211,192 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
     }
   };
 
+  const endSession = () => {
+    clearActiveReviewSession();
+    undoStackRef.current.clear();
+    setCanUndo(false);
+    onSessionChange?.(null);
+    setSession(createReviewSession([]));
+    setSynthesisText('');
+    setSynthesisSaved(false);
+  };
+
   const reload = useCallback(async () => {
+    loadingRef.current = true;
     setLoading(true);
     setError(null);
+
+    if (reviewPreferences?.queuePaused === true) {
+      setDueRows([]);
+      setSession(createReviewSession([]));
+      setActiveReviewSession(null);
+      onSessionChange?.(null);
+      loadingRef.current = false;
+      setLoading(false);
+      return;
+    }
+
     try {
+      const usage = await getDailyReviewUsage();
+      const countToday = usage.completed_cards;
+      setCompletedToday(countToday);
+      setReviewedTodayMs(usage.duration_ms);
+
+      const dailyCardLimit = reviewPreferences?.dailyCardLimit ?? 50;
+      const remainingDailyBudget = Math.max(0, dailyCardLimit - countToday);
+
+      const timeLimitMs = (reviewPreferences?.dailyTimeLimitMinutes ?? 15) * 60_000;
+      if (remainingDailyBudget <= 0 || (timeLimitMs > 0 && usage.duration_ms >= timeLimitMs)) {
+        setDailyLimitReached(true);
+        setDueRows([]);
+        setSession(createReviewSession([]));
+        setActiveReviewSession(null);
+        onSessionChange?.(null);
+        return;
+      }
+
+      setDailyLimitReached(false);
       const [due, stats, targetPrompt] = await Promise.all([
-        getDueReviewPrompts(20),
+        getDueReviewPrompts(remainingDailyBudget),
         getReviewQueueStats(),
         initialPromptId ? getReviewPrompt(initialPromptId) : Promise.resolve(null),
       ]);
-      const mergedDue = targetPrompt && targetPrompt.status === 'adopted' && !due.some((row) => row.prompt.id === targetPrompt.id)
-        ? [{ prompt: targetPrompt, schedule: null }, ...due]
-        : due;
+      // A deep link can prioritize a due card, but must not invent unscheduled variants.
+      const mergedDue = targetPrompt ? [...due].sort((a, b) => Number(b.prompt.id === targetPrompt.id) - Number(a.prompt.id === targetPrompt.id)) : due;
       setDueRows(mergedDue);
       setQueueStats(stats);
-      setSession(createReviewSession(mergedDue.map((row) => row.prompt)));
+
+      const active = getActiveReviewSession();
+      if (active && (active.step === 'prompt' || active.step === 'revealed') && active.queue.length > 0) {
+        const prunedQueue = pruneReviewSessionQueue(active, mergedDue, remainingDailyBudget);
+        if (prunedQueue.length === 0) {
+          setDailyLimitReached(true);
+          setSession(createReviewSession([]));
+          setActiveReviewSession(null);
+          onSessionChange?.(null);
+          return;
+        }
+
+        const prunedActive: ReviewSessionState = {
+          ...active,
+          queue: prunedQueue,
+          currentIndex: active.currentIndex,
+          current: prunedQueue[active.currentIndex]?.prompt.id === active.current?.prompt.id && prunedQueue[active.currentIndex]?.clozeIndex === active.current?.clozeIndex
+            ? active.current : prunedQueue[active.currentIndex] ?? null,
+        };
+
+        const promptIds = Array.from(new Set(prunedQueue.map((c) => c.prompt.id)));
+        const promptMap = new Map<string, ReviewPromptRecord | null>();
+        await Promise.all(
+          promptIds.map(async (id) => {
+            const inDue = mergedDue.find((row) => row.prompt.id === id);
+            if (inDue) {
+              promptMap.set(id, inDue.prompt);
+            } else {
+              const fresh = await getReviewPrompt(id);
+              promptMap.set(id, fresh);
+            }
+          })
+        );
+        const reconciled = reconcileReviewSession(prunedActive, promptMap);
+
+        // Restore persisted schedules for retained retries or variants not present with schedule in mergedDue
+        const uniqueVariants = Array.from(
+          new Map(
+            reconciled.queue.map((card) => [
+              `${card.prompt.id}:${card.clozeIndex ?? 0}`,
+              { promptId: card.prompt.id, clozeIndex: card.clozeIndex ?? 0 },
+            ])
+          ).values()
+        );
+        const restoredDueRows: DueReviewPromptRecord[] = [];
+        await Promise.all(
+          uniqueVariants.map(async ({ promptId, clozeIndex }) => {
+            const inDueWithSchedule = mergedDue.find(
+              (row) =>
+                row.prompt.id === promptId &&
+                (row.cloze_index ?? row.schedule?.cloze_index ?? 0) === clozeIndex &&
+                row.schedule != null
+            );
+            if (!inDueWithSchedule) {
+              const schedule = await getReviewSchedule(promptId, clozeIndex);
+              const prompt = promptMap.get(promptId) ?? reconciled.queue.find((c) => c.prompt.id === promptId)?.prompt;
+              if (prompt) {
+                restoredDueRows.push({
+                  prompt,
+                  schedule,
+                  cloze_index: clozeIndex,
+                });
+              }
+            }
+          })
+        );
+
+        if (restoredDueRows.length > 0) {
+          setDueRows([
+            ...mergedDue.map((row) => {
+              const restored = restoredDueRows.find(
+                (r) =>
+                  r.prompt.id === row.prompt.id &&
+                  (r.cloze_index ?? 0) === (row.cloze_index ?? row.schedule?.cloze_index ?? 0)
+              );
+              return restored && restored.schedule ? restored : row;
+            }),
+            ...restoredDueRows.filter(
+              (r) =>
+                !mergedDue.some(
+                  (row) =>
+                    row.prompt.id === r.prompt.id &&
+                    (row.cloze_index ?? row.schedule?.cloze_index ?? 0) === (r.cloze_index ?? 0)
+                )
+            ),
+          ]);
+        }
+
+        // Set session and activate ONLY AFTER schedules and dueRows are restored!
+        setSession(reconciled);
+        if (reconciled.step === 'prompt' || reconciled.step === 'revealed') {
+          setActiveReviewSession(reconciled);
+          onSessionChange?.(reconciled);
+        } else {
+          setActiveReviewSession(null);
+          onSessionChange?.(null);
+        }
+      } else {
+        const newSession = limitReviewSession(createReviewSession(mergedDue), remainingDailyBudget);
+        setSession(newSession);
+        if (newSession.step === 'prompt') {
+          setActiveReviewSession(newSession);
+          onSessionChange?.(newSession);
+        } else {
+          setActiveReviewSession(null);
+          onSessionChange?.(null);
+        }
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load review queue.');
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
-  }, [initialPromptId]);
+  }, [initialPromptId, onSessionChange, reviewPreferences?.dailyCardLimit, reviewPreferences?.dailyTimeLimitMinutes, reviewPreferences?.queuePaused]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Synthesis links must still resolve when their prompt is no longer due or
+  // today's budget is exhausted. Inspecting a prompt does not reschedule it.
+  useEffect(() => {
+    if (!initialPromptId) return;
+    let cancelled = false;
+    void getReviewPrompt(initialPromptId).then(prompt => {
+      if (!cancelled && prompt) setEditingPrompt(prompt);
+    }).catch(err => {
+      if (!cancelled) setError(err instanceof Error ? err.message : 'Could not open linked prompt.');
+    });
+    return () => { cancelled = true; };
+  }, [initialPromptId]);
 
   const toggleHistory = async () => {
     const next = !historyOpen;
@@ -3678,6 +4427,7 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
             setSourceContext({
               label: `Page ${annotation.page_label || annotation.page_index + 1}`,
               excerpt: annotation.quote || annotation.comment,
+              annotation,
             });
           }
           return;
@@ -3685,7 +4435,11 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
         if (currentPrompt.note_id) {
           const note = await invoke<ReturnType<typeof createDefaultNoteRecord> | null>('db_get_note', { id: currentPrompt.note_id });
           if (!cancelled && note) {
-            setSourceContext({ label: note.title, excerpt: note.body_markdown.slice(0, 600) });
+            setSourceContext({
+              label: note.title,
+              excerpt: note.body_markdown.slice(0, 600),
+              noteId: currentPrompt.note_id,
+            });
           }
         }
       } catch {
@@ -3697,7 +4451,7 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
   }, [currentPrompt?.id, currentPrompt?.annotation_id, currentPrompt?.note_id]);
 
   const currentSchedule = currentPrompt
-    ? dueRows.find((row) => row.prompt.id === currentPrompt.id)?.schedule ?? null
+    ? dueRows.find((row) => row.prompt.id === currentPrompt.id && (row.cloze_index ?? row.schedule?.cloze_index ?? 0) === (session.current?.clozeIndex ?? 0))?.schedule ?? null
     : null;
   const previewBase = currentPrompt
     ? (['again', 'hard', 'good', 'easy'] as ReviewOutcome[]).map((outcome) => ({
@@ -3707,36 +4461,101 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
           outcome,
           reviewedAt: new Date(),
           previous: currentSchedule,
+          clozeIndex: session.current?.clozeIndex ?? 0,
         }).intervalDays,
       }))
     : [];
 
   const reveal = () => {
+    if (isRatingInFlightRef.current || loadingRef.current) return;
     setSession((prev) => revealCurrentCard(prev));
   };
 
   const rate = async (outcome: ReviewOutcome) => {
+    if (isRatingInFlightRef.current || loadingRef.current) return;
+    const currentCard = session.current;
+    if (!currentCard || !currentCard.revealed) return;
+
+    isRatingInFlightRef.current = true;
+    setIsRatingInFlight(true);
+    setError(null);
+
     const now = new Date();
     const { state: nextSession, attempt } = submitCurrentReview(session, outcome, now);
-    if (!attempt) return;
+    if (!attempt) {
+      isRatingInFlightRef.current = false;
+      setIsRatingInFlight(false);
+      return;
+    }
+    const previousSchedule = dueRows.find((row) => row.prompt.id === attempt.prompt.id && (row.cloze_index ?? row.schedule?.cloze_index ?? 0) === (attempt.clozeIndex ?? 0))?.schedule ?? null;
     const scheduled = scheduleReview({
       promptId: attempt.prompt.id,
       outcome,
       reviewedAt: now,
-      previous: currentSchedule,
+      previous: previousSchedule,
+      clozeIndex: attempt.clozeIndex ?? 0,
     });
+    const eventId = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `review-${Date.now()}`;
     try {
+      const usage = await getDailyReviewUsage(now);
+      const cardLimit = reviewPreferences?.dailyCardLimit ?? 50;
+      if (reviewPreferences?.queuePaused || usage.completed_cards >= cardLimit) {
+        setCompletedToday(usage.completed_cards);
+        setDailyLimitReached(true);
+        return;
+      }
       await recordReviewEvent({
-        id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `review-${Date.now()}`,
+        id: eventId,
         prompt_id: attempt.prompt.id,
+        cloze_index: attempt.clozeIndex ?? 0,
         reviewed_at: now.toISOString(),
         outcome,
         duration_ms: attempt.durationMs,
         user_response: attempt.userResponse,
         provenance: 'user_authored',
-      }, scheduled.schedule);
-      setSession(nextSession);
+      }, {
+        ...scheduled.schedule,
+        cloze_index: attempt.clozeIndex ?? 0,
+      });
+
+      let sessionAfterOutcome = nextSession;
+      if (outcome === 'again') {
+        sessionAfterOutcome = requeueCardForRelearning(nextSession, currentCard, now);
+      }
+      const completed = usage.completed_cards + 1;
+      const duration = usage.duration_ms + attempt.durationMs;
+      const timeLimitMs = (reviewPreferences?.dailyTimeLimitMinutes ?? 15) * 60_000;
+      const reached = completed >= cardLimit || (timeLimitMs > 0 && duration >= timeLimitMs);
+      setCompletedToday(completed);
+      setReviewedTodayMs(duration);
+      setDailyLimitReached(reached);
+      sessionAfterOutcome = limitReviewSession(sessionAfterOutcome, reached ? 0 : cardLimit - completed);
+
+      undoStackRef.current.push({
+        eventId,
+        promptId: attempt.prompt.id,
+        previousSchedule,
+        attempt,
+        clozeIndex: attempt.clozeIndex ?? 0,
+        sessionBefore: session,
+      });
+      setCanUndo(true);
+
+      setSession(sessionAfterOutcome);
+      if (sessionAfterOutcome.step === 'prompt' || sessionAfterOutcome.step === 'revealed') {
+        setActiveReviewSession(sessionAfterOutcome);
+        onSessionChange?.(sessionAfterOutcome);
+      } else {
+        setActiveReviewSession(null);
+        onSessionChange?.(null);
+      }
+
       setQueueStats((prev) => ({ ...prev, due_count: Math.max(0, prev.due_count - 1) }));
+      setDueRows((prev) => [
+        ...prev.filter(row => !(row.prompt.id === attempt.prompt.id && (row.cloze_index ?? row.schedule?.cloze_index ?? 0) === (attempt.clozeIndex ?? 0))),
+        { prompt: attempt.prompt, schedule: scheduled.schedule, cloze_index: attempt.clozeIndex ?? 0 },
+      ]);
+
       if (outcome === 'again') {
         const history = await getReviewHistory(attempt.prompt.id);
         const failureCount = history.filter((event) => event.outcome === 'again').length;
@@ -3746,8 +4565,146 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save review outcome.');
+    } finally {
+      isRatingInFlightRef.current = false;
+      setIsRatingInFlight(false);
     }
   };
+
+  const undoLastReview = async () => {
+    if (isRatingInFlightRef.current) return;
+    const lastUndo = undoStackRef.current.pop();
+    setCanUndo(undoStackRef.current.canUndo);
+    if (!lastUndo) return;
+
+    isRatingInFlightRef.current = true;
+    setIsRatingInFlight(true);
+    setError(null);
+
+    try {
+      await undoReviewEventIpc(
+        lastUndo.eventId,
+        lastUndo.promptId,
+        lastUndo.previousSchedule,
+        lastUndo.attempt.clozeIndex ?? 0
+      );
+      setCompletedToday(value => Math.max(0, value - 1));
+      setReviewedTodayMs(value => Math.max(0, value - lastUndo.attempt.durationMs));
+      setDailyLimitReached(false);
+
+      const restoredCard: ReviewSessionCard = {
+        prompt: lastUndo.attempt.prompt,
+        userResponse: lastUndo.attempt.userResponse,
+        revealed: true,
+        startedAt: new Date().toISOString(),
+        clozeIndex: lastUndo.attempt.clozeIndex,
+      };
+
+      const rewoundSession = lastUndo.sessionBefore
+        ? { ...lastUndo.sessionBefore, current: restoredCard }
+        : rewindReviewSession(session, restoredCard);
+      setSession(rewoundSession);
+      if (rewoundSession.step === 'prompt' || rewoundSession.step === 'revealed') {
+        setActiveReviewSession(rewoundSession);
+        onSessionChange?.(rewoundSession);
+      } else {
+        setActiveReviewSession(null);
+        onSessionChange?.(null);
+      }
+
+      setQueueStats((prev) => ({ ...prev, due_count: prev.due_count + 1 }));
+      setDueRows((prev) => {
+        const exists = prev.some(
+          (row) => row.prompt.id === lastUndo.promptId && (row.cloze_index ?? row.schedule?.cloze_index ?? 0) === (lastUndo.attempt.clozeIndex ?? 0)
+        );
+        if (exists) {
+          return prev.map((row) =>
+            row.prompt.id === lastUndo.promptId && (row.cloze_index ?? row.schedule?.cloze_index ?? 0) === (lastUndo.attempt.clozeIndex ?? 0)
+              ? { ...row, schedule: lastUndo.previousSchedule }
+              : row
+          );
+        }
+        return [{ prompt: lastUndo.attempt.prompt, schedule: lastUndo.previousSchedule, cloze_index: lastUndo.attempt.clozeIndex ?? 0 }, ...prev];
+      });
+    } catch (err) {
+      undoStackRef.current.push(lastUndo);
+      setCanUndo(true);
+      setError(err instanceof Error ? err.message : 'Failed to undo review.');
+    } finally {
+      isRatingInFlightRef.current = false;
+      setIsRatingInFlight(false);
+    }
+  };
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (loadingRef.current) return;
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.isContentEditable ||
+        repairPrompt ||
+        editingPrompt
+      ) {
+        return;
+      }
+
+      // Ctrl+Z or Cmd+Z: in-session review undo
+      if ((event.ctrlKey || event.metaKey) && (event.key === 'z' || event.key === 'Z') && !event.shiftKey) {
+        event.preventDefault();
+        if (!isRatingInFlightRef.current && canUndo) {
+          void undoLastReview();
+        }
+        return;
+      }
+
+      if (isRatingInFlightRef.current) return;
+      if (!session.current) return;
+
+      if (event.key === ' ' || event.code === 'Space') {
+        if (!session.current.revealed) {
+          event.preventDefault();
+          reveal();
+        }
+      } else if (session.current.revealed) {
+        if (event.key === '1') {
+          event.preventDefault();
+          void rate('again');
+        } else if (event.key === '2') {
+          event.preventDefault();
+          void rate('hard');
+        } else if (event.key === '3') {
+          event.preventDefault();
+          void rate('good');
+        } else if (event.key === '4') {
+          event.preventDefault();
+          void rate('easy');
+        }
+      }
+
+      // J shortcut: only navigate to source if the answer has already been revealed
+      // (Concealed-retrieval requirement: source cannot be opened before reveal or explicit "can't recall")
+      if ((event.key === 'j' || event.key === 'J') && session.current.revealed) {
+        if (sourceContext?.annotation && onNavigateToAnnotation) {
+          event.preventDefault();
+          onNavigateToAnnotation(sourceContext.annotation);
+        } else if (sourceContext?.noteId && onNavigateToNote) {
+          event.preventDefault();
+          onNavigateToNote(sourceContext.noteId);
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [session, repairPrompt, editingPrompt, sourceContext, onNavigateToAnnotation, onNavigateToNote, canUndo, isRatingInFlight]);
+
+
+  const isCloze = currentPrompt?.prompt_type === 'cloze';
+  const clozeCard = (isCloze && currentPrompt)
+    ? renderClozeCard(currentPrompt.question, session.current?.clozeIndex, session.current?.revealed ?? false)
+    : null;
 
   const applyRepair = async (result: PromptRepairResult) => {
     const [primary, ...additional] = result.prompts;
@@ -3771,13 +4728,28 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
 
   return (
     <section className="review-view">
-      {session.current && (
+      {(session.current || canUndo) && !reviewPreferences?.queuePaused && (
         <div className="review-session-toolbar">
           <strong>Review</strong>
-          <span>Card {session.currentIndex + 1} of {session.queue.length} · budget 20/day · {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, '0')} elapsed</span>
-          <button className="button compact" onClick={() => void pauseCurrent()}>Pause this prompt</button>
-          <button className="button compact" onClick={() => setEditingPrompt(session.current!.prompt)}>Edit prompt</button>
-          <button className="button compact" onClick={() => setSession(createReviewSession([]))}>End session</button>
+          {session.current && (
+            <span>Card {session.currentIndex + 1} of {session.queue.length} · budget {reviewPreferences?.dailyCardLimit ?? 50}/day · {Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, '0')} elapsed</span>
+          )}
+          <button
+            type="button"
+            className="button compact"
+            onClick={() => void undoLastReview()}
+            disabled={!canUndo || isRatingInFlight}
+            title="Undo last review rating (Ctrl+Z)"
+          >
+            Undo (Ctrl+Z)
+          </button>
+          {session.current && (
+            <>
+              <button className="button compact" onClick={() => void pauseCurrent()} disabled={isRatingInFlight}>Pause this prompt</button>
+              <button className="button compact" onClick={() => setEditingPrompt(session.current!.prompt)} disabled={isRatingInFlight}>Edit prompt</button>
+            </>
+          )}
+          <button className="button compact" onClick={endSession} disabled={isRatingInFlight}>End session</button>
         </div>
       )}
       <span className="eyebrow">{queueStats.due_count} due · {queueStats.adopted_count} adopted · {queueStats.paused_count} paused</span>
@@ -3802,7 +4774,11 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
               <li key={event.id} className="review-history-item">
                 <span className={`review-history-outcome outcome-${event.outcome}`}>{event.outcome}</span>
                 <div>
-                  <b>{event.prompt_question}</b>
+                  <b>
+                    {event.prompt_question.includes('{{c')
+                      ? renderClozeCard(event.prompt_question, undefined, false).plainTextPrompt
+                      : event.prompt_question}
+                  </b>
                   <small>
                     {new Date(event.reviewed_at).toLocaleString()} · {Math.round(event.duration_ms / 100) / 10}s
                     {event.user_response ? ' · typed response recorded' : ''}
@@ -3826,31 +4802,157 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
       )}
       <PromptEditorModal isOpen={editingPrompt !== null} initialPrompt={editingPrompt} onClose={() => setEditingPrompt(null)} onSaved={() => void reload()} />
 
-      {loading ? (
+      {reviewPreferences?.queuePaused === true ? (
+        <div
+          className="review-paused-banner"
+          role="alert"
+          style={{
+            maxWidth: '540px',
+            margin: '24px auto',
+            padding: '16px',
+            background: 'var(--surface-color, #fff)',
+            border: '1px solid var(--border-color, #e0e0e0)',
+            borderRadius: '8px',
+            textAlign: 'center',
+          }}
+        >
+          <p style={{ margin: '0 0 12px 0' }}>
+            Review queue is paused. You can resume it in Settings &gt; Review.
+          </p>
+          {onOpenSettings && (
+            <button type="button" className="button primary" onClick={onOpenSettings}>
+              Open Settings
+            </button>
+          )}
+        </div>
+      ) : dailyLimitReached && session.step !== 'complete' ? (
+        <div
+          className="review-limit-reached-banner"
+          role="status"
+          style={{
+            maxWidth: '540px',
+            margin: '24px auto',
+            padding: '16px',
+            background: 'var(--surface-color, #fff)',
+            border: '1px solid var(--border-color, #e0e0e0)',
+            borderRadius: '8px',
+            textAlign: 'center',
+          }}
+        >
+          <p style={{ margin: '0 0 12px 0' }}>
+            Daily review budget reached ({completedToday} ratings, {Math.floor(reviewedTodayMs / 60_000)} minutes today). Take a break or adjust your limit in Settings.
+          </p>
+          {onOpenSettings && (
+            <button type="button" className="button" onClick={onOpenSettings}>
+              Open Settings
+            </button>
+          )}
+        </div>
+      ) : loading ? (
         <EmptyState viewType="annotations" customTitle="Loading review queue" customDescription="Checking local due prompts." />
+      ) : session.step === 'complete' ? (
+        <div className="review-complete-container">
+          <EmptyState
+            viewType="annotations"
+            customTitle="Review complete"
+            customDescription={dailyLimitReached ? 'Daily review budget reached. Remaining cards stay due; your ratings were saved locally.' : 'All due prompts in this session have been rated. The next due dates were saved locally.'}
+          />
+          <section className="review-synthesis-section" style={{ maxWidth: '540px', margin: '16px auto', padding: '16px', background: 'var(--surface-color, #fff)', border: '1px solid var(--border-color, #e0e0e0)', borderRadius: '8px' }}>
+            <h3 style={{ margin: '0 0 8px 0', fontSize: '1.1rem' }}>What changed in your understanding?</h3>
+            <textarea
+              aria-label="What changed in your understanding?"
+              value={synthesisText}
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setSynthesisText(e.target.value)}
+              placeholder="Synthesize what you learned or how your mental model shifted..."
+              rows={4}
+              style={{ width: '100%', boxSizing: 'border-box', marginBottom: '12px', padding: '8px', borderRadius: '4px', border: '1px solid var(--border-color, #ccc)' }}
+            />
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center' }}>
+              {synthesisSaved && <span style={{ marginRight: 'auto', fontSize: '0.85rem', color: 'green' }}>Saved to Concept Note!</span>}
+              <button
+                type="button"
+                className="button primary"
+                disabled={!synthesisText.trim() || isSavingSynthesis}
+                onClick={async () => {
+                  if (!synthesisText.trim()) return;
+                  setIsSavingSynthesis(true);
+                  try {
+                    const todayStr = new Date().toISOString().slice(0, 10);
+                    const reviewedCards = session.queue;
+                    const seenPromptIds = new Set<string>();
+                    const uniquePrompts: ReviewPromptRecord[] = [];
+                    for (const card of reviewedCards) {
+                      if (!seenPromptIds.has(card.prompt.id)) {
+                        seenPromptIds.add(card.prompt.id);
+                        uniquePrompts.push(card.prompt);
+                      }
+                    }
+                    const reviewedPromptsList = uniquePrompts
+                      .map((p) => `- ${formatReviewPromptLink(p)}`)
+                      .join('\n');
+                    const body = `# Review Synthesis — ${todayStr}\n\n*Review session completed on ${new Date().toLocaleDateString(undefined, { dateStyle: 'long' })}*\n\n## Shifts in Understanding\n${synthesisText.trim()}${reviewedPromptsList ? `\n\n## Reviewed Prompts\n${reviewedPromptsList}` : ''}`;
+                    const note = createDefaultNoteRecord({
+                      note_type: 'concept',
+                      title: `Review Synthesis — ${todayStr}`,
+                      body_markdown: body,
+                    });
+                    await createNote(note);
+                    setSynthesisSaved(true);
+                    setSynthesisText('');
+                  } catch (err: unknown) {
+                    setError(err instanceof Error ? err.message : 'Failed to create concept note.');
+                  } finally {
+                    setIsSavingSynthesis(false);
+                  }
+                }}
+              >
+                Save to Concept Note
+              </button>
+              <button
+                type="button"
+                className="button"
+                onClick={endSession}
+              >
+                Done
+              </button>
+            </div>
+          </section>
+        </div>
       ) : session.step === 'empty' || !session.current ? (
         <EmptyState
           viewType="annotations"
           customTitle="Nothing due"
           customDescription="Adopted prompts appear here when their local FSRS schedule is due."
         />
-      ) : session.step === 'complete' ? (
-        <EmptyState
-          viewType="annotations"
-          customTitle="Review complete"
-          customDescription="All due prompts in this session have been rated. The next due dates were saved locally."
-        />
       ) : (
         <article className="review-card">
+          {(reviewPreferences?.dailyTimeLimitMinutes ?? 15) > 0 && reviewedTodayMs / 1000 + elapsedSeconds >= (reviewPreferences?.dailyTimeLimitMinutes ?? 15) * 60 ? (
+            <div
+              className="review-time-limit-indicator"
+              role="status"
+              style={{
+                padding: '8px 12px',
+                marginBottom: '12px',
+                background: 'var(--warning-bg, #fff3cd)',
+                color: 'var(--warning-text, #856404)',
+                borderRadius: '4px',
+                fontSize: '0.9rem',
+                textAlign: 'center',
+              }}
+            >
+              Daily review time reached. Finish this card, then take a break.
+            </div>
+          ) : null}
           <div className="review-card-header">
             <span>Card {session.currentIndex + 1} of {session.queue.length}</span>
             <span>{Math.floor(elapsedSeconds / 60)}:{String(elapsedSeconds % 60).padStart(2, '0')} elapsed</span>
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: 'relative', display: 'flex', gap: '8px', alignItems: 'center' }}>
               <button
                 className="button compact"
                 aria-haspopup="menu"
                 aria-expanded={queueMenuPromptId === session.current.prompt.id}
                 onClick={() => setQueueMenuPromptId((prev) => (prev === session.current!.prompt.id ? null : session.current!.prompt.id))}
+                disabled={isRatingInFlight}
               >
                 Queue options
               </button>
@@ -3864,7 +4966,14 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
               )}
             </div>
           </div>
-          <h2>{session.current.prompt.question}</h2>
+          {isCloze && clozeCard ? (
+            <h2
+              className="cloze-prompt-heading"
+              dangerouslySetInnerHTML={{ __html: clozeCard.html }}
+            />
+          ) : (
+            <h2>{session.current.prompt.question}</h2>
+          )}
           {session.current.prompt.cue && <p className="dimmed">Cue: {session.current.prompt.cue}</p>}
 
           {!session.current.revealed ? (
@@ -3875,12 +4984,13 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
                   value={session.current.userResponse}
                   onChange={(event) => setSession((prev) => updateUserResponse(prev, event.target.value))}
                   placeholder="Answer from memory before revealing the source."
+                  disabled={isRatingInFlight}
                 />
               </label>
-              <button className="wide-action primary" onClick={reveal}>
-                Reveal answer and source
+              <button className="wide-action primary" onClick={reveal} disabled={isRatingInFlight}>
+                Reveal answer and source (Space)
               </button>
-              <button className="wide-action" onClick={reveal}>Skip — I can't recall</button>
+              <button className="wide-action" onClick={reveal} disabled={isRatingInFlight}>Skip — I can't recall</button>
             </>
           ) : (
             <>
@@ -3892,10 +5002,34 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
               )}
               <div className="evidence-block">
                 <b>Adopted answer</b>
-                <p>{session.current.prompt.answer || 'No adopted answer text was saved for this prompt.'}</p>
+                <p>{(isCloze ? clozeCard?.answer : session.current.prompt.answer) || 'No adopted answer text was saved for this prompt.'}</p>
               </div>
               <div className="evidence-block">
-                <b>Linked source</b>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                  <b>Linked source</b>
+                  {sourceContext?.annotation && onNavigateToAnnotation && (
+                    <button
+                      type="button"
+                      className="button micro primary"
+                      onClick={() => onNavigateToAnnotation(sourceContext.annotation!)}
+                      title="Jump to the source page in the PDF reader (Shortcut: J)"
+                      disabled={isRatingInFlight}
+                    >
+                      Open page in PDF (J)
+                    </button>
+                  )}
+                  {sourceContext?.noteId && onNavigateToNote && (
+                    <button
+                      type="button"
+                      className="button micro primary"
+                      onClick={() => onNavigateToNote(sourceContext.noteId!)}
+                      title="Jump to note in Knowledge view (Shortcut: J)"
+                      disabled={isRatingInFlight}
+                    >
+                      Open note (J)
+                    </button>
+                  )}
+                </div>
                 {sourceContext ? (
                   <><small>{sourceContext.label}</small><p>{sourceContext.excerpt || 'The linked source has no excerpt text.'}</p></>
                 ) : (
@@ -3904,8 +5038,14 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
               </div>
               <div className="review-ratings">
                 {previewBase.map(({ outcome, interval }) => (
-                  <button key={outcome} className="wide-action" onClick={() => void rate(outcome)}>
-                    {outcome === 'again' ? 'Again' : outcome === 'hard' ? 'Hard (recalled)' : outcome === 'good' ? 'Good' : 'Easy'}
+                  <button key={outcome} className="wide-action" onClick={() => void rate(outcome)} disabled={isRatingInFlight}>
+                    {outcome === 'again'
+                      ? 'Again (1)'
+                      : outcome === 'hard'
+                      ? 'Hard (2)'
+                      : outcome === 'good'
+                      ? 'Good (3)'
+                      : 'Easy (4)'}
                     <small>{formatIntervalPreview(interval)}</small>
                   </button>
                 ))}
@@ -3914,6 +5054,7 @@ function ReviewView({ initialPromptId }: { initialPromptId?: string | null }) {
           )}
         </article>
       )}
+
     </section>
   );
 }
@@ -3924,6 +5065,8 @@ function SettingsView({
   palette,
   onSavePalette,
   updates,
+  reviewPreferences,
+  onUpdateReviewPreferences,
 }: {
   appearance: AppearancePreferences;
   onUpdateAppearance: <K extends keyof AppearancePreferences>(
@@ -3933,6 +5076,8 @@ function SettingsView({
   palette: PaletteEntry[];
   onSavePalette: (palette: PaletteEntry[]) => void;
   updates: UpdateCenterModel;
+  reviewPreferences: ReviewQueuePreferences;
+  onUpdateReviewPreferences: (preferences: ReviewQueuePreferences) => void;
 }) {
   const [settingTab, setSettingTab] = useState<'privacy' | 'updates' | 'shortcuts' | 'appearance' | 'annotations' | 'review' | 'export'>('privacy');
   const [exportOpen, setExportOpen] = useState(false);
@@ -4099,7 +5244,10 @@ function SettingsView({
         ) : settingTab === 'annotations' ? (
           <SettingsAnnotations palette={palette} onSavePalette={onSavePalette} />
         ) : settingTab === 'review' ? (
-          <SettingsReview />
+          <SettingsReview
+            preferences={reviewPreferences}
+            onChange={onUpdateReviewPreferences}
+          />
         ) : settingTab === 'export' ? (
           <div>
             <span className="eyebrow">Portable, local output</span>
@@ -4174,4 +5322,7 @@ function SettingsView({
   );
 }
 
-createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  createRoot(rootElement).render(<StrictMode><App /></StrictMode>);
+}

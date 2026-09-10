@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateConceptTitleGuidance, createDefaultNoteRecord } from './notesTypes';
+import { validateConceptTitleGuidance, createDefaultNoteRecord, isAutoDerivedTitle } from './notesTypes';
 
 describe('notesTypes and Concept Title Guidance (Task 4.1 / FR-10.4)', () => {
   it('encourages non-empty titles', () => {
@@ -50,5 +50,24 @@ describe('notesTypes and Concept Title Guidance (Task 4.1 / FR-10.4)', () => {
     expect(note.document_id).toBeNull();
     expect(note.deleted_at).toBeNull();
     expect(note.provenance).toBe('user_authored');
+  });
+
+  describe('isAutoDerivedTitle', () => {
+    it('returns true for default placeholders', () => {
+      expect(isAutoDerivedTitle('Quick note', 'Some content')).toBe(true);
+      expect(isAutoDerivedTitle('Untitled', 'Some content')).toBe(true);
+      expect(isAutoDerivedTitle('', 'Some content')).toBe(true);
+      expect(isAutoDerivedTitle('   ', 'Some content')).toBe(true);
+    });
+
+    it('returns true when title matches the first line of the body', () => {
+      const body = 'Initial scratch thought\nMore text';
+      expect(isAutoDerivedTitle('Initial scratch thought', body)).toBe(true);
+    });
+
+    it('returns false when title is an explicit custom name', () => {
+      expect(isAutoDerivedTitle('Chapter 3: Working Memory', 'First line of my notes')).toBe(false);
+      expect(isAutoDerivedTitle('Custom Concept Title', 'Some random body text')).toBe(false);
+    });
   });
 });

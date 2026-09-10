@@ -17,6 +17,7 @@ use super::note_links::NoteLink;
 
 pub const NOTE_TYPES: &[&str] = &["source", "concept", "scratch"];
 pub const MAX_REVISIONS_PER_NOTE: i64 = 20;
+pub const TRASH_RETENTION_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Note {
@@ -54,10 +55,10 @@ pub struct SplitNoteTransactionResult {
   pub new_note: Note,
 }
 
-const NOTE_COLS: &str = "id, note_type, title, body_markdown, document_id, deleted_at, created_at, updated_at, provenance, original_provenance";
+pub(crate) const NOTE_COLS: &str = "id, note_type, title, body_markdown, document_id, deleted_at, created_at, updated_at, provenance, original_provenance";
 const REVISION_COLS: &str = "id, note_id, revision_number, title, body_markdown, created_at, provenance, original_provenance";
 
-fn map_row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
+pub(crate) fn map_row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
   Ok(Note {
     id: row.get(0)?,
     note_type: row.get(1)?,
@@ -102,6 +103,21 @@ fn current_timestamp(conn: &rusqlite::Connection) -> rusqlite::Result<String> {
 }
 
 impl Database {
+  /// Permanently removes notes once their recoverable-trash window has elapsed.
+  /// This runs at the persistence boundary so every notes listing observes the
+  /// same retention policy, regardless of which UI requested it.
+  pub(crate) fn purge_expired_trashed_notes(&self) -> Result<usize, String> {
+    let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    conn
+      .execute(
+        "DELETE FROM notes
+         WHERE deleted_at IS NOT NULL
+           AND julianday(deleted_at) <= julianday('now', ?1)",
+        params![format!("-{TRASH_RETENTION_DAYS} days")],
+      )
+      .map_err(|e| format!("Failed to purge expired trashed notes: {e}"))
+  }
+
   pub fn split_note_transaction(
     &self,
     original_id: &str,
@@ -231,6 +247,7 @@ impl Database {
     note_type: Option<&str>,
     document_id: Option<&str>,
   ) -> Result<Vec<Note>, String> {
+    self.purge_expired_trashed_notes()?;
     let conn = self.conn.lock().map_err(|e| e.to_string())?;
     let mut sql = format!("SELECT {NOTE_COLS} FROM notes WHERE 1=1");
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -368,6 +385,7 @@ impl Database {
 
   /// Clears `deleted_at` to restore note from trash.
   pub fn restore_note(&self, id: &str) -> Result<(), String> {
+    self.purge_expired_trashed_notes()?;
     let conn = self.conn.lock().map_err(|e| e.to_string())?;
     let rows_affected = conn
       .execute(
@@ -523,9 +541,11 @@ impl Database {
       return Err(format!("Note '{id}' is type '{}', not 'scratch'", existing.note_type));
     }
 
+    let resolved_document_id = document_id.or(existing.document_id.as_deref());
+
     tx.execute(
       "UPDATE notes SET note_type = ?1, document_id = ?2, updated_at = ?3 WHERE id = ?4",
-      params![target_type, document_id, now, id],
+      params![target_type, resolved_document_id, now, id],
     )
     .map_err(|e| format!("Failed to promote note: {e}"))?;
 
@@ -536,7 +556,7 @@ impl Database {
       note_type: target_type.to_string(),
       title: existing.title,
       body_markdown: existing.body_markdown,
-      document_id: document_id.map(|d| d.to_string()),
+      document_id: resolved_document_id.map(|d| d.to_string()),
       deleted_at: existing.deleted_at,
       created_at: existing.created_at,
       updated_at: now,
@@ -641,6 +661,30 @@ pub mod tests {
   }
 
   #[test]
+  fn test_scratch_promotion_preserves_document_id_when_none_passed() {
+    let (db, _tmp) = test_db();
+    {
+      let conn = db.conn.lock().unwrap();
+      conn.execute(
+        "INSERT INTO documents (id, title, filepath, sha256_hash, page_count, created_at, updated_at, provenance, ownership_mode)
+         VALUES ('doc-123', 'Test Doc', '/test.pdf', 'hash123', 1, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'source_extracted', 'open_in_place')",
+        [],
+      ).unwrap();
+    }
+    let mut note = sample_note("n4-doc", "scratch");
+    note.document_id = Some("doc-123".to_string());
+    db.add_note(&note).unwrap();
+
+    let promoted = db.promote_scratch_note("n4-doc", "source", None).unwrap();
+    assert_eq!(promoted.note_type, "source");
+    assert_eq!(promoted.document_id.as_deref(), Some("doc-123"));
+
+    let fetched = db.get_note("n4-doc").unwrap().unwrap();
+    assert_eq!(fetched.note_type, "source");
+    assert_eq!(fetched.document_id.as_deref(), Some("doc-123"));
+  }
+
+  #[test]
   fn test_note_trash_restore_purge() {
     let (db, _tmp) = test_db();
     let note = sample_note("n5", "source");
@@ -662,6 +706,46 @@ pub mod tests {
     db.purge_note("n5").unwrap();
     let purged = db.get_note("n5").unwrap();
     assert!(purged.is_none());
+  }
+
+  #[test]
+  fn test_trashed_notes_are_automatically_purged_after_30_days() {
+    let (db, _tmp) = test_db();
+    db.add_note(&sample_note("expired", "concept")).unwrap();
+    db.add_note(&sample_note("recoverable", "concept")).unwrap();
+
+    {
+      let conn = db.conn.lock().unwrap();
+      conn.execute(
+        "UPDATE notes SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-30 days') WHERE id = 'expired'",
+        [],
+      ).unwrap();
+      conn.execute(
+        "UPDATE notes SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-29 days') WHERE id = 'recoverable'",
+        [],
+      ).unwrap();
+    }
+
+    let notes = db.list_notes(true, None, None).unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].id, "recoverable");
+    assert!(db.get_note("expired").unwrap().is_none());
+  }
+
+  #[test]
+  fn test_expired_trashed_note_cannot_be_restored_before_a_list() {
+    let (db, _tmp) = test_db();
+    db.add_note(&sample_note("expired", "source")).unwrap();
+    {
+      let conn = db.conn.lock().unwrap();
+      conn.execute(
+        "UPDATE notes SET deleted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-31 days') WHERE id = 'expired'",
+        [],
+      ).unwrap();
+    }
+
+    assert!(db.restore_note("expired").is_err());
+    assert!(db.get_note("expired").unwrap().is_none());
   }
 
   #[test]

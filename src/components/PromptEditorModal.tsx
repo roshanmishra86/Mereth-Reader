@@ -97,6 +97,8 @@ export const PromptEditorModal: React.FC<PromptEditorModalProps> = ({
   );
   const showLintPanel = lintResult.issues.length > 0 && !lintDismissed;
 
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
+
   if (!isOpen) return null;
 
   const handleSave = async (adopt: boolean) => {
@@ -140,8 +142,6 @@ export const PromptEditorModal: React.FC<PromptEditorModalProps> = ({
       setIsSaving(false);
     }
   };
-
-  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
 
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="prompt-modal-title">

@@ -32,7 +32,113 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 /** Rendered bitmap density cap; 2 covers 200% Windows scaling. */
-const MAX_OUTPUT_SCALE = 2;
+export const MAX_OUTPUT_SCALE = 2;
+
+export function calculateOutputScale(
+  viewportWidth: number,
+  viewportHeight: number,
+  dpr: number = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+): number {
+  const maxDim = 4096;
+  let scale = Math.min(dpr, MAX_OUTPUT_SCALE);
+  const maxMeasured = Math.max(viewportWidth, viewportHeight);
+  if (maxMeasured * scale > maxDim && maxMeasured > 0) {
+    scale = maxDim / maxMeasured;
+  }
+  return scale;
+}
+
+/** Aggregate active in-flight render pixels cap (64 megapixels, ~256MB uncompressed RGBA) */
+export const MAX_CONCURRENT_PIXELS = 64 * 1024 * 1024;
+let activeRenderPixels = 0;
+// Canvas bitmaps remain allocated after a render completes (the visible page
+// intentionally retains its last bitmap, and staging canvases overlap it
+// during a swap). Keep those allocations in the same aggregate budget.
+let retainedCanvasPixels = 0;
+let reservedSwapPixels = 0;
+interface CanvasAllocation { pixels: number; lastUsed: number; onEvicted?: () => void; }
+const canvasAllocations = new Map<HTMLCanvasElement, CanvasAllocation>();
+const canvasEvictionCallbacks = new WeakMap<HTMLCanvasElement, () => void>();
+const activeCanvasSet = new WeakSet<HTMLCanvasElement>();
+
+export function getActiveRenderPixels(): number {
+  return activeRenderPixels;
+}
+
+export function resetActiveRenderPixels(): void {
+  activeRenderPixels = 0;
+  retainedCanvasPixels = 0;
+  reservedSwapPixels = 0;
+  canvasAllocations.clear();
+}
+
+export function setActiveRenderPixels(pixels: number): void {
+  activeRenderPixels = Math.max(0, pixels);
+}
+
+export function getRetainedCanvasPixels(): number {
+  return retainedCanvasPixels;
+}
+
+export function getReservedSwapPixels(): number {
+  return reservedSwapPixels;
+}
+
+function getCanvasPixels(canvas: HTMLCanvasElement): number {
+  return canvasAllocations.get(canvas)?.pixels ?? 0;
+}
+
+function setCanvasPixels(canvas: HTMLCanvasElement, pixels: number): void {
+  const next = Math.max(0, pixels);
+  retainedCanvasPixels += next - getCanvasPixels(canvas);
+  if (next > 0) {
+    const allocation = canvasAllocations.get(canvas);
+    canvasAllocations.set(canvas, { pixels: next, lastUsed: Date.now(), onEvicted: allocation?.onEvicted ?? canvasEvictionCallbacks.get(canvas) });
+  } else canvasAllocations.delete(canvas);
+}
+
+/** Lets a component request a rerender if its retained bitmap is evicted. */
+export function registerCanvasEviction(canvas: HTMLCanvasElement, onEvicted: () => void): void {
+  canvasEvictionCallbacks.set(canvas, onEvicted);
+  const allocation = canvasAllocations.get(canvas);
+  if (allocation) allocation.onEvicted = onEvicted;
+}
+
+export function unregisterCanvasEviction(canvas: HTMLCanvasElement): void {
+  canvasEvictionCallbacks.delete(canvas);
+}
+
+function evictOldestCanvas(exclude: HTMLCanvasElement, secondExclude?: HTMLCanvasElement): boolean {
+  let candidate: HTMLCanvasElement | null = null;
+  let oldest = Infinity;
+  for (const [canvas, allocation] of canvasAllocations) {
+    if (canvas === exclude || canvas === secondExclude || activeCanvasSet.has(canvas)) continue;
+    if (allocation.lastUsed < oldest) {
+      oldest = allocation.lastUsed;
+      candidate = canvas;
+    }
+  }
+  if (!candidate) return false;
+  const callback = canvasAllocations.get(candidate)?.onEvicted;
+  setCanvasPixels(candidate, 0);
+  candidate.width = 0;
+  candidate.height = 0;
+  callback?.();
+  return true;
+}
+
+/** Releases accounting for a canvas whose backing bitmap is being discarded. */
+export function releaseCanvasPixels(canvas: HTMLCanvasElement): void {
+  setCanvasPixels(canvas, 0);
+}
+
+/** Transfers a completed staging bitmap to the retained visible canvas. */
+export function adoptCanvasPixels(source: HTMLCanvasElement, target: HTMLCanvasElement): void {
+  const pixels = getCanvasPixels(source);
+  setCanvasPixels(target, pixels);
+  setCanvasPixels(source, 0);
+}
+
 /** Bound the number of parsed documents held in memory at once. */
 const MAX_CACHED_DOCUMENTS = 3;
 
@@ -441,6 +547,7 @@ interface ActivePageWork {
   renderTask: pdfjsLib.RenderTask | null;
   textLayer: pdfjsLib.TextLayer | null;
   completion: Promise<void>;
+  cancelled?: boolean;
 }
 
 // pdf.js throws if a canvas is rendered to while a previous render on the
@@ -452,6 +559,7 @@ const activeCanvasWork = new WeakMap<HTMLCanvasElement, ActivePageWork>();
 export function cancelCanvasRender(canvas: HTMLCanvasElement): void {
   const work = activeCanvasWork.get(canvas);
   if (work) {
+    work.cancelled = true;
     work.renderTask?.cancel();
     work.textLayer?.cancel();
   }
@@ -460,6 +568,7 @@ export function cancelCanvasRender(canvas: HTMLCanvasElement): void {
 async function cancelAndAwaitCanvasRender(canvas: HTMLCanvasElement): Promise<void> {
   const previous = activeCanvasWork.get(canvas);
   if (!previous) return;
+  previous.cancelled = true;
   previous.renderTask?.cancel();
   previous.textLayer?.cancel();
   await previous.completion.catch(() => undefined);
@@ -480,6 +589,12 @@ export interface RenderPageParams {
   rotation?: 0 | 90 | 180 | 270;
   /** When provided, a selectable transparent text layer is rendered into it. */
   textLayerContainer?: HTMLElement;
+  /** Invoked as soon as the canvas bitmap render finishes, unblocking first-pixel paint before text layer mounts. */
+  onBitmapRendered?: (dimensions: { width: number; height: number }) => void;
+  /** Visible target that will retain a second copy during the staging swap. */
+  swapTarget?: HTMLCanvasElement;
+  /** Multiplier applied after normal density calculation under pressure. */
+  densityMultiplier?: number;
 }
 
 /**
@@ -490,7 +605,7 @@ export interface RenderPageParams {
 export async function renderPdfPageToCanvas(
   params: RenderPageParams
 ): Promise<RenderPageResult> {
-  const { pdfDoc, pageNumber, canvas, scale, rotation = 0, textLayerContainer } = params;
+  const { pdfDoc, pageNumber, canvas, scale, rotation = 0, textLayerContainer, onBitmapRendered, swapTarget, densityMultiplier = 1 } = params;
 
   if (pageNumber < 1 || pageNumber > pdfDoc.numPages) {
     return { bitmap: 'failed', textLayer: 'not_started', dimensions: null, errorCategory: 'bitmap', message: 'Page is outside the document.' };
@@ -501,23 +616,46 @@ export async function renderPdfPageToCanvas(
   const completion = new Promise<void>((resolve) => { resolveCompletion = resolve; });
   const work: ActivePageWork = { renderTask: null, textLayer: null, completion };
   activeCanvasWork.set(canvas, work);
+  activeCanvasSet.add(canvas);
+  let reservedSwap = 0;
 
   try {
     const page = await pdfDoc.getPage(pageNumber);
     const viewport = page.getViewport({ scale, rotation });
 
-    const outputScale = Math.min(
-      typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
-      MAX_OUTPUT_SCALE
-    );
+    const outputScale = calculateOutputScale(viewport.width, viewport.height) * densityMultiplier;
 
     const context = canvas.getContext('2d');
     if (!context) return { bitmap: 'failed', textLayer: 'not_started', dimensions: null, errorCategory: 'bitmap', message: 'Canvas is unavailable.' };
 
-    canvas.width = Math.floor(viewport.width * outputScale);
-    canvas.height = Math.floor(viewport.height * outputScale);
+    const scaledWidth = Math.max(1, Math.floor(viewport.width * outputScale));
+    const scaledHeight = Math.max(1, Math.floor(viewport.height * outputScale));
+    const pixelCost = scaledWidth * scaledHeight;
+    const previousCanvasPixels = getCanvasPixels(canvas);
+    const swapHeadroom = swapTarget && swapTarget !== canvas ? pixelCost : 0;
+    // Wait before assigning width/height: assigning either dimension allocates
+    // the backing store immediately, so doing it first defeats the budget.
+    while (activeRenderPixels + retainedCanvasPixels + reservedSwapPixels - previousCanvasPixels + pixelCost + swapHeadroom > MAX_CONCURRENT_PIXELS) {
+      if (work.cancelled) {
+        return { bitmap: 'cancelled', textLayer: 'cancelled', dimensions: null, errorCategory: 'cancelled' };
+      }
+      if (activeRenderPixels === 0 && evictOldestCanvas(canvas, swapTarget)) continue;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    if (work.cancelled) {
+      return { bitmap: 'cancelled', textLayer: 'cancelled', dimensions: null, errorCategory: 'cancelled' };
+    }
+    if (swapHeadroom > 0) reservedSwapPixels += swapHeadroom;
+    reservedSwap = swapHeadroom;
+    canvas.width = 0;
+    canvas.height = 0;
+    canvas.width = scaledWidth;
+    canvas.height = scaledHeight;
     canvas.style.width = `${Math.floor(viewport.width)}px`;
     canvas.style.height = `${Math.floor(viewport.height)}px`;
+    setCanvasPixels(canvas, pixelCost);
+    // The canvas backing store is already accounted for by canvasPixels; do
+    // not also charge it to activeRenderPixels.
 
     const renderTask = page.render({
       canvasContext: context,
@@ -530,8 +668,19 @@ export async function renderPdfPageToCanvas(
     work.renderTask = renderTask;
     await renderTask.promise;
 
+    if (work.cancelled) {
+      return { bitmap: 'cancelled', textLayer: 'cancelled', dimensions: null, errorCategory: 'cancelled' };
+    }
+
+    if (onBitmapRendered) {
+      onBitmapRendered({ width: viewport.width, height: viewport.height });
+    }
+
     let textLayerStatus: 'rendered' | 'failed' | 'cancelled' | 'not_requested' = 'not_requested';
     if (textLayerContainer) {
+      if (work.cancelled) {
+        return { bitmap: 'cancelled', textLayer: 'cancelled', dimensions: null, errorCategory: 'cancelled' };
+      }
       try {
         textLayerContainer.replaceChildren();
         const textLayer = new pdfjsLib.TextLayer({
@@ -562,9 +711,14 @@ export async function renderPdfPageToCanvas(
     console.error(`Failed to render page ${pageNumber}:`, err);
     return { bitmap: 'failed', textLayer: 'not_started', dimensions: null, errorCategory: 'bitmap', message: err instanceof Error ? err.message : String(err) };
   } finally {
+    if (reservedSwap > 0) {
+      reservedSwapPixels = Math.max(0, reservedSwapPixels - reservedSwap);
+      reservedSwap = 0;
+    }
     resolveCompletion();
     if (activeCanvasWork.get(canvas) === work) {
       activeCanvasWork.delete(canvas);
+      activeCanvasSet.delete(canvas);
     }
   }
 }
@@ -585,7 +739,7 @@ async function extractOutline(doc: pdfjsLib.PDFDocumentProxy): Promise<OutlineIt
 function parsePdfJsOutlineNodes(nodes: Array<Record<string, unknown>>): OutlineItem[] {
   return nodes.map((node) => {
     const title = typeof node.title === 'string' ? node.title : 'Untitled';
-    const dest = typeof node.dest === 'string' ? node.dest : null;
+    const dest = typeof node.dest === 'string' || Array.isArray(node.dest) ? node.dest : null;
     const rawItems = Array.isArray(node.items) ? (node.items as Array<Record<string, unknown>>) : [];
     const children = parsePdfJsOutlineNodes(rawItems);
 

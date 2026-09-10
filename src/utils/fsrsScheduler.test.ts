@@ -49,5 +49,19 @@ describe('FSRS-4.5 deterministic scheduler', () => {
     expect(formatIntervalPreview(12)).toBe('12 days');
     expect(formatIntervalPreview(45)).toBe('2 months');
   });
+
+  it('sets cloze_index from clozeIndex input or previous schedule', () => {
+    const reviewedAt = new Date('2026-08-21T12:00:00Z');
+    const withExplicitCloze = scheduleReview({ promptId: 'p1', outcome: 'good', reviewedAt, clozeIndex: 3 });
+    expect(withExplicitCloze.schedule.cloze_index).toBe(3);
+
+    const fromPrevious = scheduleReview({
+      promptId: 'p1',
+      outcome: 'easy',
+      reviewedAt,
+      previous: withExplicitCloze.schedule,
+    });
+    expect(fromPrevious.schedule.cloze_index).toBe(3);
+  });
 });
 

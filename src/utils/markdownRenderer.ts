@@ -100,9 +100,15 @@ export function renderInlineMarkdown(text: string, options: MarkdownRenderOption
     processed = processed.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_match, target: string, label?: string) => {
       const rawTarget = target.trim();
       const displayLabel = label ? label.trim() : rawTarget;
-      const href = rawTarget.startsWith('mereth://') ? rawTarget : `${deepLinkPrefix}${encodeURIComponent(rawTarget)}`;
+      const canonicalMatch = rawTarget.match(/^mereth:(?:\/\/)?(note|doc|ann)\/([a-zA-Z0-9_-]+)$/);
+      const linkKind = canonicalMatch?.[1] ?? 'note';
+      const linkId = canonicalMatch?.[2] ?? rawTarget;
+      const href = canonicalMatch
+        ? `mereth://${linkKind}/${encodeURIComponent(linkId)}`
+        : rawTarget.startsWith('mereth://') ? rawTarget : `${deepLinkPrefix}${encodeURIComponent(rawTarget)}`;
       const safeHref = sanitizeUrl(href);
-      return `<a href="${safeHref}" class="wiki-link" data-note-id="${escapeHtml(rawTarget)}">${escapeHtml(displayLabel)}</a>`;
+      const dataNoteId = linkKind === 'note' ? ` data-note-id="${escapeHtml(linkId)}"` : '';
+      return `<a href="${safeHref}" class="wiki-link" data-link-kind="${linkKind}" data-link-id="${escapeHtml(linkId)}"${dataNoteId}>${escapeHtml(displayLabel)}</a>`;
     });
   }
 

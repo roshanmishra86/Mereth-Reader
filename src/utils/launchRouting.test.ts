@@ -83,6 +83,16 @@ describe('R0.6 & Task 2.3 Windows File Association & Launch Routing', () => {
         page: null,
         annotationId: null,
       });
+
+      const reviewQueryParsed = parseDeepLinkTS('mereth://review?prompt=rev-202');
+      expect(reviewQueryParsed.valid).toBe(true);
+      expect(reviewQueryParsed.route).toEqual({
+        url: 'mereth://review?prompt=rev-202',
+        kind: 'review',
+        id: 'rev-202',
+        page: null,
+        annotationId: null,
+      });
     });
 
     it('rejects invalid schemes and malformed deep link URLs', () => {

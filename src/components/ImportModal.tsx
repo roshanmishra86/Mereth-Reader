@@ -109,6 +109,8 @@ export function ImportModal({
     return () => unlisten?.();
   }, [isOpen, isOpenFlow]);
 
+  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
+
   if (!isOpen) return null;
 
   async function processFilePath(filePath: string, openImmediately = false) {
@@ -252,8 +254,6 @@ export function ImportModal({
       onClose();
     }
   }
-
-  const trapRef = useFocusTrap<HTMLDivElement>({ isOpen, onClose });
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>

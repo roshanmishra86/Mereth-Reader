@@ -74,8 +74,15 @@ export function extractWikiLinks(markdown: string): ParsedWikiLinks {
  * Formats a wiki-link string with an optional custom label.
  */
 export function formatWikiLink(kind: 'note' | 'doc' | 'ann', id: string, label?: string): string {
-  if (label && label.trim().length > 0) {
-    return `[[mereth:${kind}/${id}|${label.trim()}]]`;
+  // Wiki-link labels cannot contain the closing bracket delimiter. Flatten
+  // line breaks as well so generated links always remain a single token.
+  const safeLabel = label
+    ?.replace(/[\r\n]+/g, ' ')
+    .replace(/\]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (safeLabel) {
+    return `[[mereth:${kind}/${id}|${safeLabel}]]`;
   }
   return `[[mereth:${kind}/${id}]]`;
 }

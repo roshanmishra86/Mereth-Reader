@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyQueueControl, calculateDailyBudget, canStartAnotherReview, selectDuePrompts } from './queueControls';
+import { applyQueueControl, calculateDailyBudget, canStartAnotherReview, DEFAULT_REVIEW_QUEUE_PREFERENCES, selectDuePrompts } from './queueControls';
 import { createDefaultPromptRecord } from './promptTypes';
 
 describe('queue controls', () => {
@@ -29,5 +29,11 @@ describe('queue controls', () => {
     expect(applyQueueControl(prompt, { type: 'reschedule', dueAt: '2026-08-22T00:00:00.000Z' }, now).dueAt).toBe('2026-08-22T00:00:00.000Z');
     expect(applyQueueControl(prompt, { type: 'retire' }, now).status).toBe('retired');
     expect(canStartAnotherReview({ dailyCardLimit: 1, dailyTimeLimitMinutes: 10, queuePaused: false }, { completedCards: 1, elapsedSeconds: 0 })).toBe(false);
+  });
+
+  it('provides calm default review queue preferences', () => {
+    expect(DEFAULT_REVIEW_QUEUE_PREFERENCES.dailyCardLimit).toBe(20);
+    expect(DEFAULT_REVIEW_QUEUE_PREFERENCES.dailyTimeLimitMinutes).toBe(15);
+    expect(DEFAULT_REVIEW_QUEUE_PREFERENCES.queuePaused).toBe(false);
   });
 });

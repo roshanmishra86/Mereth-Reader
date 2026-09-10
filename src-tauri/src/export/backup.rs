@@ -7,6 +7,7 @@ use crate::db::annotations::{validate_asset_relative_path, Annotation, Annotatio
 use crate::db::evidence::EvidenceBlock;
 use crate::db::note_links::NoteLink;
 use crate::db::notes::{Note, NoteRevision};
+use crate::db::note_source_anchors::NoteSourceAnchor;
 use crate::db::prompts::ReviewPrompt;
 use crate::db::review::{ReviewEvent, ReviewSchedule};
 use crate::db::versions::DocumentVersion;
@@ -36,6 +37,8 @@ pub struct JsonBackupArchive {
   pub evidence_blocks: Vec<EvidenceBlock>,
   pub notes: Vec<Note>,
   pub note_revisions: Vec<NoteRevision>,
+  #[serde(default)]
+  pub note_source_anchors: Vec<NoteSourceAnchor>,
   pub links: Vec<NoteLink>,
   pub prompts: Vec<ReviewPrompt>,
   pub review_events: Vec<ReviewEvent>,
@@ -50,7 +53,7 @@ pub fn create_json_backup(
   app_dir: &Path,
   destination_file: Option<&str>,
 ) -> Result<JsonBackupArchive, String> {
-  let (documents, document_versions, annotations, assets, evidence_blocks, notes, note_revisions, links, prompts, review_events, review_schedules, settings) = {
+  let (documents, document_versions, annotations, assets, evidence_blocks, notes, note_revisions, note_source_anchors, links, prompts, review_events, review_schedules, settings) = {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
 
     // 1. Fetch documents
@@ -275,7 +278,7 @@ pub fn create_json_backup(
 
     // 8. Fetch review events
     let mut event_stmt = conn
-      .prepare("SELECT id, prompt_id, reviewed_at, outcome, duration_ms, user_response, provenance FROM review_events")
+      .prepare("SELECT id, prompt_id, reviewed_at, outcome, duration_ms, user_response, provenance, cloze_index FROM review_events")
       .map_err(|e| e.to_string())?;
 
     let evts: Vec<ReviewEvent> = event_stmt
@@ -288,6 +291,7 @@ pub fn create_json_backup(
           duration_ms: row.get(4)?,
           user_response: row.get(5)?,
           provenance: row.get(6)?,
+          cloze_index: row.get(7)?,
         })
       })
       .map_err(|e| e.to_string())?
@@ -295,7 +299,7 @@ pub fn create_json_backup(
 
     // 9. Fetch review schedules
     let mut sched_stmt = conn
-      .prepare("SELECT prompt_id, desired_retention, state, stability, difficulty, due_at, last_reviewed_at, last_outcome, fsrs_version, updated_at, provenance FROM review_schedule")
+      .prepare("SELECT prompt_id, desired_retention, state, stability, difficulty, due_at, last_reviewed_at, last_outcome, fsrs_version, updated_at, provenance, cloze_index FROM review_schedule")
       .map_err(|e| e.to_string())?;
 
     let scheds: Vec<ReviewSchedule> = sched_stmt
@@ -312,6 +316,7 @@ pub fn create_json_backup(
           fsrs_version: row.get(8)?,
           updated_at: row.get(9)?,
           provenance: row.get(10)?,
+          cloze_index: row.get(11)?,
         })
       })
       .map_err(|e| e.to_string())?
@@ -332,7 +337,10 @@ pub fn create_json_backup(
       stgs.insert(k, v);
     }
 
-    (docs, vers, anns, asts, evidence, nts, revs, lnks, pmpts, evts, scheds, stgs)
+    let mut anchor_stmt = conn.prepare("SELECT id,note_id,document_id,document_version_id,page_index,page_label,selected_quote,rects_json,created_at,provenance FROM note_source_anchors").map_err(|e| e.to_string())?;
+    let anchors = anchor_stmt.query_map([], |r| Ok(NoteSourceAnchor { id:r.get(0)?, note_id:r.get(1)?, document_id:r.get(2)?, document_version_id:r.get(3)?, page_index:r.get(4)?, page_label:r.get(5)?, selected_quote:r.get(6)?, rects_json:r.get(7)?, created_at:r.get(8)?, provenance:r.get(9)? })).map_err(|e| e.to_string())?.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?;
+
+    (docs, vers, anns, asts, evidence, nts, revs, anchors, lnks, pmpts, evts, scheds, stgs)
   };
 
   let mut asset_files = HashMap::new();
@@ -361,6 +369,7 @@ pub fn create_json_backup(
     evidence_blocks,
     notes,
     note_revisions,
+    note_source_anchors,
     links,
     prompts,
     review_events,

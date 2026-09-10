@@ -9,6 +9,7 @@ interface AnnotationEditorProps {
   onSave: (id: string, color: string, comment: string, tags: string[]) => void;
   onTrash: (id: string) => void;
   onRemember?: (annotation: AnnotationRecord) => void;
+  onAddEvidence?: (annotation: AnnotationRecord) => void;
 }
 
 /**
@@ -20,7 +21,7 @@ interface AnnotationEditorProps {
  * colour chips come from the user's configured palette. FR-9.8: Trash moves
  * the row to the recoverable trash; Undo lives at the session level.
  */
-export function AnnotationEditor({ annotation, palette, busy, onSave, onTrash, onRemember }: AnnotationEditorProps) {
+export function AnnotationEditor({ annotation, palette, busy, onSave, onTrash, onRemember, onAddEvidence }: AnnotationEditorProps) {
   const [color, setColor] = useState(annotation.color);
   const [comment, setComment] = useState(annotation.comment);
   const [tagsText, setTagsText] = useState(annotation.tags.join(', '));
@@ -124,6 +125,7 @@ export function AnnotationEditor({ annotation, palette, busy, onSave, onTrash, o
               Remember
             </button>
           )}
+          {onAddEvidence && <button type="button" className="button compact" onClick={() => onAddEvidence(annotation)} disabled={busy}>Add to note</button>}
         </div>
         <button
           className="button compact primary"

@@ -1,4 +1,4 @@
-use rusqlite::{Connection, Result};
+use rusqlite::{params, Connection, Result};
 use std::fs;
 use std::path::Path;
 use thiserror::Error;
@@ -18,7 +18,7 @@ pub enum MigrationError {
 }
 
 /// The highest migration version this engine knows how to apply.
-const LATEST_MIGRATION_VERSION: i32 = 14;
+const LATEST_MIGRATION_VERSION: i32 = 16;
 
 /// Runs forward-only migrations.
 ///
@@ -895,6 +895,174 @@ pub fn run_migrations(conn: &mut Connection, db_dir: &Path, db_existed: bool) ->
       tx.execute(
         "INSERT INTO migration_metadata (version, applied_at, checksum)
          VALUES (14, datetime('now'), 'migration_14_versioned_page_text_cache');",
+        [],
+      )?;
+      tx.commit()?;
+    }
+
+    if current_version < 15 {
+      let tx = conn.transaction()?;
+      tx.execute_batch("CREATE TABLE note_source_anchors (
+        id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL UNIQUE REFERENCES notes(id) ON DELETE CASCADE,
+        document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        document_version_id TEXT NOT NULL REFERENCES document_versions(id) ON DELETE CASCADE,
+        page_index INTEGER NOT NULL CHECK(page_index >= 0),
+        page_label TEXT NOT NULL DEFAULT '',
+        selected_quote TEXT,
+        rects_json TEXT,
+        created_at TEXT NOT NULL,
+        provenance TEXT NOT NULL CHECK(provenance IN ('source_extracted','source_ocr','user_authored','ai_draft','user_adopted_ai','deterministic_transform'))
+      );
+      CREATE INDEX idx_note_source_anchors_document_page ON note_source_anchors(document_id,page_index);")?;
+      tx.execute("INSERT INTO migration_metadata (version,applied_at,checksum) VALUES (15,datetime('now'),'migration_15_quick_note_source_anchors')", [])?;
+      tx.commit()?;
+    }
+
+  fn parse_cloze_indices_for_migration(prompt_type: Option<&str>, question: Option<&str>) -> Vec<i64> {
+    let mut indices = std::collections::BTreeSet::new();
+    if prompt_type == Some("cloze") {
+      if let Some(q) = question {
+        let mut rest = q;
+        while let Some(start) = rest.find("{{c") {
+          rest = &rest[start + 3..];
+          let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+          if digits > 0 && rest[digits..].starts_with("::") {
+            if let Some(end) = rest[digits + 2..].find("}}") {
+              if let Ok(index) = rest[..digits].parse::<i64>() {
+                indices.insert(index);
+              }
+              rest = &rest[digits + 2 + end + 2..];
+            }
+          }
+        }
+      }
+    }
+    if indices.is_empty() {
+      indices.insert(0);
+    }
+    indices.into_iter().collect()
+  }
+
+  if current_version < 16 {
+      let tx = conn.transaction()?;
+      tx.execute(
+        "ALTER TABLE review_events ADD COLUMN cloze_index INTEGER NOT NULL DEFAULT 0;",
+        [],
+      )?;
+      tx.execute(
+        "CREATE INDEX idx_review_events_prompt_cloze ON review_events(prompt_id, cloze_index);",
+        [],
+      )?;
+      tx.execute(
+        &format!(
+          "CREATE TABLE review_schedule_v16 (
+            prompt_id TEXT NOT NULL REFERENCES review_prompts(id) ON DELETE CASCADE,
+            cloze_index INTEGER NOT NULL DEFAULT 0,
+            desired_retention REAL NOT NULL DEFAULT 0.9,
+            state TEXT NOT NULL CHECK (state IN ('new','learning','review','relearning')),
+            stability REAL NOT NULL DEFAULT 0.0,
+            difficulty REAL NOT NULL DEFAULT 0.0,
+            due_at TEXT NOT NULL,
+            last_reviewed_at TEXT,
+            last_outcome TEXT CHECK (last_outcome IN ('again','hard','good','easy')),
+            fsrs_version TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            provenance TEXT NOT NULL CHECK(provenance IN ('source_extracted','source_ocr','user_authored','ai_draft','user_adopted_ai','deterministic_transform')),
+            original_provenance TEXT
+              CHECK ({ORIGINAL_PROVENANCE_SET_CHECK})
+              CHECK ({ADOPTION_CONSISTENCY_CHECK}),
+            PRIMARY KEY (prompt_id, cloze_index)
+          );"
+        ),
+        [],
+      )?;
+      let mut schedule_rows = Vec::new();
+      {
+        let mut select_stmt = tx.prepare(
+          "SELECT
+            s.prompt_id, s.desired_retention, s.state, s.stability, s.difficulty,
+            s.due_at, s.last_reviewed_at, s.last_outcome, s.fsrs_version, s.updated_at,
+            s.provenance, s.original_provenance,
+            p.prompt_type, p.question
+          FROM review_schedule s
+          LEFT JOIN review_prompts p ON p.id = s.prompt_id;",
+        )?;
+        let rows = select_stmt.query_map([], |row| {
+          Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, f64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, f64>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?,
+            row.get::<_, Option<String>>(13)?,
+          ))
+        })?;
+        for r in rows {
+          schedule_rows.push(r?);
+        }
+      }
+
+      {
+        let mut insert_stmt = tx.prepare(
+          "INSERT INTO review_schedule_v16 (
+            prompt_id, cloze_index, desired_retention, state, stability, difficulty,
+            due_at, last_reviewed_at, last_outcome, fsrs_version, updated_at, provenance, original_provenance
+          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        )?;
+        for (
+          prompt_id, desired_retention, state, stability, difficulty,
+          due_at, last_reviewed_at, last_outcome, fsrs_version, updated_at,
+          provenance, original_provenance, prompt_type, question,
+        ) in schedule_rows {
+          let indices = parse_cloze_indices_for_migration(prompt_type.as_deref(), question.as_deref());
+          for cloze_idx in indices {
+            insert_stmt.execute(params![
+              prompt_id, cloze_idx, desired_retention, state, stability, difficulty,
+              due_at, last_reviewed_at, last_outcome, fsrs_version, updated_at, provenance, original_provenance
+            ])?;
+          }
+        }
+      }
+
+      {
+        let mut cloze_prompt_stmt = tx.prepare(
+          "SELECT id, question FROM review_prompts WHERE prompt_type = 'cloze'",
+        )?;
+        let prompts: Vec<(String, String)> = cloze_prompt_stmt
+          .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+          .filter_map(Result::ok)
+          .collect();
+
+        let mut update_event_stmt = tx.prepare(
+          "UPDATE review_events SET cloze_index = ?1 WHERE prompt_id = ?2 AND cloze_index = 0",
+        )?;
+        for (pid, q) in prompts {
+          let indices = parse_cloze_indices_for_migration(Some("cloze"), Some(&q));
+          if let Some(&first_idx) = indices.first() {
+            if first_idx != 0 {
+              update_event_stmt.execute(params![first_idx, pid])?;
+            }
+          }
+        }
+      }
+      tx.execute("DROP TABLE review_schedule;", [])?;
+      tx.execute("ALTER TABLE review_schedule_v16 RENAME TO review_schedule;", [])?;
+      tx.execute(
+        "CREATE INDEX idx_review_schedule_due ON review_schedule(due_at);",
+        [],
+      )?;
+      tx.execute(
+        "INSERT INTO migration_metadata (version, applied_at, checksum)
+         VALUES (16, datetime('now'), 'migration_16_cloze_variant_schedules');",
         [],
       )?;
       tx.commit()?;

@@ -193,6 +193,14 @@ export const SHORTCUT_LIST: KeyboardShortcut[] = [
 
   // Annotations & Notes
   {
+    id: 'note.quick',
+    name: 'Quick Note',
+    category: 'Annotations & Notes',
+    keys: 'Alt + N',
+    description: 'Capture a scratch note linked to the current page or selected passage',
+    match: (e) => e.altKey && !e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === 'n',
+  },
+  {
     id: 'annot.highlight.yellow',
     name: 'Yellow Highlight (Claim)',
     category: 'Annotations & Notes',

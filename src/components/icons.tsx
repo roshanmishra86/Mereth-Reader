@@ -25,6 +25,14 @@ const paths: Record<string, React.ReactNode> = {
       <path d="m15 5 4 4" />
     </>
   ),
+  knowledge: (
+    <>
+      <circle cx="12" cy="5" r="2" />
+      <circle cx="5" cy="17" r="2" />
+      <circle cx="19" cy="17" r="2" />
+      <path d="M12 7v4M7 16l4-4M17 16l-4-4" />
+    </>
+  ),
   review: (
     <>
       <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
@@ -114,6 +122,12 @@ const paths: Record<string, React.ReactNode> = {
   check: (
     <>
       <path d="M20 6 9 17l-5-5" />
+    </>
+  ),
+  edit: (
+    <>
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
     </>
   ),
 };

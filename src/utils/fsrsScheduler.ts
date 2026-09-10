@@ -12,6 +12,7 @@ export type FsrsCardState = 'new' | 'learning' | 'review' | 'relearning';
 
 export interface FsrsScheduleState {
   prompt_id: string;
+  cloze_index?: number;
   desired_retention: number;
   state: FsrsCardState;
   stability: number;
@@ -30,6 +31,7 @@ export interface FsrsReviewInput {
   reviewedAt: Date;
   previous?: FsrsScheduleState | null;
   desiredRetention?: number;
+  clozeIndex?: number;
 }
 
 export interface FsrsReviewResult {
@@ -135,6 +137,7 @@ export function scheduleReview(input: FsrsReviewInput): FsrsReviewResult {
     retrievability: recall,
     schedule: {
       prompt_id: input.promptId,
+      cloze_index: input.clozeIndex ?? input.previous?.cloze_index ?? 0,
       desired_retention: desiredRetention,
       state: input.outcome === 'again' ? 'relearning' : 'review',
       stability,

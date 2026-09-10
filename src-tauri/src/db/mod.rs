@@ -3,6 +3,7 @@ pub mod evidence;
 pub mod migrations;
 pub mod note_links;
 pub mod note_search;
+pub mod note_source_anchors;
 pub mod notes;
 pub mod prompts;
 pub mod provenance;
@@ -225,6 +226,11 @@ impl Database {
         // `create_area_capture`. This runs at every startup so an orphaned bitmap
         // never survives past the next open.
         db.reconcile_orphaned_asset_files(&db.app_dir)?;
+
+        // Knowledge trash is recoverable for 30 days. Enforce retention at
+        // startup as well as when notes are listed, so cleanup does not depend
+        // on the user opening the Trash view.
+        db.purge_expired_trashed_notes()?;
 
         Ok(db)
     }
@@ -1375,6 +1381,7 @@ mod tests {
         {
             let conn = Connection::open(&db_path).unwrap();
             for table in [
+                "note_source_anchors",
                 "fts_document_text",
                 "exports",
                 "review_schedule",
@@ -1880,7 +1887,7 @@ mod tests {
             let rows: i64 = conn
                 .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(rows, 14);
+            assert_eq!(rows, 16);
         }
     }
 
@@ -1926,6 +1933,7 @@ mod tests {
         {
             let conn = Connection::open(&db_path).unwrap();
             for table in [
+                "note_source_anchors",
                 "exports",
                 "review_schedule",
                 "review_events",
@@ -1977,7 +1985,7 @@ mod tests {
             let rows: i64 = conn
                 .query_row("SELECT count(*) FROM migration_metadata", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(rows, 14);
+            assert_eq!(rows, 16);
             drop(conn);
             // Pre-existing data survived the forward migration.
             let doc = db
@@ -2174,12 +2182,14 @@ mod tests {
                     "user_response",
                     "provenance",
                     "original_provenance",
+                    "cloze_index",
                 ],
             ),
             (
                 "review_schedule",
                 &[
                     "prompt_id",
+                    "cloze_index",
                     "desired_retention",
                     "state",
                     "stability",
@@ -2236,7 +2246,7 @@ mod tests {
 
         // The ten 3.1 tables are exactly the ones the migration adds — no
         // undocumented table appears in the schema.
-        let known_tables: [&str; 19] = [
+        let known_tables: [&str; 20] = [
             "documents",
             "document_versions",
             "pages",
@@ -2249,6 +2259,7 @@ mod tests {
             "annotation_assets",
             "notes",
             "note_revisions",
+            "note_source_anchors",
             "note_links",
             "evidence_blocks",
             "review_prompts",

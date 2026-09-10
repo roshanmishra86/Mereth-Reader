@@ -83,9 +83,6 @@ export function OutlineTree({ nodes, currentPage, onSelectPage }: OutlineTreePro
 
           <span className="outline-title">{node.title}</span>
 
-          {node.pageNumber && (
-            <span className="outline-page-badge">{node.pageNumber}</span>
-          )}
         </div>
 
         {hasChildren && isExpanded && (

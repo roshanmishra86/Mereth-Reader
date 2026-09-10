@@ -77,7 +77,17 @@ pub fn export_markdown_package(
       note.title, note.id, note.note_type, note.created_at, note.updated_at, note.provenance
     );
 
-    let content = format!("{frontmatter}# {}\n\n{}\n", note.title, note.body_markdown);
+    let mut content = format!("{frontmatter}# {}\n\n{}\n", note.title, note.body_markdown);
+    let evidence_blocks = db.list_evidence_blocks(&note.id).unwrap_or_default();
+    if !evidence_blocks.is_empty() {
+      content.push_str("\n\n## Attached Evidence\n\n");
+      for block in evidence_blocks {
+        content.push_str(&format!("> {}\n\n— Page {} ({})\n\n", block.quote, block.page_label, block.document_title));
+        if !block.user_comment.is_empty() {
+          content.push_str(&format!("**Comment:** {}\n\n", block.user_comment));
+        }
+      }
+    }
     fs::write(&note_file_path, content).map_err(|e| format!("Failed to write note file: {e}"))?;
 
     note_entries.push(ManifestEntry {

@@ -266,8 +266,12 @@ export function runR1PerformanceGateProbe(): R1PerformanceGateReport {
   });
 
   const lines = out.trim().split('\n');
-  const jsonLine = lines[lines.length - 1];
-  return JSON.parse(jsonLine) as R1PerformanceGateReport;
+  const jsonLine = lines[lines.length - 1] || '';
+  try {
+    return JSON.parse(jsonLine) as R1PerformanceGateReport;
+  } catch (err) {
+    throw new Error(`Probe failed. Output was: ${out || '<empty>'}. Parse error: ${err}`);
+  }
 }
 
 /**

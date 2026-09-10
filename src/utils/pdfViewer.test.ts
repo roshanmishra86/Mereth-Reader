@@ -13,10 +13,74 @@ import { describe, it, expect } from 'vitest';
 import {
   loadPdfDocument,
   renderPdfPageToCanvas,
+  cancelCanvasRender,
   buildPdfJsLoadConfig,
   extractPdfPageTexts,
+  calculateOutputScale,
+  MAX_OUTPUT_SCALE,
+  MAX_CONCURRENT_PIXELS,
+  getActiveRenderPixels,
+  getRetainedCanvasPixels,
+  resetActiveRenderPixels,
+  setActiveRenderPixels,
+  releaseCanvasPixels,
+  getReservedSwapPixels,
 } from './pdfViewer';
 import { isSecurePdfOptions } from './pdfUtils';
+
+describe('calculateOutputScale', () => {
+  it('returns dpr when within MAX_OUTPUT_SCALE and maxDim boundary', () => {
+    expect(calculateOutputScale(800, 1000, 1)).toBe(1);
+    expect(calculateOutputScale(800, 1000, 1.5)).toBe(1.5);
+    expect(calculateOutputScale(800, 1000, 2)).toBe(2);
+  });
+
+  it('caps output scale at MAX_OUTPUT_SCALE (2) for high dpr', () => {
+    expect(calculateOutputScale(800, 1000, 3)).toBe(MAX_OUTPUT_SCALE);
+    expect(calculateOutputScale(800, 1000, 4)).toBe(2);
+  });
+
+  it('reduces scale when viewport dimension multiplied by scale exceeds maxDim (4096)', () => {
+    const scale = calculateOutputScale(2000, 3000, 2);
+    expect(scale).toBeCloseTo(4096 / 3000, 5);
+    expect(3000 * scale).toBeLessThanOrEqual(4096);
+  });
+
+  it('allows scale below 1 for extremely large pages to bound dimensions to maxDim', () => {
+    const scale = calculateOutputScale(5000, 5000, 2);
+    expect(scale).toBeCloseTo(4096 / 5000, 5);
+    expect(5000 * scale).toBeLessThanOrEqual(4096);
+  });
+
+  it('strictly bounds output scale for viewports above 16,384 pixels so dimensions never exceed 4096', () => {
+    const scale20k = calculateOutputScale(20000, 10000, 2);
+    expect(scale20k).toBeCloseTo(4096 / 20000, 6);
+    expect(20000 * scale20k).toBeLessThanOrEqual(4096);
+    expect(Math.floor(20000 * scale20k)).toBeLessThanOrEqual(4096);
+
+    const scale32k = calculateOutputScale(1000, 32768, 1);
+    expect(scale32k).toBeCloseTo(4096 / 32768, 6);
+    expect(32768 * scale32k).toBeLessThanOrEqual(4096);
+    expect(Math.floor(32768 * scale32k)).toBeLessThanOrEqual(4096);
+  });
+
+  it('handles zero or negative dimensions gracefully without division by zero', () => {
+    expect(calculateOutputScale(0, 0, 2)).toBe(2);
+    expect(calculateOutputScale(-100, -100, 1.5)).toBe(1.5);
+  });
+
+  it('defaults dpr to 1 in non-window environment', () => {
+    const scale = calculateOutputScale(800, 1000);
+    expect(scale).toBeGreaterThanOrEqual(1);
+    expect(scale).toBeLessThanOrEqual(MAX_OUTPUT_SCALE);
+  });
+
+  it('tracks aggregate pixel budget helpers', () => {
+    expect(MAX_CONCURRENT_PIXELS).toBe(64 * 1024 * 1024);
+    resetActiveRenderPixels();
+    expect(getActiveRenderPixels()).toBe(0);
+  });
+});
 
 describe('pdfViewer load path', () => {
   it('loadPdfDocument returns null gracefully when binary IPC is unavailable or missing file', async () => {
@@ -63,6 +127,214 @@ describe('renderPdfPageToCanvas', () => {
       errorCategory: 'bitmap',
       message: 'Page is outside the document.',
     });
+  });
+
+  it('awaits capacity when activeRenderPixels + pixelCost > MAX_CONCURRENT_PIXELS and releases in finally', async () => {
+    resetActiveRenderPixels();
+    const mockContext = {
+      save: () => {},
+      restore: () => {},
+      clearRect: () => {},
+      fillRect: () => {},
+      transform: () => {},
+    };
+    const mockCanvas = {
+      getContext: () => mockContext,
+      style: {},
+      width: 0,
+      height: 0,
+    } as unknown as HTMLCanvasElement;
+
+    let resolveRender!: () => void;
+    const renderPromise = new Promise<void>((r) => { resolveRender = r; });
+
+    const mockDoc = {
+      numPages: 1,
+      getPage: async () => ({
+        getViewport: () => ({ width: 1000, height: 1000 }),
+        render: () => ({
+          promise: renderPromise,
+          cancel: () => {},
+        }),
+      }),
+    } as unknown as Parameters<typeof renderPdfPageToCanvas>[0]['pdfDoc'];
+
+    // Pre-fill active render pixels close to cap
+    setActiveRenderPixels(MAX_CONCURRENT_PIXELS - 500_000);
+
+    let completed = false;
+    const renderCall = renderPdfPageToCanvas({
+      pdfDoc: mockDoc,
+      pageNumber: 1,
+      canvas: mockCanvas,
+      scale: 1.0,
+    }).then((res) => {
+      completed = true;
+      return res;
+    });
+
+    // Wait a short time; render should still be waiting for memory capacity
+    await new Promise((r) => setTimeout(r, 60));
+    expect(completed).toBe(false);
+
+    // Prior render finishes and drops active pixels
+    setActiveRenderPixels(0);
+
+    // Wait for the wait loop to pick up new capacity and allocate pixels
+    await new Promise((r) => setTimeout(r, 60));
+    expect(getRetainedCanvasPixels()).toBeGreaterThan(0);
+
+    // Finish render task
+    resolveRender();
+    const result = await renderCall;
+    expect(result.bitmap).toBe('rendered');
+    // Pixels must be cleaned up in finally block
+    expect(getActiveRenderPixels()).toBe(0);
+  });
+
+  it('cancels cleanly while waiting for capacity without leaking pixels', async () => {
+    resetActiveRenderPixels();
+    const mockContext = {
+      save: () => {},
+      restore: () => {},
+      clearRect: () => {},
+      fillRect: () => {},
+      transform: () => {},
+    };
+    const mockCanvas = {
+      getContext: () => mockContext,
+      style: {},
+      width: 0,
+      height: 0,
+    } as unknown as HTMLCanvasElement;
+
+    const mockDoc = {
+      numPages: 1,
+      getPage: async () => ({
+        getViewport: () => ({ width: 1000, height: 1000 }),
+        render: () => ({
+          promise: Promise.resolve(),
+          cancel: () => {},
+        }),
+      }),
+    } as unknown as Parameters<typeof renderPdfPageToCanvas>[0]['pdfDoc'];
+
+    setActiveRenderPixels(MAX_CONCURRENT_PIXELS - 500_000);
+
+    const renderCall = renderPdfPageToCanvas({
+      pdfDoc: mockDoc,
+      pageNumber: 1,
+      canvas: mockCanvas,
+      scale: 1.0,
+    });
+
+    // Cancel while in waiting loop
+    await new Promise((r) => setTimeout(r, 30));
+    cancelCanvasRender(mockCanvas);
+
+    const result = await renderCall;
+    expect(result.bitmap).toBe('cancelled');
+    expect(result.errorCategory).toBe('cancelled');
+    // Pixels should not be leaked
+    resetActiveRenderPixels();
+    expect(getActiveRenderPixels()).toBe(0);
+  });
+
+  it('evicts an inactive retained canvas when retained canvases consume the budget', async () => {
+    resetActiveRenderPixels();
+    const context = {
+      save: () => {}, restore: () => {}, clearRect: () => {}, fillRect: () => {}, transform: () => {},
+    };
+    const makeCanvas = () => ({ getContext: () => context, style: {}, width: 0, height: 0 }) as unknown as HTMLCanvasElement;
+    const makeDoc = () => ({
+      numPages: 1,
+      getPage: async () => ({
+        getViewport: () => ({ width: 4096, height: 4096 }),
+        render: () => ({ promise: Promise.resolve(), cancel: () => {} }),
+      }),
+    } as unknown as Parameters<typeof renderPdfPageToCanvas>[0]['pdfDoc']);
+
+    const retained = [makeCanvas(), makeCanvas(), makeCanvas(), makeCanvas()];
+    for (const canvas of retained) {
+      const result = await renderPdfPageToCanvas({ pdfDoc: makeDoc(), pageNumber: 1, canvas, scale: 1 });
+      expect(result.bitmap).toBe('rendered');
+    }
+    expect(getRetainedCanvasPixels()).toBeGreaterThan(0);
+
+    const blockedCanvas = makeCanvas();
+    const blocked = renderPdfPageToCanvas({ pdfDoc: makeDoc(), pageNumber: 1, canvas: blockedCanvas, scale: 1 });
+    await expect(blocked).resolves.toMatchObject({ bitmap: 'rendered' });
+    expect(getRetainedCanvasPixels()).toBeLessThanOrEqual(MAX_CONCURRENT_PIXELS);
+
+    for (const canvas of retained) releaseCanvasPixels(canvas);
+    releaseCanvasPixels(blockedCanvas);
+    expect(getRetainedCanvasPixels()).toBe(0);
+  });
+
+  it('reserves swap capacity across overlapping asynchronous renders', async () => {
+    resetActiveRenderPixels();
+    const makeCanvas = () => ({ getContext: () => ({}), style: {}, width: 0, height: 0 }) as unknown as HTMLCanvasElement;
+    const finish: Array<() => void> = [];
+    const doc = {
+      numPages: 1,
+      getPage: async () => ({
+        getViewport: () => ({ width: 4096, height: 4096 }),
+        render: () => ({ promise: new Promise<void>(resolve => finish.push(resolve)), cancel: () => {} }),
+      }),
+    } as unknown as Parameters<typeof renderPdfPageToCanvas>[0]['pdfDoc'];
+    const canvases = [makeCanvas(), makeCanvas(), makeCanvas()];
+    const calls = canvases.map(canvas => renderPdfPageToCanvas({ pdfDoc: doc, pageNumber: 1, canvas, swapTarget: makeCanvas(), scale: 1 }));
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(finish).toHaveLength(2);
+    expect(canvases[2].width).toBe(0);
+    expect(getRetainedCanvasPixels() + getReservedSwapPixels()).toBe(MAX_CONCURRENT_PIXELS);
+    finish[0]();
+    finish[1]();
+    await new Promise(resolve => setTimeout(resolve, 40));
+    expect(finish).toHaveLength(3);
+    expect(getRetainedCanvasPixels() + getReservedSwapPixels()).toBeLessThanOrEqual(MAX_CONCURRENT_PIXELS);
+    finish[2]();
+    await Promise.all(calls);
+    expect(getReservedSwapPixels()).toBe(0);
+    canvases.forEach(releaseCanvasPixels);
+  });
+
+  it('decrements activeRenderPixels in finally block when render task fails', async () => {
+    resetActiveRenderPixels();
+    const mockContext = {
+      save: () => {},
+      restore: () => {},
+      clearRect: () => {},
+      fillRect: () => {},
+      transform: () => {},
+    };
+    const mockCanvas = {
+      getContext: () => mockContext,
+      style: {},
+      width: 0,
+      height: 0,
+    } as unknown as HTMLCanvasElement;
+
+    const mockDoc = {
+      numPages: 1,
+      getPage: async () => ({
+        getViewport: () => ({ width: 500, height: 500 }),
+        render: () => ({
+          promise: Promise.reject(new Error('Canvas GPU device lost')),
+          cancel: () => {},
+        }),
+      }),
+    } as unknown as Parameters<typeof renderPdfPageToCanvas>[0]['pdfDoc'];
+
+    const result = await renderPdfPageToCanvas({
+      pdfDoc: mockDoc,
+      pageNumber: 1,
+      canvas: mockCanvas,
+      scale: 1.0,
+    });
+
+    expect(result.bitmap).toBe('failed');
+    expect(getActiveRenderPixels()).toBe(0);
   });
 });
 

@@ -4,6 +4,7 @@ import {
   formatPageLabel,
   searchPdfText,
   createSecurePdfOptions,
+  computeLayoutOffsets,
   calculateVirtualWindow,
   extractOrderedText,
   createNavigationHistory,
@@ -152,6 +153,71 @@ describe('pdfUtils', () => {
       expect(win.renderIndices).not.toContain(8);
       expect(win.renderIndices).not.toContain(9);
     });
+
+    it('correctly calculates virtual window on a 1000-page simulated document using binary search', () => {
+      const totalPages = 1000;
+      const pageGap = 16;
+      const heights = new Array(totalPages).fill(0).map((_, i) => 600 + (i % 5) * 50);
+
+      let targetOffset = 0;
+      for (let i = 0; i < 500; i++) {
+        targetOffset += heights[i] + pageGap;
+      }
+
+      const viewportHeight = 1200;
+      const prefetchBuffer = 3;
+      const win = calculateVirtualWindow(targetOffset + 100, viewportHeight, heights, pageGap, prefetchBuffer);
+
+      expect(win.visibleIndices[0]).toBe(500);
+      expect(win.visibleIndices.length).toBeGreaterThan(0);
+      expect(win.visibleIndices).toContain(500);
+      expect(win.visibleIndices).toContain(501);
+
+      const minVisible = win.visibleIndices[0];
+      const maxVisible = win.visibleIndices[win.visibleIndices.length - 1];
+      expect(win.renderIndices).toContain(minVisible - prefetchBuffer);
+      expect(win.renderIndices).toContain(maxVisible + prefetchBuffer);
+
+      expect(win.renderIndices).not.toContain(0);
+      expect(win.renderIndices).not.toContain(100);
+      expect(win.renderIndices).not.toContain(900);
+      expect(win.renderIndices).not.toContain(999);
+
+      expect(win.renderIndices.length).toBeLessThanOrEqual(win.visibleIndices.length + 2 * prefetchBuffer);
+      expect(win.totalHeight).toBeGreaterThan(600 * 1000);
+    });
+
+    it('accepts precomputed layout offsets and performs in O(log N)', () => {
+      const heights = [400, 500, 600, 700];
+      const gap = 20;
+      const offsets = computeLayoutOffsets(heights, gap);
+      expect(offsets).toEqual([0, 420, 940, 1560]);
+
+      const win = calculateVirtualWindow(450, 600, heights, gap, 1, offsets);
+      expect(win.offsets).toBe(offsets);
+      expect(win.visibleIndices).toContain(1);
+    });
+  });
+
+  describe('computeLayoutOffsets', () => {
+    it('returns empty array for empty row heights', () => {
+      expect(computeLayoutOffsets([], 16)).toEqual([]);
+    });
+
+    it('computes cumulative layout offsets with gaps accurately and quickly for 5000 rows', () => {
+      const rowHeights = new Array(5000).fill(500);
+      const gap = 16;
+      const startTime = performance.now();
+      const offsets = computeLayoutOffsets(rowHeights, gap);
+      const duration = performance.now() - startTime;
+
+      expect(offsets.length).toBe(5000);
+      expect(offsets[0]).toBe(0);
+      expect(offsets[1]).toBe(516);
+      expect(offsets[2]).toBe(1032);
+      expect(offsets[4999]).toBe(4999 * 516);
+      expect(duration).toBeLessThan(50);
+    });
   });
 
   describe('extractOrderedText (FR-8.4)', () => {
@@ -192,16 +258,16 @@ describe('pdfUtils', () => {
       expect(result.text).toContain('Col 2 top\nCol 2 bottom');
     });
 
-    it('flags low-confidence warning on overlapping text items', () => {
+    it('does not warn for a small amount of ordinary glyph overlap', () => {
       const items: PDFTextItem[] = [
         { str: 'Overlapping text A', transform: [10, 0, 0, 10, 50, 700], width: 100, height: 10 },
         { str: 'Overlapping text B', transform: [10, 0, 0, 10, 80, 700], width: 100, height: 10 },
       ];
 
       const result = extractOrderedText(items);
-      expect(result.isLowConfidence).toBe(true);
-      expect(result.warning).toBeDefined();
-      expect(result.warning).toContain('Low-confidence');
+      expect(result.confidence).toBeGreaterThanOrEqual(0.8);
+      expect(result.isLowConfidence).toBe(false);
+      expect(result.warning).toBeUndefined();
     });
   });
 
@@ -251,4 +317,3 @@ describe('pdfUtils', () => {
     });
   });
 });
-

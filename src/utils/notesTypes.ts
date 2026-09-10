@@ -33,6 +33,45 @@ export interface NoteRevisionRecord {
   original_provenance?: string | null;
 }
 
+export interface NoteSourceAnchorRecord {
+  id: string;
+  note_id: string;
+  document_id: string;
+  document_version_id: string;
+  /** Zero-based physical page index. */
+  page_index: number;
+  page_label: string;
+  selected_quote?: string | null;
+  rects_json?: string | null;
+  created_at: string;
+  provenance: string;
+}
+
+export interface QuickNoteSourceSnapshot {
+  documentId: string;
+  documentVersionId: string;
+  pageIndex: number;
+  pageLabel: string;
+  selectedQuote?: string | null;
+  rectsJson?: string | null;
+}
+
+export function quickNoteTitle(body: string): string {
+  return body.split(/\r?\n/).map((line) => line.trim()).find(Boolean)?.slice(0, 120) ?? 'Quick note';
+}
+
+/**
+ * Returns true if the note title was auto-generated from its body or is a default placeholder.
+ * If false, the note has an explicit, user-assigned title that must not be overwritten.
+ */
+export function isAutoDerivedTitle(title: string, bodyMarkdown: string): boolean {
+  const trimmed = title.trim();
+  if (!trimmed || trimmed === 'Quick note' || trimmed === 'Untitled') {
+    return true;
+  }
+  return trimmed === quickNoteTitle(bodyMarkdown);
+}
+
 export interface ConceptTitleGuidanceResult {
   isStrongTitle: boolean;
   isQuestion: boolean;
