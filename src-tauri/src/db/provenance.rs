@@ -19,12 +19,12 @@
 
 /// The six provenance values of §16.1. Ordered as in the R0.3 constraint.
 pub const ALLOWED_PROVENANCES: &[&str] = &[
-  "source_extracted",
-  "source_ocr",
-  "user_authored",
-  "ai_draft",
-  "user_adopted_ai",
-  "deterministic_transform",
+    "source_extracted",
+    "source_ocr",
+    "user_authored",
+    "ai_draft",
+    "user_adopted_ai",
+    "deterministic_transform",
 ];
 
 /// The provenance a record gets once the user explicitly adopts a draft.
@@ -48,16 +48,16 @@ pub const ADOPTION_CONSISTENCY_CHECK: &str = "provenance <> 'user_adopted_ai' OR
 /// The R2–R4 feature tables created in migrations 4–8. Task 3.2 (migration 9)
 /// adds `original_provenance` + the adoption checks to each of them.
 pub const TEXT_BEARING_FEATURE_TABLES: &[&str] = &[
-  "annotations",
-  "annotation_assets",
-  "notes",
-  "note_revisions",
-  "note_links",
-  "evidence_blocks",
-  "review_prompts",
-  "review_events",
-  "review_schedule",
-  "exports",
+    "annotations",
+    "annotation_assets",
+    "notes",
+    "note_revisions",
+    "note_links",
+    "evidence_blocks",
+    "review_prompts",
+    "review_events",
+    "review_schedule",
+    "exports",
 ];
 
 /// The R0.3-era text-bearing tables. They already carry the six-value
@@ -68,13 +68,13 @@ pub const CORE_TEXT_BEARING_TABLES: &[&str] = &["documents", "document_versions"
 
 /// Validates that `provenance` is exactly one of the six §16.1 values.
 pub fn validate_provenance(provenance: &str) -> Result<(), String> {
-  if ALLOWED_PROVENANCES.contains(&provenance) {
-    Ok(())
-  } else {
-    Err(format!(
-      "Invalid provenance '{provenance}'; expected one of {ALLOWED_PROVENANCES:?}"
-    ))
-  }
+    if ALLOWED_PROVENANCES.contains(&provenance) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Invalid provenance '{provenance}'; expected one of {ALLOWED_PROVENANCES:?}"
+        ))
+    }
 }
 
 /// Computes the `(provenance, original_provenance)` pair for an explicit
@@ -86,66 +86,76 @@ pub fn validate_provenance(provenance: &str) -> Result<(), String> {
 /// already-adopted value (an adoption must always trace back to a
 /// non-adopted original; a re-adoption keeps the first original).
 pub fn adoption_provenance(previous: &str) -> Result<(String, String), String> {
-  validate_provenance(previous)?;
-  if previous == ADOPTED_PROVENANCE {
-    return Err(
+    validate_provenance(previous)?;
+    if previous == ADOPTED_PROVENANCE {
+        return Err(
       "Adoption cannot erase a prior adoption: original_provenance must be the value before the first adoption"
         .to_string(),
     );
-  }
-  Ok((ADOPTED_PROVENANCE.to_string(), previous.to_string()))
+    }
+    Ok((ADOPTED_PROVENANCE.to_string(), previous.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
-  use super::*;
+    use super::*;
 
-  #[test]
-  fn test_validate_provenance_accepts_exactly_the_six_values() {
-    for value in ALLOWED_PROVENANCES {
-      assert!(validate_provenance(value).is_ok(), "{value} must be accepted");
-      // Case matters: provenance is a controlled vocabulary.
-      assert!(validate_provenance(&value.to_uppercase()).is_err());
+    #[test]
+    fn test_validate_provenance_accepts_exactly_the_six_values() {
+        for value in ALLOWED_PROVENANCES {
+            assert!(
+                validate_provenance(value).is_ok(),
+                "{value} must be accepted"
+            );
+            // Case matters: provenance is a controlled vocabulary.
+            assert!(validate_provenance(&value.to_uppercase()).is_err());
+        }
+
+        for bad in [
+            "",
+            "fabricated",
+            "user_edited",
+            "none",
+            "ai_generated",
+            "source",
+        ] {
+            assert!(validate_provenance(bad).is_err(), "{bad} must be rejected");
+        }
     }
 
-    for bad in ["", "fabricated", "user_edited", "none", "ai_generated", "source"] {
-      assert!(validate_provenance(bad).is_err(), "{bad} must be rejected");
+    #[test]
+    fn test_adoption_preserves_the_original_value() {
+        // Adopting any non-adopted provenance yields the adopted pair whose
+        // original is exactly the pre-adoption value.
+        for previous in ALLOWED_PROVENANCES
+            .iter()
+            .filter(|p| **p != ADOPTED_PROVENANCE)
+        {
+            let (provenance, original) = adoption_provenance(previous).expect("valid adoption");
+            assert_eq!(provenance, "user_adopted_ai");
+            assert_eq!(original, *previous);
+        }
     }
-  }
 
-  #[test]
-  fn test_adoption_preserves_the_original_value() {
-    // Adopting any non-adopted provenance yields the adopted pair whose
-    // original is exactly the pre-adoption value.
-    for previous in ALLOWED_PROVENANCES
-      .iter()
-      .filter(|p| **p != ADOPTED_PROVENANCE)
-    {
-      let (provenance, original) = adoption_provenance(previous).expect("valid adoption");
-      assert_eq!(provenance, "user_adopted_ai");
-      assert_eq!(original, *previous);
+    #[test]
+    fn test_adoption_rejects_values_that_would_erase_history() {
+        // Re-adopting an already-adopted draft must not lose the first original.
+        assert!(adoption_provenance("user_adopted_ai").is_err());
+        // Anything outside the six values is not a traceable original.
+        assert!(adoption_provenance("").is_err());
+        assert!(adoption_provenance("fabricated").is_err());
     }
-  }
 
-  #[test]
-  fn test_adoption_rejects_values_that_would_erase_history() {
-    // Re-adopting an already-adopted draft must not lose the first original.
-    assert!(adoption_provenance("user_adopted_ai").is_err());
-    // Anything outside the six values is not a traceable original.
-    assert!(adoption_provenance("").is_err());
-    assert!(adoption_provenance("fabricated").is_err());
-  }
-
-  #[test]
-  fn test_check_expressions_spell_the_same_vocabulary() {
-    // The SQL spellings must mention exactly the six values; guard against
-    // a silent typo drifting from the Rust vocabulary.
-    for value in ALLOWED_PROVENANCES {
-      assert!(PROVENANCE_VALUES_SQL.contains(value));
-      assert!(ORIGINAL_PROVENANCE_SET_CHECK.contains(value));
+    #[test]
+    fn test_check_expressions_spell_the_same_vocabulary() {
+        // The SQL spellings must mention exactly the six values; guard against
+        // a silent typo drifting from the Rust vocabulary.
+        for value in ALLOWED_PROVENANCES {
+            assert!(PROVENANCE_VALUES_SQL.contains(value));
+            assert!(ORIGINAL_PROVENANCE_SET_CHECK.contains(value));
+        }
+        assert!(ORIGINAL_PROVENANCE_SET_CHECK.contains("original_provenance IS NULL OR"));
+        assert!(ADOPTION_CONSISTENCY_CHECK.contains("original_provenance IS NOT NULL"));
+        assert!(ADOPTION_CONSISTENCY_CHECK.contains("original_provenance <> 'user_adopted_ai'"));
     }
-    assert!(ORIGINAL_PROVENANCE_SET_CHECK.contains("original_provenance IS NULL OR"));
-    assert!(ADOPTION_CONSISTENCY_CHECK.contains("original_provenance IS NOT NULL"));
-    assert!(ADOPTION_CONSISTENCY_CHECK.contains("original_provenance <> 'user_adopted_ai'"));
-  }
 }

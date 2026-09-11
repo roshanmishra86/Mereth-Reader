@@ -14,7 +14,8 @@ use db::note_source_anchors::{NoteSourceAnchor, QuickNoteTransactionResult};
 use db::notes::{Note, NoteRevision, SplitNoteTransactionResult};
 use db::prompts::ReviewPrompt;
 use db::review::{
-    DailyReviewUsage, DueReviewPrompt, RecentReviewEvent, ReviewEvent, ReviewQueueStats, ReviewSchedule,
+    DailyReviewUsage, DueReviewPrompt, RecentReviewEvent, ReviewEvent, ReviewQueueStats,
+    ReviewSchedule,
 };
 use db::versions::{DocumentVersion, PageGeometry, VersionCheckResult};
 use db::{
@@ -1045,15 +1046,26 @@ fn db_add_note(note: Note, state: State<'_, AppState>) -> Result<Note, String> {
 }
 
 #[tauri::command]
-fn db_create_quick_note(note: Note, anchor: NoteSourceAnchor, state: State<'_, AppState>) -> Result<QuickNoteTransactionResult, String> {
+fn db_create_quick_note(
+    note: Note,
+    anchor: NoteSourceAnchor,
+    state: State<'_, AppState>,
+) -> Result<QuickNoteTransactionResult, String> {
     let lock = state.db.lock().unwrap();
-    lock.as_ref().ok_or("Database not initialized")?.create_quick_note(&note, &anchor)
+    lock.as_ref()
+        .ok_or("Database not initialized")?
+        .create_quick_note(&note, &anchor)
 }
 
 #[tauri::command]
-fn db_list_note_source_anchors(document_id: String, state: State<'_, AppState>) -> Result<Vec<NoteSourceAnchor>, String> {
+fn db_list_note_source_anchors(
+    document_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<NoteSourceAnchor>, String> {
     let lock = state.db.lock().unwrap();
-    lock.as_ref().ok_or("Database not initialized")?.list_note_source_anchors(&document_id)
+    lock.as_ref()
+        .ok_or("Database not initialized")?
+        .list_note_source_anchors(&document_id)
 }
 
 #[tauri::command]
@@ -1416,7 +1428,11 @@ fn db_get_review_history(
 }
 
 #[tauri::command]
-fn db_get_daily_review_usage(start: String, end: String, state: State<'_, AppState>) -> Result<DailyReviewUsage, String> {
+fn db_get_daily_review_usage(
+    start: String,
+    end: String,
+    state: State<'_, AppState>,
+) -> Result<DailyReviewUsage, String> {
     let lock = state.db.lock().unwrap();
     let db = lock.as_ref().ok_or("Database not initialized")?;
     db.get_daily_review_usage(&start, &end)

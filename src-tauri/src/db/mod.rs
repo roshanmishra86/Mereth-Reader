@@ -267,8 +267,10 @@ impl Database {
     pub fn diagnostic_counts(&self) -> Result<DiagnosticCounts, String> {
         let conn = self.conn.lock().unwrap();
         let count = |table: &str| -> Result<i64, String> {
-            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
-                .map_err(|error| error.to_string())
+            conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .map_err(|error| error.to_string())
         };
         Ok(DiagnosticCounts {
             document_count: count("documents")?,
@@ -519,7 +521,11 @@ impl Database {
 
     /// Permanently removes a document and its owned data while optionally
     /// retaining source notes as detached notes.
-    pub fn delete_document_with_note_policy(&self, id: &str, keep_notes: bool) -> Result<(), String> {
+    pub fn delete_document_with_note_policy(
+        &self,
+        id: &str,
+        keep_notes: bool,
+    ) -> Result<(), String> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         if keep_notes {
@@ -528,7 +534,8 @@ impl Database {
                 params![id],
             ).map_err(|e| e.to_string())?;
         }
-        let rows_affected = tx.execute("DELETE FROM documents WHERE id = ?1", params![id])
+        let rows_affected = tx
+            .execute("DELETE FROM documents WHERE id = ?1", params![id])
             .map_err(|e| e.to_string())?;
         if rows_affected == 0 {
             return Err(format!("Document not found: {id}"));
@@ -1818,7 +1825,8 @@ mod tests {
             ownership_mode: "open_in_place".into(),
             original_filepath: None,
             removed_at: None,
-        }).unwrap();
+        })
+        .unwrap();
         let note_id = Uuid::new_v4().to_string();
         db.add_note(&Note {
             id: note_id.clone(),
@@ -1831,7 +1839,8 @@ mod tests {
             updated_at: "2026-08-30T00:00:00Z".into(),
             provenance: "user_authored".into(),
             original_provenance: None,
-        }).unwrap();
+        })
+        .unwrap();
 
         db.delete_document_with_note_policy(&doc_id, true).unwrap();
 

@@ -65,7 +65,9 @@ fn card_indices(prompt: &ReviewPrompt) -> Vec<i64> {
             }
         }
     }
-    if indices.is_empty() { indices.insert(0); }
+    if indices.is_empty() {
+        indices.insert(0);
+    }
     indices.into_iter().collect()
 }
 
@@ -154,8 +156,14 @@ impl Database {
 
     fn due_review_cards(&self, limit: Option<usize>) -> Result<Vec<DueReviewPrompt>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        if limit == Some(0) { return Ok(Vec::new()); }
-        let now: String = conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        if limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let now: String = conn
+            .query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| e.to_string())?;
         let mut stmt = conn
       .prepare(
         "SELECT
@@ -181,11 +189,16 @@ impl Database {
             })
             .map_err(|e| e.to_string())?;
 
-        let mut grouped: std::collections::BTreeMap<String, (ReviewPrompt, Vec<ReviewSchedule>)> = std::collections::BTreeMap::new();
+        let mut grouped: std::collections::BTreeMap<String, (ReviewPrompt, Vec<ReviewSchedule>)> =
+            std::collections::BTreeMap::new();
         for row in rows {
             let row = row.map_err(|e| e.to_string())?;
-            let entry = grouped.entry(row.prompt.id.clone()).or_insert((row.prompt, Vec::new()));
-            if let Some(schedule) = row.schedule { entry.1.push(schedule); }
+            let entry = grouped
+                .entry(row.prompt.id.clone())
+                .or_insert((row.prompt, Vec::new()));
+            if let Some(schedule) = row.schedule {
+                entry.1.push(schedule);
+            }
         }
         let mut out = Vec::new();
         for (_, (prompt, schedules)) in grouped {
@@ -201,23 +214,56 @@ impl Database {
                         }
                     })
                     .cloned();
-                if schedule.as_ref().is_some_and(|s| s.due_at > now) { continue; }
-                out.push(DueReviewPrompt { prompt: prompt.clone(), schedule, cloze_index: index });
+                if schedule.as_ref().is_some_and(|s| s.due_at > now) {
+                    continue;
+                }
+                out.push(DueReviewPrompt {
+                    prompt: prompt.clone(),
+                    schedule,
+                    cloze_index: index,
+                });
             }
         }
         out.sort_by(|a, b| {
-            let due = |r: &DueReviewPrompt| r.schedule.as_ref().map(|s| s.due_at.clone()).unwrap_or_else(|| r.prompt.adopted_at.clone().unwrap_or(r.prompt.created_at.clone()));
-            due(a).cmp(&due(b)).then(b.prompt.priority.cmp(&a.prompt.priority))
-                .then(a.prompt.id.cmp(&b.prompt.id)).then(a.cloze_index.cmp(&b.cloze_index))
+            let due = |r: &DueReviewPrompt| {
+                r.schedule
+                    .as_ref()
+                    .map(|s| s.due_at.clone())
+                    .unwrap_or_else(|| {
+                        r.prompt
+                            .adopted_at
+                            .clone()
+                            .unwrap_or(r.prompt.created_at.clone())
+                    })
+            };
+            due(a)
+                .cmp(&due(b))
+                .then(b.prompt.priority.cmp(&a.prompt.priority))
+                .then(a.prompt.id.cmp(&b.prompt.id))
+                .then(a.cloze_index.cmp(&b.cloze_index))
         });
-        if let Some(limit) = limit { out.truncate(limit); }
+        if let Some(limit) = limit {
+            out.truncate(limit);
+        }
         Ok(out)
     }
 
-    pub fn get_daily_review_usage(&self, start: &str, end: &str) -> Result<DailyReviewUsage, String> {
+    pub fn get_daily_review_usage(
+        &self,
+        start: &str,
+        end: &str,
+    ) -> Result<DailyReviewUsage, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let valid: bool = conn.query_row("SELECT julianday(?1) IS NOT NULL AND julianday(?2) > julianday(?1)", params![start, end], |r| r.get(0)).map_err(|e| e.to_string())?;
-        if !valid { return Err("Invalid review usage interval".to_string()); }
+        let valid: bool = conn
+            .query_row(
+                "SELECT julianday(?1) IS NOT NULL AND julianday(?2) > julianday(?1)",
+                params![start, end],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !valid {
+            return Err("Invalid review usage interval".to_string());
+        }
         conn.query_row(
             "SELECT COUNT(*), COALESCE(SUM(MAX(duration_ms, 0)), 0) FROM review_events WHERE julianday(reviewed_at) >= julianday(?1) AND julianday(reviewed_at) < julianday(?2)",
             params![start, end], |r| Ok(DailyReviewUsage { completed_cards: r.get(0)?, duration_ms: r.get(1)? }),
@@ -233,7 +279,9 @@ impl Database {
             return Err("Review event and schedule must reference the same prompt".to_string());
         }
         if event.cloze_index != schedule.cloze_index {
-            return Err("Review event and schedule must reference the same cloze_index".to_string());
+            return Err(
+                "Review event and schedule must reference the same cloze_index".to_string(),
+            );
         }
         validate_outcome(&event.outcome)?;
         if let Some(outcome) = &schedule.last_outcome {
@@ -337,7 +385,10 @@ impl Database {
             .map_err(|e| format!("Failed to verify latest review event: {e}"))?;
 
         if latest_id.as_deref() != Some(event_id) {
-            return Err("Cannot undo review event: it is not the most recent event for this card".to_string());
+            return Err(
+                "Cannot undo review event: it is not the most recent event for this card"
+                    .to_string(),
+            );
         }
 
         tx.execute("DELETE FROM review_events WHERE id = ?1", params![event_id])
@@ -345,7 +396,9 @@ impl Database {
 
         if let Some(schedule) = previous_schedule {
             if schedule.prompt_id != prompt_id || schedule.cloze_index != cloze_index {
-                return Err("Previous schedule does not match prompt_id and cloze_index".to_string());
+                return Err(
+                    "Previous schedule does not match prompt_id and cloze_index".to_string()
+                );
             }
             tx.execute(
                 "INSERT INTO review_schedule (
@@ -423,7 +476,10 @@ impl Database {
         .map_err(|e| e.to_string())
     }
 
-    pub fn get_default_review_schedule(&self, prompt_id: &str) -> Result<Option<ReviewSchedule>, String> {
+    pub fn get_default_review_schedule(
+        &self,
+        prompt_id: &str,
+    ) -> Result<Option<ReviewSchedule>, String> {
         self.get_review_schedule(prompt_id, 0)
     }
 
@@ -636,7 +692,10 @@ mod tests {
             conn.execute("INSERT INTO review_schedule (prompt_id, cloze_index, desired_retention, state, stability, difficulty, due_at, fsrs_version, updated_at, provenance) VALUES ('cloze', 1, 0.9, 'review', 1, 5, '2099-01-01T00:00:00Z', 'test', '2026-01-01T00:00:00Z', 'deterministic_transform'), ('cloze', 2, 0.9, 'review', 1, 5, '2000-01-01T00:00:00Z', 'test', '2026-01-01T00:00:00Z', 'deterministic_transform')", []).unwrap();
         }
         let rows = db.get_due_review_prompts(999).unwrap();
-        assert_eq!(rows.iter().map(|r| r.cloze_index).collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(
+            rows.iter().map(|r| r.cloze_index).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
         assert!(rows[0].schedule.is_some());
         assert!(rows[1].schedule.is_none());
         assert_eq!(db.get_due_review_prompts(1).unwrap().len(), 1);
@@ -653,7 +712,9 @@ mod tests {
             conn.execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x < 250) INSERT INTO review_events (id, prompt_id, reviewed_at, outcome, duration_ms, user_response, provenance, cloze_index) SELECT 'daily-' || x, 'daily', '2026-09-10T12:00:00Z', 'again', 1000, '', 'user_authored', 0 FROM n", []).unwrap();
             conn.execute("INSERT INTO review_events (id, prompt_id, reviewed_at, outcome, duration_ms, user_response, provenance, cloze_index) VALUES ('tomorrow', 'daily', '2026-09-11T00:00:00Z', 'good', 5000, '', 'user_authored', 0)", []).unwrap();
         }
-        let usage = db.get_daily_review_usage("2026-09-10T00:00:00.000Z", "2026-09-11T00:00:00.000Z").unwrap();
+        let usage = db
+            .get_daily_review_usage("2026-09-10T00:00:00.000Z", "2026-09-11T00:00:00.000Z")
+            .unwrap();
         assert_eq!(usage.completed_cards, 250);
         assert_eq!(usage.duration_ms, 250_000);
         assert!(db.get_daily_review_usage("bad", "bad").is_err());
@@ -853,8 +914,14 @@ mod tests {
         db.record_review_event(&event1, &schedule1).unwrap();
         db.record_review_event(&event2, &schedule2).unwrap();
 
-        let s1 = db.get_review_schedule("p1", 1).unwrap().expect("Cloze 1 schedule missing");
-        let s2 = db.get_review_schedule("p1", 2).unwrap().expect("Cloze 2 schedule missing");
+        let s1 = db
+            .get_review_schedule("p1", 1)
+            .unwrap()
+            .expect("Cloze 1 schedule missing");
+        let s2 = db
+            .get_review_schedule("p1", 2)
+            .unwrap()
+            .expect("Cloze 2 schedule missing");
 
         assert_eq!(s1.cloze_index, 1);
         assert_eq!(s1.state, "review");
@@ -940,7 +1007,8 @@ mod tests {
         assert!(err_cloze.is_err());
 
         // Undoing event2 succeeds
-        db.undo_review_event("event-2", "p1", 0, Some(&schedule1)).unwrap();
+        db.undo_review_event("event-2", "p1", 0, Some(&schedule1))
+            .unwrap();
         assert_eq!(db.get_review_schedule("p1", 0).unwrap(), Some(schedule1));
 
         // Now event1 is the latest, undoing it succeeds
@@ -997,7 +1065,10 @@ mod tests {
         let due = db.due_review_cards(None).unwrap();
         assert_eq!(due.len(), 2);
         for card in &due {
-            assert!(card.schedule.is_some(), "Cloze variant should preserve schedule rather than returning None");
+            assert!(
+                card.schedule.is_some(),
+                "Cloze variant should preserve schedule rather than returning None"
+            );
             let sched = card.schedule.as_ref().unwrap();
             assert_eq!(sched.stability, 4.2);
             assert_eq!(sched.difficulty, 3.1);

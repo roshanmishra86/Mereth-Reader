@@ -46,6 +46,9 @@ jobs:
       - name: Unit tests
         run: pnpm test
 
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
+
       - name: Check Rust crate
         run: cargo check --manifest-path src-tauri/Cargo.toml
 
