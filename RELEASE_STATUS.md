@@ -1,7 +1,35 @@
 # Release status and evidence
 
-**Status: not release-ready.** This file records what is supported by repository
+**Status: v0.1.4 personal-use release under validation; production readiness not established.** This file records what is supported by repository
 evidence, not what an unrun build, workflow, or installed application might do.
+
+## v0.1.4 review on 2026-09-11
+
+The maintainer confirmed Windows testing of the changes since v0.1.3, including
+saving/reopening notes, review scheduling, and backup restore, and authorized
+the next personal-use release after automated checks. This is reported manual
+evidence; a clean-machine test of the final installer has not been independently
+observed here. Windows code signing remains unconfigured; updater signatures
+are a separate mechanism.
+
+Review found and reproduced an unhandled rejection from the internal completion
+promise when a queued note save failed. The fix preserves the caller's error
+while handling the internal promise; its regression test failed before the fix
+and passed afterward. Rust formatting has been normalized, and CI now checks it.
+
+Release notes: [v0.1.4](docs/releases/v0.1.4.md).
+
+Automated verification on Linux/WSL with Node 24.18.1 and pnpm 12.3.4:
+
+- Frozen-lockfile dependency installation passed.
+- TypeScript checking and the Vite production build passed.
+- All 651 frontend tests across 86 files passed, including the new regression.
+- Rust formatting and the locked Rust compilation check passed.
+- All 102 Rust library tests passed on v0.1.4.
+- The two-process note recovery probe passed with a 262.53 ms median autosave
+  latency for its atomic-file/fsync adapter. It does not measure Tauri/SQLite.
+
+The tag-driven Windows release workflow is pending.
 
 ## Evidence available in the repository
 
