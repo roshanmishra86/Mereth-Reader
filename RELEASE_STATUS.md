@@ -1,6 +1,6 @@
 # Release status and evidence
 
-**Status: v0.1.4 personal-use release under validation; production readiness not established.** This file records what is supported by repository
+**Status: v0.1.4 published for personal use; production readiness not established.** This file records what is supported by repository
 evidence, not what an unrun build, workflow, or installed application might do.
 
 ## v0.1.4 review on 2026-09-11
@@ -29,7 +29,17 @@ Automated verification on Linux/WSL with Node 24.18.1 and pnpm 12.3.4:
 - The two-process note recovery probe passed with a 262.53 ms median autosave
   latency for its atomic-file/fsync adapter. It does not measure Tauri/SQLite.
 
-The tag-driven Windows release workflow is pending.
+Release commit: `085cf589d1d23d38fc14ef5af1073ad97848b5e9` (tag `v0.1.4`).
+
+- [Quality workflow](https://github.com/roshanmishra86/Mereth-Reader/actions/runs/34584190948) passed.
+- [Windows installer workflow](https://github.com/roshanmishra86/Mereth-Reader/actions/runs/34584208115) passed, including draft updater-asset validation.
+- Downloaded installer: `Mereth-Reader_0.1.4_x64-setup.exe`, 6,510,647 bytes.
+- Installer SHA-256: `45d02c5f161405b3af1bc24fc3a2d7badc666c5ee80b68e221b34137139e8bb1`, matching GitHub's asset digest.
+- The downloaded installer signature was cryptographically verified using
+  `minisign-verify` 0.2.5 against the public key in `tauri.conf.json`. The manifest
+  version and signature matched the installer assets.
+- [v0.1.4 was published](https://github.com/roshanmishra86/Mereth-Reader/releases/tag/v0.1.4)
+  on 2026-09-11 at 09:36:14 UTC as the latest personal-use release.
 
 ## Evidence available in the repository
 
