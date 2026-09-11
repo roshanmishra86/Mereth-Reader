@@ -67,6 +67,24 @@ describe('AutosaveCoordinator and Revision Diffs (Task 4.1 / FR-10.8)', () => {
     );
   });
 
+  it('handles a queued persistence failure and allows the next save to succeed', async () => {
+    const coordinator = new AutosaveCoordinator();
+    let finishFirst!: () => void;
+    const first = coordinator.runSerialized('queued-failure', () => new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    }));
+    const failed = coordinator.runSerialized('queued-failure', async () => {
+      throw new Error('Disk full');
+    });
+    const rejection = expect(failed).rejects.toThrow('Disk full');
+    finishFirst();
+    await first;
+    await rejection;
+    await vi.runAllTimersAsync();
+    expect(coordinator.hasInFlight('queued-failure')).toBe(false);
+    await expect(coordinator.runSerialized('queued-failure', async () => 'saved')).resolves.toBe('saved');
+  });
+
   it('flush immediately invokes persistence without waiting for timer', async () => {
     const coordinator = new AutosaveCoordinator(500);
     const persistMock = vi.fn().mockResolvedValue(undefined);

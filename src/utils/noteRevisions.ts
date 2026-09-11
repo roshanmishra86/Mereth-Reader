@@ -190,7 +190,9 @@ export class AutosaveCoordinator {
         taskResult = await task();
       });
 
-    const trackingPromise = next.finally(() => {
+    // Track completion without creating a second, unhandled rejection. The
+    // promise returned below still reports persistence failures to the caller.
+    const trackingPromise = next.catch(() => {}).finally(() => {
       if (this.inFlight.get(noteId) === trackingPromise) {
         this.inFlight.delete(noteId);
       }
