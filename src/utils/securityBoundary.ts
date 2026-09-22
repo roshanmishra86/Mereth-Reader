@@ -38,6 +38,8 @@ export const TAURI_EXPECTED_CSP =
  */
 export const ALLOWED_TAURI_PERMISSIONS = [
   'core:default',
+  // Main-window close handler saves pending drafts before destroying the window.
+  'core:window:allow-destroy',
   'dialog:allow-open',
   'updater:allow-check',
   'updater:allow-download',
