@@ -1,7 +1,21 @@
 # Release status and evidence
 
-**Status: v0.1.4 published for personal use; production readiness not established.** This file records what is supported by repository
+**Status: v0.1.5 published for personal use; production readiness not established.** This file records what is supported by repository
 evidence, not what an unrun build, workflow, or installed application might do.
+
+## v0.1.5 close-button fix on 2026-09-22
+
+Granted the main window `core:window:allow-destroy`, required by the existing
+save-before-close handler, and updated the security audit allowlist.
+Release commit: `b18334b806d7e6c67df8e8f013c83b050c62d1b5` (tag `v0.1.5`).
+
+- [Quality workflow](https://github.com/roshanmishra86/Mereth-Reader/actions/runs/35709539694) passed, including frontend build/tests, Rust formatting, compilation, and unit tests.
+- [Windows installer workflow](https://github.com/roshanmishra86/Mereth-Reader/actions/runs/35709550313) passed, including updater-asset validation.
+- Downloaded installer, signature, and manifest SHA-256 digests matched GitHub's asset digests.
+- Installer SHA-256: `a4a8cfcafcdb1f1ec29e20055b5bb002de2e6c656d7558145763fa1b4a18b120`.
+- Manifest version, installer API URL, and signature matched the release assets.
+- [v0.1.5](https://github.com/roshanmishra86/Mereth-Reader/releases/tag/v0.1.5) published as latest on 2026-09-22 at 09:27:48 UTC.
+- No manual Windows smoke test of this final installer was performed in this session.
 
 ## v0.1.4 review on 2026-09-11
 
